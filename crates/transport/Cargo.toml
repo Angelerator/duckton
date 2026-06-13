@@ -1,0 +1,28 @@
+[package]
+name = "p2p-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "p2p_transport"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+blake3 = "1.8.5"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core", "pkcs8", "pem"] }
+futures-util = "0.3.32"
+hex = "0.4.3"
+p2p-config = { version = "0.1.0", path = "../config" }
+p2p-proto = { version = "0.1.0", path = "../proto" }
+quinn = "0.11.9"
+rand = "0.8"
+rcgen = { version = "0.14.8", default-features = false, features = ["pem", "ring"] }
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+rustls-pki-types = "1.14.1"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tracing = "0.1.44"
+x509-parser = "0.18.1"

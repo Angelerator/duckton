@@ -1,0 +1,17 @@
+[package]
+name = "p2p-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "p2p_proto"
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1.8.5"
+hex = "0.4.3"
+rand = "0.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"

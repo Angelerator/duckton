@@ -1,0 +1,57 @@
+[package]
+name = "duckdb-p2p-settlement"
+description = "TON economic/settlement layer for the P2P DuckDB-over-QUIC grid (stake, escrow, record anchor)"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[toolchain]
+acton = "1.1.0"
+
+# Sharded per-node / per-job contracts (no single global contract — TON is
+# "one contract, one shard"; see BLOCKCHAIN_ECONOMICS §1).
+
+[contracts.StakeReceiptWallet]
+display-name = "StakeReceiptWallet"
+src = "contracts/StakeReceiptWallet.tolk"
+depends = []
+
+[contracts.StakeVault]
+display-name = "StakeVault"
+src = "contracts/StakeVault.tolk"
+depends = ["StakeReceiptWallet"]
+
+[contracts.JobEscrow]
+display-name = "JobEscrow"
+src = "contracts/JobEscrow.tolk"
+depends = []
+
+[contracts.RecordAnchor]
+display-name = "RecordAnchor"
+src = "contracts/RecordAnchor.tolk"
+depends = []
+
+[test]
+
+[fmt]
+width = 100
+ignore = []
+
+[scripts]
+deploy-stake-emulation = "acton script scripts/deploy_stake.tolk"
+deploy-stake-testnet = "acton script scripts/deploy_stake.tolk --net testnet"
+deploy-anchor-emulation = "acton script scripts/deploy_anchor.tolk"
+deploy-anchor-testnet = "acton script scripts/deploy_anchor.tolk --net testnet"
+deploy-escrow-emulation = "acton script scripts/deploy_escrow.tolk"
+deploy-escrow-testnet = "acton script scripts/deploy_escrow.tolk --net testnet"
+e2e-emulation = "acton script scripts/e2e_testnet.tolk"
+e2e-testnet = "acton script scripts/e2e_testnet.tolk --net testnet"
+
+[import-mappings]
+acton = ".acton"
+contracts = "contracts"
+gen = "gen"
+tests = "tests"
+wrappers = "wrappers"
+
+# Check full Acton.toml reference and all available keys:
+# https://ton-blockchain.github.io/acton/docs/acton-toml

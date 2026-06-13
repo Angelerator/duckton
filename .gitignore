@@ -1,0 +1,29 @@
+# Rust / build
+/target
+**/target/
+/dist
+
+# Node / Acton / TON tooling
+node_modules/
+**/node_modules/
+ton/build/
+*.boc
+*.fif
+
+# Secrets, wallets, deploy env — NEVER commit
+*.env
+.env*
+global.wallets.toml
+*.wallets.toml
+*.mnemonic
+*.secret
+secrets.toml
+*credentials*
+*.key
+*.pem
+ton/deployments/
+**/deployments/
+
+# misc
+.DS_Store
+*.log

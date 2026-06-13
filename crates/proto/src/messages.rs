@@ -1,0 +1,369 @@
+//! Protocol messages exchanged between nodes.
+//!
+//! Protocol flow (architecture §3 / §11):
+//!   Requester --Offer-->  Worker
+//!   Worker    --Bid-->    Requester     (accept w/ ETA + attestation + receipts, or reject)
+//!   Requester --Dispatch--> Worker      (full SQL + scoped credential, to top-k workers)
+//!   Worker    --Commit-->  Requester    (result_hash first, "commit-first")
+//!   Worker    --Chunk*-->  Requester    (bulk result stream; winner only)
+//!   Requester --Cancel-->  Worker       (RESET losers)
+//!
+//! All of these are carried in the [`Wire`] tagged envelope so the transport
+//! layer can use one uniform framed read/write path.
+
+use serde::{Deserialize, Serialize};
+
+use crate::attestation::Attestation;
+use crate::ids::{JobId, NodeId, QueryHash};
+use crate::value::ResultSet;
+use crate::version::Version;
+
+/// Sensitivity class of the data a query touches (architecture §7.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DataClass {
+    Public,
+    Internal,
+    Sensitive,
+}
+
+impl Default for DataClass {
+    fn default() -> Self {
+        DataClass::Public
+    }
+}
+
+/// Verification mode chosen by the requester (architecture §11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VerifyMode {
+    /// Return the fastest result; verify hashes in the background.
+    Fast,
+    /// Wait for `quorum` matching hashes before returning.
+    Quorum,
+}
+
+impl Default for VerifyMode {
+    fn default() -> Self {
+        VerifyMode::Quorum
+    }
+}
+
+/// Step 1: Requester probes a candidate worker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Offer {
+    pub job_id: JobId,
+    pub requester_id: NodeId,
+    pub query_hash: QueryHash,
+    /// Optional cost hint (estimated rows scanned) so workers can admission-check.
+    pub cost_hint_rows: Option<u64>,
+    pub data_class: DataClass,
+    /// Fresh random nonce to bind the exchange and prevent replay.
+    pub nonce: u64,
+}
+
+/// A worker's decision on an [`Offer`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum BidDecision {
+    Accept,
+    Reject { reason: String },
+}
+
+/// Step 2: Worker bids on an offer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Bid {
+    pub job_id: JobId,
+    pub worker_id: NodeId,
+    pub decision: BidDecision,
+    /// Estimated time to completion (ms).
+    pub eta_ms: u64,
+    /// Price hint (abstract units; 0 for free donation).
+    pub price: u64,
+    /// Attestation evidence (stubbed to L0 in Phase 0).
+    pub attestation: Attestation,
+    /// A bundle of recent signed receipts the worker presents as reputation.
+    pub recent_receipts: Vec<Receipt>,
+    /// Currently-free memory the worker advertises (bytes).
+    pub free_mem_bytes: u64,
+    /// Currently-free worker threads.
+    pub free_threads: u32,
+}
+
+/// A scoped, short-lived storage credential delivered inside a [`Dispatch`]
+/// (architecture §9.2). In tests this points at a local fake object store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScopedCredential {
+    /// e.g. "s3", "az", "gcs", or "local-fake".
+    pub provider: String,
+    /// Opaque token (STS session / SAS / downscoped token / local path token).
+    pub token: String,
+    /// Object prefix the credential is scoped to (read-only).
+    pub prefix: String,
+    /// Unix-seconds expiry.
+    pub expires_at: u64,
+}
+
+/// Step 3: Requester dispatches the full job to a chosen worker.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Dispatch {
+    pub job_id: JobId,
+    /// The full SQL text to execute.
+    pub sql: String,
+    pub query_hash: QueryHash,
+    /// Per-job scoped credential (optional; absent for purely local test data).
+    pub credential: Option<ScopedCredential>,
+    /// Memory lease for the execution connection (bytes).
+    pub memory_limit_bytes: u64,
+    /// Thread lease for the execution connection.
+    pub threads: u32,
+    pub verify_mode: VerifyMode,
+    /// Phase 4: a data key sealed to the worker's (enclave) key. `None` outside
+    /// the confidential tier.
+    pub sealed_key: Option<SealedKey>,
+    /// Per-call result-stream parallelism (number of concurrent uni-streams the
+    /// winner should use). `None` ⇒ worker uses its configured default.
+    #[serde(default)]
+    pub result_parallelism: Option<u32>,
+    /// Per-call wire compression for the result. `None` ⇒ worker default.
+    #[serde(default)]
+    pub compression: Option<Compression>,
+}
+
+/// A symmetric data key sealed (encrypted) to a worker/enclave public key
+/// (architecture §9.3 — attestation-gated key release). Phase 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SealedKey {
+    /// Recipient key fingerprint the blob is sealed to.
+    pub recipient: String,
+    /// Sealed ciphertext (hex). Opaque to the proto layer.
+    pub ciphertext_hex: String,
+}
+
+/// Step 4: Worker commits its result hash *before* streaming data ("commit-first").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultCommit {
+    pub job_id: JobId,
+    pub worker_id: NodeId,
+    /// Canonical BLAKE3 hash of the result (hex). See `p2p-trust`.
+    pub result_hash: String,
+    pub row_count: u64,
+    pub latency_ms: u64,
+}
+
+/// Wire compression codec for result payloads (mirrors `p2p_config::CompressionAlgo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Compression {
+    None,
+    Lz4,
+    Zstd,
+}
+
+impl Default for Compression {
+    fn default() -> Self {
+        Compression::None
+    }
+}
+
+/// Sent on the control stream *before* any bulk bytes, describing how the result
+/// is encoded and split. The receiver uses it to allocate, decompress, and know
+/// how many unidirectional streams (`parts`) to expect.
+///
+/// * `parts == 1` ⇒ the payload follows inline as [`ResultChunk`] messages on the
+///   same control stream (back-compatible single-stream path).
+/// * `parts > 1`  ⇒ the payload is split across `parts` unidirectional streams,
+///   each carrying one [`ResultPart`] header followed by raw bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultManifest {
+    pub job_id: JobId,
+    /// Compression applied to the serialized [`ResultSet`].
+    pub compression: Compression,
+    /// Length (bytes) of the serialized result *before* compression.
+    pub uncompressed_len: u64,
+    /// Length (bytes) of the (possibly compressed) payload that is transferred.
+    pub total_len: u64,
+    /// Number of streams the payload is split across (>= 1).
+    pub parts: u32,
+}
+
+/// Step 5: a chunk of the inline bulk result stream (winner only, `parts == 1`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResultChunk {
+    pub job_id: JobId,
+    pub seq: u32,
+    pub last: bool,
+    /// A slice of the (possibly compressed) serialized [`ResultSet`].
+    pub payload: Vec<u8>,
+}
+
+/// Header for one part of a parallel result transfer (`parts > 1`). Sent as the
+/// first framed message on a dedicated unidirectional stream; the `len` raw
+/// payload bytes follow immediately (un-framed) and are placed at `offset` in the
+/// reassembled payload. Keeping the bulk bytes un-framed avoids the control-frame
+/// size cap and an extra copy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultPart {
+    pub job_id: JobId,
+    /// 0-based part index.
+    pub index: u32,
+    /// Byte offset of this part within the reassembled payload.
+    pub offset: u64,
+    /// Number of raw payload bytes that follow this header on the stream.
+    pub len: u64,
+}
+
+/// Requester cancels a (losing or failed) job, triggering a stream RESET.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancel {
+    pub job_id: JobId,
+    pub reason: String,
+}
+
+/// Generic acknowledgement / error.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ack {
+    pub job_id: JobId,
+    pub ok: bool,
+    pub detail: String,
+}
+
+/// Verdict recorded in a [`Receipt`] (architecture §7.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Verdict {
+    Correct,
+    Incorrect,
+    Timeout,
+    Malformed,
+}
+
+/// A signed statement about a completed job's outcome (architecture §7.3).
+///
+/// The `sig` is an Ed25519 signature by `requester_id`'s key over the canonical
+/// signing bytes (see `p2p-trust::receipt`). The struct lives here (it appears
+/// inside [`Bid`]); signing/verification logic lives in `p2p-trust`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Receipt {
+    pub job_id: JobId,
+    pub worker_id: NodeId,
+    pub requester_id: NodeId,
+    pub query_hash: QueryHash,
+    pub result_hash: String,
+    pub verdict: Verdict,
+    pub latency_ms: u64,
+    /// Unix-seconds timestamp.
+    pub ts: u64,
+    /// Hex Ed25519 public key of the requester (so verifiers can check `sig`).
+    pub requester_pubkey: String,
+    /// Hex Ed25519 signature over the canonical signing bytes.
+    pub sig: String,
+}
+
+/// Handshake hello exchanged once per connection before any application
+/// messages (architecture §5.1). Carries the full semver, the minimum version
+/// the sender will accept, and engine/extension build versions for
+/// result-determinism policy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Hello {
+    /// Wire schema tag the sender speaks.
+    pub schema_version: u16,
+    /// The sender's current protocol version.
+    pub protocol_version: Version,
+    /// The minimum protocol version the sender will accept from a peer.
+    pub min_supported: Version,
+    pub node_id: NodeId,
+    /// DuckDB engine version (for result-determinism / quorum policy).
+    pub engine_version: String,
+    /// This extension/build version.
+    pub extension_version: String,
+}
+
+/// A typed rejection sent when a peer is version-incompatible, so the other side
+/// gets a clear reason instead of a silent drop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VersionReject {
+    pub reason: String,
+    pub our_version: Version,
+    pub min_supported: Version,
+}
+
+/// The uniform tagged envelope sent over a framed QUIC stream.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum Wire {
+    /// Connection handshake.
+    Hello(Hello),
+    /// Typed version-incompatibility rejection.
+    VersionReject(VersionReject),
+    Offer(Offer),
+    Bid(Bid),
+    Dispatch(Dispatch),
+    Commit(ResultCommit),
+    /// Describes the encoding/splitting of the bulk result (sent before bytes).
+    Manifest(ResultManifest),
+    Chunk(ResultChunk),
+    /// Header for one part of a parallel (multi-stream) result transfer.
+    Part(ResultPart),
+    Cancel(Cancel),
+    Ack(Ack),
+    /// A whole result set delivered in one message (small results / tests).
+    Result(JobId, ResultSet),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attestation::Attestation;
+
+    #[test]
+    fn wire_roundtrips() {
+        let offer = Wire::Offer(Offer {
+            job_id: JobId::new(),
+            requester_id: NodeId("b3:req".into()),
+            query_hash: QueryHash::compute("SELECT 1", "1.0"),
+            cost_hint_rows: Some(100),
+            data_class: DataClass::Public,
+            nonce: 42,
+        });
+        let bytes = crate::to_bytes(&offer).unwrap();
+        let back: Wire = crate::from_bytes(&bytes).unwrap();
+        assert_eq!(offer, back);
+    }
+
+    #[test]
+    fn unknown_minor_field_is_tolerated() {
+        // A newer minor adds a field to Offer; an older-minor peer (this struct)
+        // must still parse the message, ignoring the unknown field. This is the
+        // forward-compat hygiene that lets minors differ within a major.
+        let json = r#"{
+            "Offer": {
+                "job_id": "abc",
+                "requester_id": "b3:req",
+                "query_hash": "h",
+                "cost_hint_rows": null,
+                "data_class": "Public",
+                "nonce": 1,
+                "future_field_added_in_v1_1": {"anything": [1,2,3]}
+            }
+        }"#;
+        let parsed: Wire = serde_json::from_str(json).expect("unknown field tolerated");
+        match parsed {
+            Wire::Offer(o) => assert_eq!(o.nonce, 1),
+            other => panic!("expected Offer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bid_carries_attestation_stub_and_receipts() {
+        let bid = Bid {
+            job_id: JobId::new(),
+            worker_id: NodeId("b3:w".into()),
+            decision: BidDecision::Accept,
+            eta_ms: 10,
+            price: 0,
+            attestation: Attestation::stub_l0(),
+            recent_receipts: vec![],
+            free_mem_bytes: 1 << 30,
+            free_threads: 4,
+        };
+        assert_eq!(bid.attestation.level, crate::AttestationLevel::L0);
+        let w = Wire::Bid(bid.clone());
+        let back: Wire = crate::from_bytes(&crate::to_bytes(&w).unwrap()).unwrap();
+        assert_eq!(Wire::Bid(bid), back);
+    }
+}

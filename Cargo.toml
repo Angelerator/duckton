@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/config",
+    "crates/proto",
+    "crates/transport",
+    "crates/trust",
+    "crates/settlement",
+    "crates/node",
+    "crates/extension",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/example/duckdb-p2p"
+rust-version = "1.80"
+
+[profile.release]
+opt-level = 2

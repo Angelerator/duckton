@@ -1,0 +1,328 @@
+# =============================================================================
+# duckdb-p2p — example node configuration
+# =============================================================================
+# Layered precedence (lowest -> highest):
+#   1. built-in defaults (shown below)
+#   2. this TOML file              (P2P_CONFIG=/path/to/p2p.toml, or pass --config)
+#   3. environment variables       (P2P_* — see crates/config/src/lib.rs)
+#   4. per-call SQL parameters      (args to p2p_query / p2p_share / p2p_join)
+#
+# Every value here is optional; omit a key to inherit the documented default.
+# `deny_unknown_fields` is on, so a typo'd key is a hard error (fail fast).
+# -----------------------------------------------------------------------------
+
+[protocol]
+# Protocol version this node advertises and the minimum it will accept.
+# Compatibility: same MAJOR required; MINOR/PATCH may differ (newer side
+# downgrades to the negotiated common version). Peers below min_supported_version
+# or with a different major are cleanly rejected with a typed error.
+version                         = "1.0.0"
+min_supported_version           = "1.0.0"
+# Require peers to report an identical DuckDB engine version to participate in a
+# quorum (result-determinism). Off by default.
+require_matching_engine_version = false
+
+[network]
+# QUIC bind address. Port 0 = OS-assigned ephemeral port (handy for tests).
+bind_addr = "127.0.0.1:0"
+# advertised_addr = "203.0.113.10:9494"   # externally reachable addr, if NAT'd
+idle_timeout_ms       = 30000
+connect_timeout_ms    = 10000
+keepalive_ms          = 10000            # must be < idle_timeout_ms
+max_concurrent_bidi_streams = 256        # backpressure: cap in-flight streams
+stream_receive_window = 8388608          # 8 MiB per-stream flow-control window
+receive_window        = 67108864         # 64 MiB per-connection window
+result_chunk_bytes    = 262144           # 256 KiB result streaming chunk size
+
+# -----------------------------------------------------------------------------
+# Transport performance tuning (low latency + high throughput, all configurable)
+# See ARCHITECTURE.md "Transport performance tuning" for the full rationale.
+# -----------------------------------------------------------------------------
+[transport.quic]
+gso          = true                       # UDP Generic Segmentation Offload on TX
+                                          # (biggest throughput lever; quinn-udp
+                                          #  auto-disables if unsupported)
+gro          = true                       # desire UDP Generic Receive Offload
+                                          # (quinn-udp enables automatically; advisory)
+congestion   = "cubic"                    # "bbr" | "cubic" | "newreno"
+pacing       = true                       # NOTE: Quinn always paces; off = advisory
+# stream_receive_window_bytes     = 8388608   # override [network].stream_receive_window
+# connection_receive_window_bytes = 67108864  # override [network].receive_window
+send_window_bytes           = 67108864    # 64 MiB connection send window
+max_concurrent_uni_streams  = 256         # cap on bulk result fan-out streams
+enable_0rtt                 = false       # 0-RTT/session resumption (see caveats)
+session_ticket_lifetime_secs = 43200      # 12h resumption ticket lifetime
+[transport.quic.bdp]
+# Auto-size flow-control windows from bandwidth-delay product when enabled;
+# overrides the explicit windows above so large results aren't window-limited.
+enabled        = false
+bandwidth_mbps = 1000                     # target link bandwidth (Mbit/s)
+rtt_ms         = 50                        # target round-trip time (ms)
+
+[transport.result]
+parallelism       = 1                     # concurrent uni-streams per large result
+                                          # (1 = inline; overridable per p2p_query call)
+# chunk_bytes     = 262144                # override [network].result_chunk_bytes
+parallel_min_bytes = 1048576              # only fan out results >= 1 MiB
+
+[transport.compression]
+algorithm     = "none"                    # "none" | "lz4" | "zstd"
+                                          # default off on loopback/LAN; for WAN
+                                          # prefer "lz4" (cheap) or "zstd" (ratio)
+level         = 3                          # zstd level 1..=22 (lz4/none ignore)
+min_size_bytes = 65536                    # only compress results >= 64 KiB
+
+[identity]
+# key_path = "/etc/duckdb-p2p/node.key"  # PKCS#8 Ed25519 PEM; omit = ephemeral
+pinning_mode = "tofu"                     # "tofu" | "allowlist"
+allowlist    = []                         # node ids trusted when pinning_mode="allowlist"
+
+[discovery]
+mode = "static"                           # "static" (MVP) | "kademlia" (libp2p
+                                          # Kademlia DHT + gossipsub; scales)
+bootstrap = []                            # entry peers only; never in data path.
+                                          # kademlia mode: libp2p multiaddrs incl.
+                                          # peer id, e.g.
+                                          # "/ip4/203.0.113.10/tcp/9595/p2p/12D3Koo..."
+listen_addrs = []                         # libp2p listen multiaddrs for the
+                                          # discovery overlay (distinct from the
+                                          # QUIC data-plane network.bind_addr).
+                                          # [] = ephemeral loopback TCP port.
+                                          # e.g. ["/ip4/0.0.0.0/tcp/9595"]
+candidate_sample_size = 16                # HARD cap on workers contacted per job
+                                          # (keeps fan-out bounded at any swarm size)
+[discovery.kademlia]
+replication_factor = 20                   # k-bucket size
+query_parallelism  = 3                    # alpha
+record_ttl_secs    = 3600
+
+[discovery.gossip]
+topic               = "duckdb-p2p/caps/1" # gossipsub topic for signed cap ads
+heartbeat_ms        = 5000                # capability-ad republish interval
+fanout              = 6
+capability_ttl_secs = 30                  # ads older than this are rejected
+
+[scheduler]
+replicas              = 3                  # k workers to race (>= quorum)
+quorum                = 2                  # matching hashes required to accept
+verify_mode           = "quorum"          # "fast" | "quorum"
+offer_timeout_ms      = 2000
+dispatch_timeout_ms   = 30000
+max_retries           = 2
+backoff_initial_ms    = 200
+backoff_max_ms        = 5000
+max_inflight_jobs     = 64                 # requester-side concurrency semaphore
+
+[budget]
+memory_bytes         = 4294967296          # 4 GiB donated
+threads              = 2
+max_jobs             = 3
+per_job_memory_bytes = 1073741824          # 1 GiB default per-job lease
+per_job_threads      = 1
+data_classes         = ["public"]          # public | internal | sensitive
+
+[trust]
+min_trust                 = 0.7            # soft score gate [0,1]
+min_attestation           = "L0"           # hard gate: L0 | L1 | L2
+reputation_half_life_secs = 604800         # 7 days recency half-life
+canary_rate               = 0.05           # fraction of jobs that are canaries
+incorrect_penalty         = 0.5
+bootstrap_trust           = 0.1            # trust for brand-new identities
+# store_path              = "/var/lib/duckdb-p2p/trust.redb"  # persist reputation
+                                            # across restarts (embedded redb).
+                                            # omit = bounded in-memory (default)
+
+[trust.weights]                            # effective_trust soft-score weights
+alpha_reputation = 0.7
+beta_age         = 0.1
+gamma_voucher    = 0.1
+delta_stake      = 0.1
+
+[sybil]
+pow_difficulty_bits = 16                   # leading zero bits for identity PoW
+min_stake           = 0
+vouch_weight        = 0.05
+
+[storage]
+provider            = "local-fake"         # default credential provider: local-fake | s3 | az | gcs
+# endpoint          = "http://127.0.0.1:9000"
+# region            = "us-east-1"
+credential_ttl_secs = 900                  # scoped credential lifetime
+key_ttl_secs        = 900                  # sealed data-key lifetime
+
+# --- Data sources & formats (architecture §4 / §9.2 / §9.4) ------------------
+# Master switch: allow worker NETWORK EGRESS for remote object-storage reads.
+# When false (default) the execution engine stays in the strict/local lockdown
+# (enable_external_access=false). DuckDB's enable_external_access is all-or-
+# nothing for the network — it CANNOT restrict egress to specific endpoints — so
+# enabling remote access REQUIRES complementary OS-level egress filtering (the
+# OS sandbox is separately deferred; see §9.4).
+enable_remote_access = false
+# Fail engine init if a preload_extensions entry can't be loaded. Required
+# extensions are pre-loaded at init, NEVER INSTALL/LOAD'd at query time.
+require_extensions   = true
+# DuckDB extensions pre-loaded at engine init. For real cloud reads enable e.g.
+# ["httpfs", "aws", "azure", "parquet", "json", "delta", "iceberg"]. (parquet
+# and json are also statically linked in the bundled build.)
+preload_extensions   = []
+# Formats workers will serve (extensible; unknown values tolerated).
+enabled_formats      = ["csv", "json", "parquet"]
+# Storage/credential providers enabled on this node.
+enabled_providers    = ["local-fake"]
+# Local directories DuckDB may read even with external access disabled
+# (DuckDB `allowed_directories`); used for local fixtures. e.g. ["/srv/data"].
+allowed_local_paths  = []
+# Per-provider option overrides (endpoint/region/url_style/...), keyed by id:
+# [storage.provider_options.s3]
+# region    = "us-east-1"
+# endpoint  = "s3.amazonaws.com"
+# [storage.provider_options.gcs]
+# endpoint  = "storage.googleapis.com"
+# Per-format reader options, keyed by format id:
+# [storage.format_options.parquet]
+# hive_partitioning = "true"
+
+# -----------------------------------------------------------------------------
+# Local-first execution planner (architecture §4 data plane / §11 scheduler)
+# -----------------------------------------------------------------------------
+# A node can run a query entirely in its OWN locked-down in-process DuckDB for
+# FREE — no bidding, escrow, quorum or payment — because it trusts its own
+# machine. This section governs WHEN that free local path is chosen over a grid
+# dispatch. A pre-flight, metadata-only data-size estimate (Parquet footers,
+# Delta _delta_log stats, Iceberg manifests, CSV/JSON object size + sampling) is
+# translated into an estimated PEAK WORKING-SET memory and compared against the
+# node's CURRENT headroom (budget.memory_bytes * ram_fraction minus memory in
+# use by concurrent local jobs). A job that blows past the threshold mid-flight
+# is aborted and re-dispatched to the grid (adaptive fail-over).
+[planner]
+enabled                   = true           # false = always dispatch to the grid
+prefer                    = "auto"          # default routing: local | remote | auto
+                                            # (per call: p2p_query(..., prefer => 'local'))
+ram_fraction              = 0.6             # alpha: fraction of budget.memory_bytes
+                                            # usable locally (headroom basis)
+max_concurrent_local_jobs = 4               # local saturation -> route to grid
+size_threshold_bytes      = 268435456       # 256 MiB hard cap on local scanned bytes
+spill_tolerance_bytes     = 536870912       # 512 MiB the peak working set may exceed
+                                            # RAM headroom via out-of-core spill (0=never)
+max_local_latency_ms      = 10000           # latency budget for the local path (0=off)
+
+# -----------------------------------------------------------------------------
+# OS-level execution sandbox (architecture §9.4)
+# -----------------------------------------------------------------------------
+# The boundary AROUND job execution, complementing DuckDB's own lockdown
+# (enable_external_access / lock_configuration / allowed_directories / ephemeral
+# temp). DuckDB CANNOT scope network egress to specific endpoints — the OS must.
+# OFF by default: with enabled = false this is a no-op and the node behaves
+# exactly as today. Turn it on (and pick a backend) on workers that enable
+# remote storage reads (storage.enable_remote_access = true).
+[sandbox]
+enabled        = false                     # master switch (false = no-op sandbox)
+backend        = "auto"                    # auto | none | rlimit | cgroups-seccomp |
+                                           #  macos-seatbelt | windows-jobobject |
+                                           #  android | ios
+                                           #  auto (OS-agnostic): Linux->cgroups+seccomp,
+                                           #  macOS->Seatbelt, Windows->Job Objects,
+                                           #  Android->app sandbox+seccomp, iOS->app
+                                           #  sandbox (in-process only), else rlimit
+egress_mode    = "inherit_storage"         # inherit_storage | explicit
+                                           #  inherit_storage derives the allow-list
+                                           #  from [storage] endpoints/providers
+egress_allowlist = []                      # extra host[:port] entries (appended in
+                                           #  inherit_storage mode; the whole list
+                                           #  in explicit mode)
+temp_dir_policy = "ephemeral"              # ephemeral | inherit | custom
+# temp_dir      = "/var/tmp/duckdb-p2p"    # REQUIRED when temp_dir_policy = "custom"
+
+[sandbox.limits]
+# A field set to 0 = unlimited / inherit (no cap installed for that resource).
+mode                = "inherit_budget"     # inherit_budget | explicit
+                                           #  inherit_budget: RAM/threads from [budget]
+memory_bytes        = 0                    # RLIMIT_AS (explicit mode only)
+cpu_seconds         = 0                    # RLIMIT_CPU wall of CPU time (0 = off)
+max_file_size_bytes = 0                    # RLIMIT_FSIZE max created-file size (0 = off)
+max_open_files      = 0                    # RLIMIT_NOFILE fd cap (0 = inherit)
+max_processes       = 0                    # RLIMIT_NPROC cap (explicit mode only)
+
+[limits]
+receipt_cache_per_worker = 256             # bounded reputation history per worker
+trust_store_capacity     = 100000          # LRU-evicted workers
+peer_cache_capacity      = 50000           # LRU-evicted peers
+worker_pool_size         = 8               # inbound job concurrency semaphore
+connection_pool_size     = 1024
+
+# -----------------------------------------------------------------------------
+# Blockchain economic / settlement layer (TON) — see docs/BLOCKCHAIN_ECONOMICS.md
+# -----------------------------------------------------------------------------
+# OFF by default: with enabled = false the node behaves exactly as today — every
+# job is FREE, touches NO chain (no escrow/stake/anchor/fees) — yet is STILL
+# scored (quorum/canary verification + signed receipts + reputation). Settlement
+# and scoring are decoupled: turning the chain off never turns scoring off.
+#
+# Per-job payment mode resolves (highest precedence first):
+#   1. per-call SQL override   p2p_query(..., payment => 'free'|'paid'|'auto')
+#   2. data-class policy        ('auto' => public:free, internal/sensitive:paid)
+#   3. economics.default_payment (below)
+#   4. economics.enabled        (false => always free, no chain)
+[economics]
+enabled         = false                    # master switch (false = free, no chain)
+settlement      = "noop"                   # "noop" | "channel" | "onchain"
+custody         = "noncustodial"           # v1: code-governed contracts, no platform wallet
+accounting_unit = "ton"                    # v1: price AND settle natively in TON (no oracle)
+chain           = "ton"
+network         = "mainnet"                # "-239" mainnet / "-3" testnet
+default_payment = "auto"                   # free | paid | auto (per-call overridable)
+# fee_recipient = "EQ...treasury"          # platform fee-recipient (REQUIRED once
+                                           # enabled = true AND settlement != "noop")
+
+[economics.stake]
+min_stake               = 0                # 0 = permissionless/free tier (public only)
+min_stake_internal      = 100              # per-class minimums (whole TON)
+min_stake_sensitive     = 1000
+stake_cap               = 100000          # ranking ceiling (anti-centralization)
+unbonding_secs          = 604800          # MUST be >= slashing.challenge_window_secs
+receipt_jetton          = true            # mint 1:1 TEP-74 stake-receipt jetton (§8.5)
+receipt_transfer_locked = true            # receipt non-transferable while bonded (anti-exit)
+
+[economics.ranking]
+w_quality = 0.6
+w_stake   = 0.15                           # diminishing + capped (StakeFactor, §5.2)
+w_price   = 0.25
+
+[economics.quality]                        # provider quality score Q weights (§4.1)
+w_success      = 0.5
+w_latency      = 0.2
+w_throughput   = 0.2
+w_completion   = 0.1
+latency_ref_ms = 5000
+bytes_ref      = 1073741824                # 1 GiB reference for log throughput scaling
+
+[economics.selection]
+n_public                = 3                # default N for public/low-value jobs
+n_default               = 5                # default N for internal/high-value jobs
+n_max                   = 10               # ceiling on requester overrides
+requester_overridable   = true
+checksum_min            = 3                # min matching results to accept (safety floor)
+checksum_allow_degraded = true            # if < checksum_min respond, proceed + flag
+
+[economics.fees]
+platform_fee_pct              = 0.02
+verification_surcharge_pct    = 0.05
+participation_commission_frac = 0.02       # kappa: fixed cut of winner payout per agreeing node
+bonus_aggressiveness          = 0.5        # rho: escrow slack funding the perf bonus
+lambda_quality                = 0.5        # blend of quality vs speed in the bonus
+lambda_speed                  = 0.5
+
+[economics.slashing]
+slash_wrong_result_pct = 0.15
+slash_cheat_pct        = 1.0
+slash_downtime_pct     = 0.02
+slash_equivocation_pct = 0.5
+challenge_window_secs  = 86400             # optimistic-settlement window
+slash_to_challenger    = 0.4               # split of slashed funds (must sum to 1.0)
+slash_to_redundancy    = 0.3
+slash_to_burn          = 0.2
+slash_to_treasury      = 0.1
+
+[economics.records]
+epoch_secs        = 60                      # how often the receipt Merkle root is anchored
+anchor_quorum_pct = 0.66                    # stake-weighted signers needed to accept a root

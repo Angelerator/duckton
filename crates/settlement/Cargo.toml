@@ -1,0 +1,29 @@
+[package]
+name = "p2p-settlement"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "p2p_settlement"
+path = "src/lib.rs"
+
+[features]
+# Live TON RPC client (HTTP/toncenter). Off by default: the crate builds and is
+# fully unit-tested (serialization/ABI, ton_proof, merkle, mock + noop impls)
+# without any network dependency. Live calls are gated behind this feature.
+# Enabling it pulls in `serde_json` (only) to parse Toncenter get-method
+# responses in the `tests/testnet_live.rs` integration test, which shells out to
+# `curl` for transport — no async runtime / HTTP crate is added.
+ton-live = ["dep:serde_json"]
+
+[dependencies]
+blake3 = "1.8.5"
+ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
+hex = "0.4.3"
+p2p-config = { version = "0.1.0", path = "../config" }
+p2p-proto = { version = "0.1.0", path = "../proto" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", optional = true }
+sha2 = "0.10.9"
+thiserror = "2.0.18"

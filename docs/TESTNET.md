@@ -1,0 +1,377 @@
+# TON testnet — deploy + live end-to-end runbook
+
+This is a **turnkey** runbook for taking the on-chain economic/settlement layer
+of the P2P DuckDB-over-QUIC grid live on the **TON testnet**. The contracts
+(`StakeVault`, `StakeReceiptWallet`, `JobEscrow`, `RecordAnchor`) live in
+[`ton/`](../ton) (Tolk, built/tested with Acton 1.1.0); the off-chain settlement
+logic (message ABI, `ton_proof` binding, Merkle proofs) lives in
+[`crates/settlement`](../crates/settlement). See
+[`docs/BLOCKCHAIN_ECONOMICS.md`](BLOCKCHAIN_ECONOMICS.md) for the full design.
+
+Everything is driven by **one** script — [`scripts/testnet_e2e.sh`](../scripts/testnet_e2e.sh) —
+which deploys, verifies, points config at the deployed addresses, and runs the
+full live scenario. **You only need to supply a funded testnet wallet + a
+Toncenter testnet API key.** Nothing here touches a network until you run the
+script with those inputs.
+
+> **Honesty note.** Nothing in this repository has been run against a live
+> network. The scenario was validated end-to-end in Acton's **local emulator**
+> against the real compiled contracts (deposit → settle → anchor → inclusion →
+> dispute all pass), the harness is `bash -n`-clean, and the `ton-live` Rust test
+> compiles and is a no-op without testnet env. The live testnet run requires
+> your wallet + RPC.
+
+---
+
+## 0. What the harness does (the live loop)
+
+`scripts/testnet_e2e.sh`, against testnet:
+
+1. **imports** your wallet (idempotent), **builds** the contracts (`acton build`)
+   and the loadable **DuckDB extension** (`scripts/build_extension.sh`);
+2. runs a **real DuckDB query through the loaded extension** and hashes the
+   result — this hash becomes the escrow's HTLC lock and the anchored epoch leaf;
+3. verifies the **`ton_proof` two-way wallet↔node binding** (pure-Rust Ed25519 +
+   sha256, both directions) and computes an on-chain binding hash;
+4. **deploys** the three contracts: `StakeVault` (+ its receipt-jetton master),
+   `RecordAnchor`, `JobEscrow` (opened with the locked bid `B`, HTLC-locked on the
+   query result hash);
+5. runs **`acton verify`** on each (source ↔ published bytecode);
+6. **records** the deployed addresses into a generated config file;
+7. runs the **live scenario** in one broadcast session:
+   stake deposit → wallet-bind anchored on-chain → escrow settle (winner +
+   platform fee + participation commissions, remainder refunded) → anchor epoch
+   root → on-chain Merkle inclusion proof → *optional* bonded dispute;
+8. prints a **PASS/FAIL summary with `testnet.tonviewer.com` links**;
+9. *(optional)* runs the **`ton-live`-gated Rust test** against the live RPC.
+
+It is **re-runnable**: the wallet import is idempotent, `StakeVault`/`RecordAnchor`
+have deterministic addresses (re-deploy is a harmless top-up), the anchor epoch
+is read from chain and advanced by one each run, and each run opens a **fresh**
+escrow (its address varies with the per-run deadline) so settle always targets an
+unsettled escrow.
+
+---
+
+## 1. Prerequisites
+
+| Tool | Why | Install |
+|---|---|---|
+| **Acton 1.1.0** | build/deploy/verify the Tolk contracts | `curl -LsSf https://github.com/ton-blockchain/acton/releases/latest/download/acton-installer.sh \| sh` |
+| **DuckDB CLI** | run the real query through the extension | <https://duckdb.org/docs/installation> |
+| **Rust toolchain** | build the extension + run the `ton_proof`/`ton-live` tests | <https://rustup.rs> |
+| **curl, jq** | RPC reads + parse Acton JSON | usually preinstalled |
+| **sha256sum / shasum** | hash the query result | usually preinstalled |
+
+### macOS: the engine needs the SDK path
+
+Acton's execution engine and the extension build both need the macOS SDK path:
+
+```bash
+export SDKROOT="$(xcrun --show-sdk-path)"
+```
+
+The harness sets this for you if it's unset, but export it in your shell if you
+run the underlying commands by hand.
+
+---
+
+## 2. Create + fund a testnet wallet
+
+You can let Acton create one, or import an existing mnemonic.
+
+```bash
+# create a fresh testnet wallet and request faucet GRAM
+acton wallet new --name deployer --local --version v5r1 --airdrop
+
+# or import an existing 24-word mnemonic
+acton wallet import --name deployer --local --version v5r1 "word1 word2 ... word24"
+```
+
+> The harness imports the mnemonic for you (under the name `deployer` by
+> default), so for the turnkey path you only need the **mnemonic string** — see
+> §4. The wallet **must hold testnet GRAM**.
+
+**Fund it** (a few test-GRAM is plenty for the whole loop — defaults are tiny):
+
+- Telegram faucet: **[@testgiver_ton_bot](https://t.me/testgiver_ton_bot)** — send your wallet address.
+- or `acton wallet airdrop deployer --net testnet` (PoW faucet; may be rate-limited).
+
+Check the balance:
+
+```bash
+acton wallet list --balance
+```
+
+Treat the mnemonic like a real secret — **never commit it to git** (testnet GRAM
+has no value, but the habit matters).
+
+## 3. Get a Toncenter testnet API key
+
+Acton and the `ton-live` Rust test talk to Toncenter testnet. Without a key you
+are throttled to ~1 RPS (slow, but works — pass `ALLOW_NO_API_KEY=1`).
+
+- Get a **testnet** key from **[@tonapibot](https://t.me/tonapibot)** (or [@toncenter](https://t.me/toncenter)).
+- The default RPC endpoint is `https://testnet.toncenter.com/api/v2`.
+
+---
+
+## 4. Inputs the harness reads (env vars / config file)
+
+Set these as environment variables, or put them in a file and pass
+`--config <file>` (a `scripts/testnet_e2e.env` next to the script is auto-loaded).
+**Keep that file out of git** (add it to `.gitignore`).
+
+### Required
+
+| Variable | Meaning |
+|---|---|
+| `TON_TESTNET_MNEMONIC` | 24-word (or 12) wallet mnemonic, space-separated |
+| `TON_TESTNET_MNEMONIC_FILE` | …or a path to a file containing the mnemonic (use instead of the above) |
+
+### Recommended
+
+| Variable | Meaning |
+|---|---|
+| `TON_TESTNET_API_KEY` | Toncenter **testnet** API key (exported to Acton as `TONCENTER_TESTNET_API_KEY`) |
+
+### Optional (defaults shown)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TON_TESTNET_RPC` | `https://testnet.toncenter.com/api/v2` | RPC endpoint used by the live RPC reads + the `ton-live` Rust test |
+| `WALLET_NAME` | `deployer` | Acton wallet name the Tolk scripts resolve (`scripts.wallet("deployer")`) |
+| `WALLET_VERSION` | `v5r1` | wallet contract version for import |
+| `OUT_DIR` | `ton/deployments` | where generated config/addresses/logs are written |
+| `NODE_ID` | `b3:demo-node` | node id folded into the on-chain binding hash |
+| `STAKE_DEPOSIT_AMOUNT` | `100000000` (0.1 TON) | nanoton to bond into `StakeVault` |
+| `ESCROW_AMOUNT` | `300000000` (0.3 TON) | nanoton locked in the per-job escrow (`B`) |
+| `ESCROW_WINDOW_SECS` | `3600` | refund-on-timeout window |
+| `SETTLE_WINNER_AMOUNT` | `100000000` (0.1 TON) | winner base + bonus payout |
+| `SETTLE_FEE` | `20000000` (0.02 TON) | platform fee to the treasury |
+| `SETTLE_PARTICIPANT_AMOUNT` | `20000000` (0.02 TON) | participation commission to an agreeing non-winner |
+| `E2E_RUN_DISPUTE` | `0` | set `1` to also run the bonded dispute round |
+| `DISPUTE_BOND` | `200000000` (0.2 TON) | challenger bond when the dispute round runs |
+| `SKIP_EXTENSION_BUILD` | `0` | set `1` to reuse an existing `dist/` extension |
+| `SKIP_VERIFY` | `0` | set `1` to skip `acton verify` |
+| `RUN_RUST_LIVE_TEST` | `0` | set `1` to run the `ton-live` Rust test at the end |
+| `DUCKDB_QUERY_FILE` | *(built-in)* | path to your own `.sql` to run through the extension |
+| `ALLOW_NO_API_KEY` | `0` | set `1` to run keyless (throttled) |
+
+> All amounts are **nanoton** (1 TON = 1e9). Defaults are intentionally tiny, and
+> the winner/treasury/participant all default to **your own wallet**, so funds
+> cycle back to you.
+
+---
+
+## 5. Run it
+
+```bash
+# minimal (export inline)
+TON_TESTNET_MNEMONIC="word1 word2 ... word24" \
+TON_TESTNET_API_KEY="your-testnet-key" \
+  scripts/testnet_e2e.sh
+```
+
+Or with a config file (recommended — keeps secrets out of shell history):
+
+```bash
+cat > scripts/testnet_e2e.env <<'EOF'
+TON_TESTNET_MNEMONIC="word1 word2 ... word24"
+TON_TESTNET_API_KEY="your-testnet-key"
+# TON_TESTNET_RPC="https://testnet.toncenter.com/api/v2"
+# E2E_RUN_DISPUTE=1
+# RUN_RUST_LIVE_TEST=1
+EOF
+echo "scripts/testnet_e2e.env" >> .gitignore
+
+scripts/testnet_e2e.sh                 # auto-loads scripts/testnet_e2e.env
+# or: scripts/testnet_e2e.sh --config /path/to/other.env
+```
+
+The harness deploys and runs everything, then prints a summary like:
+
+```text
+== SUMMARY ==
+Network:      testnet
+Wallet:       kQ...deployer
+StakeVault:   kQ...vault
+                https://testnet.tonviewer.com/kQ...vault
+RecordAnchor: kQ...anchor
+                https://testnet.tonviewer.com/kQ...anchor
+JobEscrow:    kQ...escrow
+                https://testnet.tonviewer.com/kQ...escrow
+Result hash:  0x<64-hex>
+Config:       ton/deployments/testnet.env
+              ton/deployments/economics.testnet.toml
+
+Checks:
+  PASS  ton_proof binding crypto
+  PASS  stake deposit (staked=100000000)
+  PASS  escrow settle (HTLC release)
+  PASS  anchor epoch root (epoch=1)
+  PASS  inclusion proof verified on-chain
+  PASS  wallet-bind anchored on-chain
+  PASS  verify StakeVault
+  ...
+ ALL CHECKS PASSED
+```
+
+Per-step Acton transaction traces and `acton verify` output are saved under
+`ton/deployments/logs/`.
+
+---
+
+## 6. Pointing the node config at the deployed contracts
+
+The harness writes two files into `OUT_DIR` (default `ton/deployments/`):
+
+- **`testnet.env`** — machine-readable addresses, sourced by re-runs and the
+  `ton-live` Rust test:
+
+  ```bash
+  set -a; . ton/deployments/testnet.env; set +a
+  # exports TON_TESTNET_{VAULT,ANCHOR,ESCROW}_ADDR, TON_TESTNET_RPC, TON_TESTNET_RESULT_HASH, ...
+  ```
+
+- **`economics.testnet.toml`** — a node `[economics]` snippet pointed at testnet
+  with your wallet as the fee recipient. Merge it into your node config or point
+  the node at it via `P2P_CONFIG`:
+
+  ```toml
+  [economics]
+  enabled         = true
+  settlement      = "onchain"
+  network         = "testnet"
+  default_payment = "paid"
+  fee_recipient   = "kQ...your-wallet"
+  ```
+
+> **Gap (needs a follow-up edit to `crates/config`).** `crates/config`'s
+> `[economics]` section currently has **no per-contract address field**, so the
+> deployed `StakeVault`/`JobEscrow`/`RecordAnchor` addresses cannot yet be set in
+> the node TOML directly. The harness surfaces them via `testnet.env`
+> (`TON_TESTNET_*_ADDR`) and the generated TOML includes a **proposed**
+> `[economics.contracts]` block (commented out). Wiring that block into
+> `crates/config` (a new `EconomicsConfig.contracts` struct + plumbing into the
+> `ton` settlement constructors) is the one remaining change needed for the node
+> to drive these contracts directly from config. It was intentionally left out
+> here because `crates/config` is owned by a concurrent worker.
+
+---
+
+## 7. The `ton-live` Rust integration test
+
+A Rust test exercises the `ton` settlement impl (message ABI + the `TonRpc`
+read seam) against the live RPC. It is **gated behind the `ton-live` feature**, so
+it is a **no-op in normal CI** (`cargo test --workspace` never compiles it), and
+even with the feature on it **skips** unless the testnet env is set.
+
+```bash
+# normal CI — testnet_live.rs is not compiled, nothing changes:
+cargo test --workspace
+
+# run the live test (after a harness run wrote testnet.env):
+set -a; . ton/deployments/testnet.env; set +a
+cargo test -p p2p-settlement --features ton-live --test testnet_live -- --nocapture
+```
+
+It reads `TON_TESTNET_RPC`, `TON_TESTNET_API_KEY`, and
+`TON_TESTNET_{VAULT,ANCHOR,ESCROW}_ADDR`, then:
+
+- pins the on-chain message ABI (opcodes + byte layout) — runs always;
+- reads `get_vault_state` / `get_anchor_state` from the **real deployed
+  contracts** over Toncenter via the `TonRpc` seam (skipped if env absent);
+- documents the boundary that **broadcasting** signed wallet transactions is the
+  Acton harness's job, not the Rust seam's.
+
+The harness can run it for you at the end with `RUN_RUST_LIVE_TEST=1`.
+
+---
+
+## 8. Confirm on the explorer
+
+Open the printed `https://testnet.tonviewer.com/<address>` links and confirm:
+
+- **StakeVault** — balance reflects the bonded deposit; `get_vault_state` shows
+  `staked > 0`, `eligible = true`; the receipt-jetton wallet was minted.
+- **JobEscrow** — `settled = true`; outgoing messages show the winner payout, the
+  platform fee to the treasury, the participation commission, and the refund of
+  the unspent escrow slack to the requester.
+- **RecordAnchor** — `get_anchor_state` shows the advanced epoch and the anchored
+  root; the inclusion proof get-method returns `true`.
+
+You can also retrace any transaction locally with Acton:
+
+```bash
+acton rpc info   <ADDRESS> --net testnet
+acton rpc trace  <TX_HASH> --net testnet
+acton retrace    <TX_HASH> --net testnet --contract StakeVault
+```
+
+---
+
+## 9. Running pieces by hand (optional)
+
+The harness wraps these; run them individually for debugging. From `ton/`:
+
+```bash
+export SDKROOT="$(xcrun --show-sdk-path)"
+acton build
+
+# deploy (each prints "Deployed <Contract> to <addr>")
+STAKE_BINDING_HASH=0x<hash> acton script scripts/deploy_stake.tolk  --net testnet
+ANCHOR_BOND_MIN=100000000   acton script scripts/deploy_anchor.tolk --net testnet
+ESCROW_AMOUNT=300000000 ESCROW_DEADLINE=$(( $(date +%s)+3600 )) \
+  ESCROW_EXPECTED_HASH=0x<hash> acton script scripts/deploy_escrow.tolk --net testnet
+
+# verify
+acton verify StakeVault   --address <addr> --net testnet
+acton verify RecordAnchor --address <addr> --net testnet
+acton verify JobEscrow    --address <addr> --net testnet
+
+# the live scenario over already-deployed addresses
+VAULT_ADDR=<addr> ESCROW_ADDR=<addr> ANCHOR_ADDR=<addr> \
+  SETTLE_RESULT_HASH=0x<hash> ANCHOR_ROOT=0x<hash> ANCHOR_LEAF=0x<hash> \
+  acton script scripts/e2e_testnet.tolk --net testnet
+```
+
+There are matching `[scripts]` aliases in `ton/Acton.toml`
+(`deploy-stake-testnet`, `deploy-anchor-testnet`, `deploy-escrow-testnet`,
+`e2e-testnet`).
+
+---
+
+## 10. Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `missing required tool: acton` | install Acton (see §1) and ensure `~/.acton/bin` is on `PATH`. |
+| `acton build` fails on macOS with SDK errors | `export SDKROOT="$(xcrun --show-sdk-path)"`. |
+| extension build fails | run `SDKROOT=$(xcrun --show-sdk-path) scripts/build_extension.sh` directly and read the error; needs the Rust toolchain + DuckDB headers. |
+| `set TON_TESTNET_MNEMONIC ...` | export the mnemonic (or `TON_TESTNET_MNEMONIC_FILE`). |
+| `set TON_TESTNET_API_KEY ...` | get a testnet key from [@tonapibot](https://t.me/tonapibot), or pass `ALLOW_NO_API_KEY=1` to run keyless (slow). |
+| Toncenter `429 Too Many Requests` / very slow | you are keyless or over quota — set `TON_TESTNET_API_KEY`; Acton waits to respect ~1 RPS without a key. |
+| `Range check error` while deploying escrow | the deadline must fit `uint32` (a real unix timestamp does; the harness computes `date +%s + window`). |
+| deploy succeeds but "failed to parse … address" | the deploy log line format changed; inspect `ton/deployments/logs/deploy_*.log`. |
+| `exit code 137 (NOT_ENOUGH_GAS)` on deposit | the wallet/contract is underfunded — top up via the faucet; deposit value must cover `amount + 0.05 TON` storage + gas. |
+| `exit code 222 (NOT_ARBITER)` on settle | the settling wallet isn't the escrow arbiter — the harness uses your wallet for both; if running by hand, set `ESCROW_ARBITER` to the same wallet that settles. |
+| `exit code 223 (HASH_MISMATCH)` on settle | `SETTLE_RESULT_HASH` must equal the escrow's `ESCROW_EXPECTED_HASH` (the harness reuses the query result hash for both). |
+| `exit code 224 (ALREADY_SETTLED)` | you re-settled the same escrow — re-run the harness (it opens a fresh escrow per run via a new deadline). |
+| `exit code 241 (EPOCH_REGRESSION)` / `240 (BAD_PREV_ROOT)` on anchor | the submitted epoch must be `currentEpoch + 1` chained to `lastRoot` — the harness reads chain state and advances automatically; by hand, read `get_anchor_state` first. |
+| `exit code 244 (DISPUTE_BOND_TOO_LOW)` | raise `DISPUTE_BOND` above the anchor's `disputeBondMin` (the harness deploys the anchor with a low `ANCHOR_BOND_MIN` so the optional dispute is cheap). |
+| `acton verify` fails or stalls | the verifier backend can be transient; the harness records it as a non-fatal check. Re-run `acton verify <C> --address <addr> --net testnet`. |
+| `wallet import failed` | check the word count (12/24) and `WALLET_VERSION`; remove a stale entry with `acton wallet remove -y deployer` and re-run. |
+| Rust live test "SKIP" lines | expected unless `TON_TESTNET_RPC` + `TON_TESTNET_*_ADDR` are set — source `ton/deployments/testnet.env` first. |
+
+---
+
+## 11. Cost & safety notes
+
+- Testnet GRAM has no value, but the mnemonic deserves real-secret hygiene.
+- The whole loop costs a fraction of a TON in gas + the (recoverable) escrow `B`
+  and dispute bond; defaults keep totals well under ~1 test-GRAM.
+- All payouts default to **your own wallet**, so deposits/escrow/bond largely
+  return to you (minus gas).
+- The contracts are strictly **non-custodial**: no platform key can seize funds;
+  the harness only ever sends from your wallet.

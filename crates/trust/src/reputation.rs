@@ -1,0 +1,356 @@
+//! Reputation & trust scoring (architecture §7.3 / §7.5).
+//!
+//! Reputation is a **recency-weighted correctness rate** built from verified
+//! receipts:  `R = Σ wᵢ·correctᵢ / Σ wᵢ`,  `wᵢ = decay^age · job_weight`.
+//!
+//! The store is **pluggable** behind [`TrustStore`] so tests use the in-memory
+//! implementation while production can use a persistent embedded store. All
+//! caches are **bounded** (per [`p2p_config::LimitsConfig`]) — no unbounded maps.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use p2p_config::{LimitsConfig, ReputationWeights, TrustConfig};
+use p2p_proto::{AttestationLevel, NodeId, Receipt, Verdict};
+
+/// Current unix-seconds timestamp.
+pub fn now_ts() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// One recorded outcome for a worker.
+#[derive(Debug, Clone, Copy)]
+struct Observation {
+    ts: u64,
+    correct: bool,
+    weight: f64,
+}
+
+/// Pluggable reputation/receipt store.
+///
+/// Implementations must be cheap to share (`Arc<dyn TrustStore>`); methods take
+/// `&self` and handle their own interior synchronization.
+pub trait TrustStore: Send + Sync {
+    /// Ingest a verified receipt (caller must have checked the signature).
+    fn record(&self, receipt: &Receipt);
+    /// Recency-weighted correctness rate in `[0,1]` for a worker (`now` = clock).
+    fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64>;
+    /// Number of recorded observations for a worker.
+    fn observation_count(&self, worker: &NodeId) -> usize;
+    /// Add voucher trust to a worker (Phase 3 web-of-trust).
+    fn add_vouch(&self, worker: &NodeId, weight: f64);
+    /// Total voucher trust accrued for a worker.
+    fn voucher_trust(&self, worker: &NodeId) -> f64;
+    /// Apply a penalty (e.g. failed canary).
+    fn penalize(&self, worker: &NodeId, amount: f64);
+    /// Accumulated penalty for a worker.
+    fn penalty(&self, worker: &NodeId) -> f64;
+    /// Number of distinct workers currently tracked.
+    fn tracked_workers(&self) -> usize;
+}
+
+struct WorkerState {
+    observations: VecDeque<Observation>,
+    voucher_trust: f64,
+    penalty: f64,
+}
+
+impl WorkerState {
+    fn new() -> Self {
+        Self {
+            observations: VecDeque::new(),
+            voucher_trust: 0.0,
+            penalty: 0.0,
+        }
+    }
+}
+
+/// In-memory bounded trust store. Suitable for tests and single-process nodes.
+/// Per-worker observation history is capped; the number of tracked workers is
+/// capped with FIFO eviction.
+pub struct InMemoryTrustStore {
+    inner: Mutex<Inner>,
+    half_life_secs: f64,
+    max_obs_per_worker: usize,
+    max_workers: usize,
+}
+
+struct Inner {
+    workers: HashMap<NodeId, WorkerState>,
+    /// Insertion order for FIFO eviction when over `max_workers`.
+    order: VecDeque<NodeId>,
+}
+
+impl InMemoryTrustStore {
+    pub fn new(trust: &TrustConfig, limits: &LimitsConfig) -> Self {
+        Self {
+            inner: Mutex::new(Inner {
+                workers: HashMap::new(),
+                order: VecDeque::new(),
+            }),
+            half_life_secs: trust.reputation_half_life_secs as f64,
+            max_obs_per_worker: limits.receipt_cache_per_worker.max(1),
+            max_workers: limits.trust_store_capacity.max(1),
+        }
+    }
+
+    fn decay_weight(&self, age_secs: f64) -> f64 {
+        if self.half_life_secs <= 0.0 {
+            1.0
+        } else {
+            0.5f64.powf(age_secs.max(0.0) / self.half_life_secs)
+        }
+    }
+
+    fn with_worker<R>(&self, worker: &NodeId, f: impl FnOnce(&mut WorkerState) -> R) -> R {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.workers.contains_key(worker) {
+            // evict FIFO if at capacity
+            while inner.order.len() >= self.max_workers {
+                if let Some(evict) = inner.order.pop_front() {
+                    inner.workers.remove(&evict);
+                } else {
+                    break;
+                }
+            }
+            inner.workers.insert(worker.clone(), WorkerState::new());
+            inner.order.push_back(worker.clone());
+        }
+        let state = inner.workers.get_mut(worker).expect("just inserted");
+        f(state)
+    }
+}
+
+impl TrustStore for InMemoryTrustStore {
+    fn record(&self, receipt: &Receipt) {
+        let correct = matches!(receipt.verdict, Verdict::Correct);
+        let cap = self.max_obs_per_worker;
+        self.with_worker(&receipt.worker_id, |state| {
+            state.observations.push_back(Observation {
+                ts: receipt.ts,
+                correct,
+                weight: 1.0,
+            });
+            while state.observations.len() > cap {
+                state.observations.pop_front();
+            }
+        });
+    }
+
+    fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64> {
+        let inner = self.inner.lock().unwrap();
+        let state = inner.workers.get(worker)?;
+        if state.observations.is_empty() {
+            return None;
+        }
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for o in &state.observations {
+            let age = now.saturating_sub(o.ts) as f64;
+            let w = o.weight * self.decay_weight(age);
+            den += w;
+            if o.correct {
+                num += w;
+            }
+        }
+        if den == 0.0 {
+            None
+        } else {
+            Some(num / den)
+        }
+    }
+
+    fn observation_count(&self, worker: &NodeId) -> usize {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .workers
+            .get(worker)
+            .map(|s| s.observations.len())
+            .unwrap_or(0)
+    }
+
+    fn add_vouch(&self, worker: &NodeId, weight: f64) {
+        self.with_worker(worker, |s| s.voucher_trust += weight);
+    }
+
+    fn voucher_trust(&self, worker: &NodeId) -> f64 {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .workers
+            .get(worker)
+            .map(|s| s.voucher_trust)
+            .unwrap_or(0.0)
+    }
+
+    fn penalize(&self, worker: &NodeId, amount: f64) {
+        self.with_worker(worker, |s| s.penalty += amount);
+    }
+
+    fn penalty(&self, worker: &NodeId) -> f64 {
+        let inner = self.inner.lock().unwrap();
+        inner.workers.get(worker).map(|s| s.penalty).unwrap_or(0.0)
+    }
+
+    fn tracked_workers(&self) -> usize {
+        self.inner.lock().unwrap().workers.len()
+    }
+}
+
+/// Hard attestation gate (architecture §7.5): `actual >= required`.
+pub fn attestation_gate(actual: AttestationLevel, required: AttestationLevel) -> bool {
+    actual >= required
+}
+
+/// Inputs to the soft trust score for one worker.
+#[derive(Debug, Clone, Copy)]
+pub struct TrustInputs {
+    /// Recency-weighted reputation `R` in `[0,1]` (or bootstrap value if none).
+    pub reputation: f64,
+    /// Age/history factor in `[0,1]` (more verified history ⇒ closer to 1).
+    pub age_factor: f64,
+    /// Voucher trust contribution in `[0,1]`.
+    pub voucher_trust: f64,
+    /// Stake contribution in `[0,1]`.
+    pub stake_factor: f64,
+    /// Penalties to subtract (>= 0).
+    pub penalties: f64,
+}
+
+/// Compute the soft trust score: `clamp(α·R + β·age + γ·voucher + δ·stake − pen, 0, 1)`.
+pub fn soft_trust_score(weights: &ReputationWeights, inputs: &TrustInputs) -> f64 {
+    let raw = weights.alpha_reputation * inputs.reputation
+        + weights.beta_age * inputs.age_factor
+        + weights.gamma_voucher * inputs.voucher_trust
+        + weights.delta_stake * inputs.stake_factor
+        - inputs.penalties;
+    raw.clamp(0.0, 1.0)
+}
+
+/// Map observation count to an age/history factor in `[0,1]` saturating at
+/// `saturate_at` observations.
+pub fn age_factor(observations: usize, saturate_at: usize) -> f64 {
+    if saturate_at == 0 {
+        return 1.0;
+    }
+    (observations as f64 / saturate_at as f64).min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p2p_proto::{JobId, QueryHash};
+
+    fn store() -> InMemoryTrustStore {
+        InMemoryTrustStore::new(&TrustConfig::default(), &LimitsConfig::default())
+    }
+
+    fn receipt(worker: &str, verdict: Verdict, ts: u64) -> Receipt {
+        Receipt {
+            job_id: JobId::new(),
+            worker_id: NodeId(worker.into()),
+            requester_id: NodeId("b3:req".into()),
+            query_hash: QueryHash::compute("SELECT 1", "t"),
+            result_hash: "h".into(),
+            verdict,
+            latency_ms: 1,
+            ts,
+            requester_pubkey: String::new(),
+            sig: String::new(),
+        }
+    }
+
+    #[test]
+    fn reputation_is_fraction_correct() {
+        let s = store();
+        let w = NodeId("b3:w".into());
+        s.record(&receipt("b3:w", Verdict::Correct, 100));
+        s.record(&receipt("b3:w", Verdict::Correct, 100));
+        s.record(&receipt("b3:w", Verdict::Incorrect, 100));
+        let r = s.reputation(&w, 100).unwrap();
+        assert!((r - 2.0 / 3.0).abs() < 1e-9, "got {r}");
+    }
+
+    #[test]
+    fn recency_weights_recent_more() {
+        let s = store();
+        let w = NodeId("b3:w".into());
+        // old incorrect, recent correct; with decay the recent should dominate.
+        s.record(&receipt("b3:w", Verdict::Incorrect, 0));
+        s.record(&receipt("b3:w", Verdict::Correct, 7 * 24 * 3600));
+        // now equals the recent ts; old observation is one half-life back.
+        let r = s.reputation(&w, 7 * 24 * 3600).unwrap();
+        assert!(r > 0.6, "recent correct should dominate, got {r}");
+    }
+
+    #[test]
+    fn unknown_worker_has_no_reputation() {
+        let s = store();
+        assert!(s.reputation(&NodeId("b3:nope".into()), 0).is_none());
+    }
+
+    #[test]
+    fn observation_history_is_bounded() {
+        let trust = TrustConfig::default();
+        let limits = LimitsConfig {
+            receipt_cache_per_worker: 4,
+            ..LimitsConfig::default()
+        };
+        let s = InMemoryTrustStore::new(&trust, &limits);
+        for _ in 0..100 {
+            s.record(&receipt("b3:w", Verdict::Correct, 1));
+        }
+        assert_eq!(s.observation_count(&NodeId("b3:w".into())), 4);
+    }
+
+    #[test]
+    fn worker_count_is_bounded_with_eviction() {
+        let trust = TrustConfig::default();
+        let limits = LimitsConfig {
+            trust_store_capacity: 3,
+            ..LimitsConfig::default()
+        };
+        let s = InMemoryTrustStore::new(&trust, &limits);
+        for i in 0..10 {
+            s.record(&receipt(&format!("b3:w{i}"), Verdict::Correct, 1));
+        }
+        assert_eq!(s.tracked_workers(), 3);
+    }
+
+    #[test]
+    fn attestation_gate_enforces_minimum() {
+        assert!(attestation_gate(AttestationLevel::L2, AttestationLevel::L1));
+        assert!(attestation_gate(AttestationLevel::L1, AttestationLevel::L1));
+        assert!(!attestation_gate(AttestationLevel::L0, AttestationLevel::L1));
+    }
+
+    #[test]
+    fn soft_score_clamps_and_penalizes() {
+        let w = ReputationWeights::default();
+        let high = soft_trust_score(
+            &w,
+            &TrustInputs {
+                reputation: 1.0,
+                age_factor: 1.0,
+                voucher_trust: 1.0,
+                stake_factor: 1.0,
+                penalties: 0.0,
+            },
+        );
+        assert!((high - 1.0).abs() < 1e-9);
+        let penalized = soft_trust_score(
+            &w,
+            &TrustInputs {
+                reputation: 1.0,
+                age_factor: 1.0,
+                voucher_trust: 1.0,
+                stake_factor: 1.0,
+                penalties: 5.0,
+            },
+        );
+        assert_eq!(penalized, 0.0);
+    }
+}

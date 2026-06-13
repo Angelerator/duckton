@@ -1,0 +1,20 @@
+[package]
+name = "p2p-extension"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "duckdb_p2p"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+# `loadable-extension` builds against the stable DuckDB **C extension API**
+# (the API pointer is supplied at LOAD time), so we do not link/compile the whole
+# engine into the cdylib.
+duckdb = { version = "1.10503.1", default-features = false, features = ["loadable-extension"] }
+duckdb-loadable-macros = "1.10503.1"
+p2p-config = { version = "0.1.0", path = "../config" }
+p2p-proto = { version = "0.1.0", path = "../proto" }
+p2p-trust = { version = "0.1.0", path = "../trust" }

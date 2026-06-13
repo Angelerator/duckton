@@ -1,0 +1,59 @@
+[package]
+name = "p2p-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "p2p_node"
+path = "src/lib.rs"
+
+[features]
+default = ["discovery-libp2p"]
+# Real locked-down DuckDB execution engine (bundles + compiles DuckDB from
+# source). Off by default so the protocol/trust tests build fast with the mock.
+duckdb-engine = ["dep:duckdb"]
+# Real libp2p (Kademlia DHT + gossipsub) cross-swarm discovery propagation.
+# On by default; disable with `--no-default-features` for a slim build that uses
+# only the static / in-memory `Discovery` impls.
+discovery-libp2p = ["dep:libp2p"]
+
+[dependencies]
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+blake3 = "1.8.5"
+duckdb = { version = "1.10503.1", features = ["bundled", "parquet", "json"], optional = true }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures-util = "0.3.32"
+hex = "0.4.3"
+lz4_flex = { version = "0.11.3", default-features = false, features = ["std"] }
+zstd = "0.13.2"
+p2p-config = { version = "0.1.0", path = "../config" }
+p2p-proto = { version = "0.1.0", path = "../proto" }
+p2p-settlement = { version = "0.1.0", path = "../settlement" }
+p2p-transport = { version = "0.1.0", path = "../transport" }
+p2p-trust = { version = "0.1.0", path = "../trust" }
+rand = "0.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tracing = "0.1.44"
+libp2p = { version = "0.56.0", default-features = false, features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "macros"], optional = true }
+
+# OS-level sandbox resource enforcement. Unix uses POSIX `setrlimit` (libc);
+# Windows uses Job Objects (windows-sys). Both are target-gated so neither is
+# compiled — nor required — on the other family's builds (degrades to a no-op
+# sandbox elsewhere). The pure policy/profile builders are platform-independent.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.186"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
