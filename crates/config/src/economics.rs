@@ -52,6 +52,9 @@ impl PaymentMode {
 }
 
 /// Settlement rail selector (`[economics].settlement`).
+///
+/// The SQL surface exposes the business-friendly names `noop` | `mock` | `ton`;
+/// `ton` maps to [`SettlementRail::Onchain`] (real per-job on-chain escrow).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SettlementRail {
@@ -61,6 +64,120 @@ pub enum SettlementRail {
     Channel,
     /// Direct per-job on-chain escrow.
     Onchain,
+    /// Deterministic in-memory **mock** rail: exercises the paid code path
+    /// (escrow/settle/anchor) with NO chain and NO funds — for testing/dev.
+    Mock,
+}
+
+/// TON network mode (`[economics].network`). **Testnet is the safe default.**
+/// Selecting/transacting on **mainnet** requires an explicit confirmation
+/// (`economics.mainnet_confirmed`, set via `p2p_economics(network => 'mainnet',
+/// confirm => true)`), because real TON is at stake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TonNetwork {
+    /// TON testnet — free test coins, the safe default.
+    Testnet,
+    /// TON mainnet — **real funds**. Requires explicit opt-in.
+    Mainnet,
+}
+
+impl Default for TonNetwork {
+    fn default() -> Self {
+        // Safe default: never silently put real funds at risk.
+        TonNetwork::Testnet
+    }
+}
+
+impl TonNetwork {
+    /// The canonical lowercase name (`"testnet"` | `"mainnet"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TonNetwork::Testnet => "testnet",
+            TonNetwork::Mainnet => "mainnet",
+        }
+    }
+
+    /// The default toncenter RPC endpoint for this network (overridable via the
+    /// per-network `rpc` setting).
+    pub fn default_rpc(self) -> &'static str {
+        match self {
+            TonNetwork::Testnet => "https://testnet.toncenter.com/api/v2/",
+            TonNetwork::Mainnet => "https://toncenter.com/api/v2/",
+        }
+    }
+
+    /// The default explorer host for this network (used for status/links;
+    /// overridable via the per-network `explorer` setting).
+    pub fn default_explorer(self) -> &'static str {
+        match self {
+            TonNetwork::Testnet => "testnet.tonviewer.com",
+            TonNetwork::Mainnet => "tonviewer.com",
+        }
+    }
+}
+
+/// Deployed contract addresses for one network (`[economics.<net>.contracts]`).
+/// All optional — registered via `p2p_contracts(...)` once contracts are
+/// deployed. Stored **per network** so switching `network` flips to that
+/// network's addresses without reconfiguring.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ContractsConfig {
+    /// `StakeVault` contract address (provider staking).
+    pub stake_vault: Option<String>,
+    /// `JobEscrow` factory/template address (per-job escrow).
+    pub job_escrow: Option<String>,
+    /// `RecordAnchor` contract address (epoch Merkle-root anchoring).
+    pub record_anchor: Option<String>,
+    /// `GlobalParams` contract address (platform-wide economic params, §12). Its
+    /// address is **stable** (params are edited in place), so it is safe to pin.
+    pub global_params: Option<String>,
+}
+
+/// Wallet **references** for one network (`[economics.<net>.wallet]`).
+///
+/// SECURITY: this NEVER stores a raw mnemonic / API key. It stores only a public
+/// address plus a path reference to a `0600` secret file kept OUTSIDE the repo.
+/// The SQL surface redacts secrets everywhere and writes raw inline secrets to a
+/// protected file, persisting only the reference here.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WalletConfig {
+    /// Public wallet address (safe to display).
+    pub address: Option<String>,
+    /// Path to a `0600` file holding the mnemonic (NEVER the mnemonic itself).
+    pub mnemonic_file: Option<String>,
+}
+
+/// Per-network settings (`[economics.testnet]` / `[economics.mainnet]`). Both
+/// networks can be configured simultaneously; the active one is selected by
+/// `economics.network`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NetworkSettings {
+    /// Toncenter RPC endpoint override. `None` ⇒ the per-network default
+    /// ([`TonNetwork::default_rpc`]).
+    pub rpc: Option<String>,
+    /// Explorer host override. `None` ⇒ the per-network default
+    /// ([`TonNetwork::default_explorer`]).
+    pub explorer: Option<String>,
+    /// Path to a `0600` file holding the toncenter API key (NEVER the key itself).
+    pub api_key_file: Option<String>,
+    pub contracts: ContractsConfig,
+    pub wallet: WalletConfig,
+}
+
+/// Pricing knobs (`[economics.pricing]`). Role-appropriate: providers advertise
+/// `unit_price`; requesters cap spend with `max_bid`. Whole-TON units; `0` =
+/// unset (free / no cap).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PricingEconomics {
+    /// Provider's advertised unit price (whole TON per reference unit). `0`=free.
+    pub unit_price: u64,
+    /// Requester's max bid / budget cap (whole TON). `0` = no cap.
+    pub max_bid: u64,
 }
 
 /// Top-level `[economics]` section.
@@ -76,7 +193,13 @@ pub struct EconomicsConfig {
     /// Accounting unit — v1 prices AND settles natively in TON (no USD peg).
     pub accounting_unit: String,
     pub chain: String,
-    pub network: String,
+    /// Active TON network mode. **Defaults to `testnet`** (safe). Switch to
+    /// `mainnet` only with an explicit confirmation (see `mainnet_confirmed`).
+    pub network: TonNetwork,
+    /// Explicit opt-in that mainnet (real funds) is intended. Required before
+    /// selecting/transacting on mainnet; set via
+    /// `p2p_economics(network => 'mainnet', confirm => true)`.
+    pub mainnet_confirmed: bool,
     /// Default payment preference when a call does not specify one.
     pub default_payment: PaymentPref,
     /// Configurable platform fee-recipient (treasury) address. `None` is allowed
@@ -85,10 +208,16 @@ pub struct EconomicsConfig {
     pub stake: StakeEconomics,
     pub ranking: RankingEconomics,
     pub quality: QualityEconomics,
+    pub reputation: ReputationEconomics,
     pub selection: SelectionEconomics,
     pub fees: FeesEconomics,
     pub slashing: SlashingEconomics,
     pub records: RecordsEconomics,
+    pub pricing: PricingEconomics,
+    /// Per-network settings for testnet (addresses/endpoints/wallet refs).
+    pub testnet: NetworkSettings,
+    /// Per-network settings for mainnet (addresses/endpoints/wallet refs).
+    pub mainnet: NetworkSettings,
 }
 
 impl Default for EconomicsConfig {
@@ -99,16 +228,21 @@ impl Default for EconomicsConfig {
             custody: "noncustodial".to_string(),
             accounting_unit: "ton".to_string(),
             chain: "ton".to_string(),
-            network: "mainnet".to_string(),
+            network: TonNetwork::default(),
+            mainnet_confirmed: false,
             default_payment: PaymentPref::Auto,
             fee_recipient: None,
             stake: StakeEconomics::default(),
             ranking: RankingEconomics::default(),
             quality: QualityEconomics::default(),
+            reputation: ReputationEconomics::default(),
             selection: SelectionEconomics::default(),
             fees: FeesEconomics::default(),
             slashing: SlashingEconomics::default(),
             records: RecordsEconomics::default(),
+            pricing: PricingEconomics::default(),
+            testnet: NetworkSettings::default(),
+            mainnet: NetworkSettings::default(),
         }
     }
 }
@@ -152,11 +286,26 @@ pub struct RankingEconomics {
     pub w_quality: f64,
     pub w_stake: f64,
     pub w_price: f64,
+    /// Cold-start exploration rate ε (BLOCKCHAIN_ECONOMICS §5.2/§6): an
+    /// uncertainty bonus added to a candidate's selection score that decays as
+    /// the node accrues verified observations, so brand-new honest nodes still
+    /// get sampled and can build reputation. `0.0` (default) reproduces today's
+    /// pure-exploitation ranking; a small value (e.g. `0.1`) enables exploration.
+    pub exploration_rate: f64,
+    /// Observation count at which the exploration bonus has fully decayed to 0
+    /// (a node with this many verified jobs is no longer "new").
+    pub exploration_saturation: usize,
 }
 
 impl Default for RankingEconomics {
     fn default() -> Self {
-        Self { w_quality: 0.6, w_stake: 0.15, w_price: 0.25 }
+        Self {
+            w_quality: 0.6,
+            w_stake: 0.15,
+            w_price: 0.25,
+            exploration_rate: 0.0,
+            exploration_saturation: 20,
+        }
     }
 }
 
@@ -170,6 +319,11 @@ pub struct QualityEconomics {
     pub w_completion: f64,
     pub latency_ref_ms: u64,
     pub bytes_ref: u64,
+    /// Reference throughput (bytes/ms) for the **throughput-as-rate** term `T`
+    /// (§4.1). `0` (default) ⇒ derive the reference rate from
+    /// `bytes_ref / latency_ref_ms`, so a job that processes `bytes_ref` bytes in
+    /// `latency_ref_ms` scores a neutral mid-range throughput.
+    pub throughput_ref_bytes_per_ms: u64,
 }
 
 impl Default for QualityEconomics {
@@ -181,7 +335,38 @@ impl Default for QualityEconomics {
             w_completion: 0.1,
             latency_ref_ms: 5000,
             bytes_ref: 1_073_741_824,
+            throughput_ref_bytes_per_ms: 0,
         }
+    }
+}
+
+/// `[economics.reputation]` — confidence-aware reputation priors (§4.1/§7.3).
+///
+/// The raw recency-weighted success ratio is replaced (at selection time) by a
+/// **Beta/Wilson lower-confidence-bound** estimate so a node with only a handful
+/// of verified jobs is NOT treated as fully trusted: a "3-for-3" newcomer scores
+/// well below a node with a long correct history. The priors are pseudo-counts
+/// (`prior_alpha` successes, `prior_beta` failures) added before computing the
+/// Wilson lower bound at confidence `confidence_z` (z-score, e.g. 1.96 ≈ 95%).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReputationEconomics {
+    /// Beta prior pseudo-successes (≥ 0).
+    pub prior_alpha: f64,
+    /// Beta prior pseudo-failures (≥ 0). A larger `prior_beta` ⇒ more pessimistic
+    /// about thinly-observed nodes.
+    pub prior_beta: f64,
+    /// Wilson lower-bound confidence z-score (≥ 0). `0` collapses to the plain
+    /// (prior-shrunk) Beta posterior mean with no interval widening.
+    pub confidence_z: f64,
+}
+
+impl Default for ReputationEconomics {
+    fn default() -> Self {
+        // Mildly pessimistic prior (one pseudo-success, two pseudo-failures) plus
+        // a ~95% Wilson lower bound: a brand-new correct node is sampled via the
+        // exploration bonus rather than trusted outright.
+        Self { prior_alpha: 1.0, prior_beta: 2.0, confidence_z: 1.96 }
     }
 }
 
@@ -302,6 +487,50 @@ impl EconomicsConfig {
         }
     }
 
+    /// The per-network settings block for the currently-active network.
+    pub fn active_settings(&self) -> &NetworkSettings {
+        match self.network {
+            TonNetwork::Testnet => &self.testnet,
+            TonNetwork::Mainnet => &self.mainnet,
+        }
+    }
+
+    /// Effective RPC endpoint for the active network (override or default).
+    pub fn resolved_rpc(&self) -> String {
+        self.active_settings()
+            .rpc
+            .clone()
+            .unwrap_or_else(|| self.network.default_rpc().to_string())
+    }
+
+    /// Effective explorer host for the active network (override or default).
+    pub fn resolved_explorer(&self) -> String {
+        self.active_settings()
+            .explorer
+            .clone()
+            .unwrap_or_else(|| self.network.default_explorer().to_string())
+    }
+
+    /// True when the active network is **mainnet but not explicitly confirmed**.
+    /// Mainnet switches/actions must be blocked in this state (real funds).
+    pub fn mainnet_blocked(&self) -> bool {
+        matches!(self.network, TonNetwork::Mainnet) && !self.mainnet_confirmed
+    }
+
+    /// Guard for paid / on-chain actions: returns a clear, actionable error when
+    /// mainnet is selected without explicit confirmation.
+    pub fn guard_mainnet(&self) -> Result<(), String> {
+        if self.mainnet_blocked() {
+            return Err(
+                "mainnet is selected but NOT confirmed — real TON is at stake. Re-run \
+                 `CALL p2p_economics(network => 'mainnet', confirm => true)` (or set \
+                 economics.mainnet_confirmed = true) before any paid/on-chain action."
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Validate the cross-field invariants from §12.
     pub fn validate(&self) -> Result<(), ConfigError> {
         let inv = |m: String| Err(ConfigError::Invalid(m));
@@ -372,6 +601,19 @@ impl EconomicsConfig {
         if r.w_quality < 0.0 || r.w_stake < 0.0 || r.w_price < 0.0 {
             return inv("economics.ranking weights must be >= 0".into());
         }
+        pct("ranking.exploration_rate", r.exploration_rate)?;
+
+        // Quality weights must be non-negative.
+        let q = &self.quality;
+        if q.w_success < 0.0 || q.w_latency < 0.0 || q.w_throughput < 0.0 || q.w_completion < 0.0 {
+            return inv("economics.quality weights must be >= 0".into());
+        }
+
+        // Reputation confidence priors must be non-negative.
+        let rep = &self.reputation;
+        if rep.prior_alpha < 0.0 || rep.prior_beta < 0.0 || rep.confidence_z < 0.0 {
+            return inv("economics.reputation priors (prior_alpha, prior_beta, confidence_z) must be >= 0".into());
+        }
 
         // Selection ordering.
         let sel = &self.selection;
@@ -390,8 +632,10 @@ impl EconomicsConfig {
             return inv("economics.records.epoch_secs must be >= 1".into());
         }
 
-        // A fee recipient is required once on-chain fees can actually be charged.
-        if self.enabled && !matches!(self.settlement, SettlementRail::Noop) {
+        // A fee recipient is required once on-chain fees can actually be charged
+        // (the channel / on-chain rails). The noop and mock rails charge nothing.
+        if self.enabled && matches!(self.settlement, SettlementRail::Channel | SettlementRail::Onchain)
+        {
             match &self.fee_recipient {
                 Some(a) if !a.trim().is_empty() => {}
                 _ => {
@@ -466,5 +710,76 @@ mod tests {
         e.settlement = SettlementRail::Onchain;
         e.fee_recipient = None;
         assert!(e.validate().is_err());
+    }
+
+    #[test]
+    fn default_network_is_testnet_and_safe() {
+        let e = EconomicsConfig::default();
+        assert_eq!(e.network, TonNetwork::Testnet);
+        assert!(!e.mainnet_confirmed);
+        // Testnet is never blocked; mainnet without confirm is.
+        assert!(!e.mainnet_blocked());
+        assert!(e.guard_mainnet().is_ok());
+    }
+
+    #[test]
+    fn mainnet_requires_confirmation() {
+        let mut e = EconomicsConfig::default();
+        e.network = TonNetwork::Mainnet;
+        assert!(e.mainnet_blocked());
+        assert!(e.guard_mainnet().is_err());
+        e.mainnet_confirmed = true;
+        assert!(!e.mainnet_blocked());
+        assert!(e.guard_mainnet().is_ok());
+    }
+
+    #[test]
+    fn per_network_endpoints_resolve_with_defaults_and_overrides() {
+        let mut e = EconomicsConfig::default();
+        // Testnet defaults.
+        assert_eq!(e.resolved_rpc(), "https://testnet.toncenter.com/api/v2/");
+        assert_eq!(e.resolved_explorer(), "testnet.tonviewer.com");
+        // Configure BOTH networks; switching flips endpoints/addresses.
+        e.testnet.contracts.stake_vault = Some("kQtest".into());
+        e.mainnet.contracts.stake_vault = Some("kQmain".into());
+        e.mainnet.rpc = Some("https://my.mainnet.rpc/".into());
+        assert_eq!(e.active_settings().contracts.stake_vault.as_deref(), Some("kQtest"));
+
+        e.network = TonNetwork::Mainnet;
+        e.mainnet_confirmed = true;
+        assert_eq!(e.active_settings().contracts.stake_vault.as_deref(), Some("kQmain"));
+        assert_eq!(e.resolved_rpc(), "https://my.mainnet.rpc/"); // override
+        assert_eq!(e.resolved_explorer(), "tonviewer.com"); // mainnet default
+    }
+
+    #[test]
+    fn reputation_priors_and_exploration_defaults_validate() {
+        let e = EconomicsConfig::default();
+        e.validate().unwrap();
+        // Pessimistic-but-sane defaults.
+        assert!(e.reputation.prior_beta >= e.reputation.prior_alpha);
+        assert!(e.reputation.confidence_z > 0.0);
+        // Exploration off by default (today's pure-exploitation ranking).
+        assert_eq!(e.ranking.exploration_rate, 0.0);
+        assert!(e.ranking.exploration_saturation > 0);
+    }
+
+    #[test]
+    fn rejects_out_of_range_exploration_and_negative_priors() {
+        let mut e = EconomicsConfig::default();
+        e.ranking.exploration_rate = 1.5;
+        assert!(e.validate().is_err());
+        let mut e = EconomicsConfig::default();
+        e.reputation.prior_beta = -1.0;
+        assert!(e.validate().is_err());
+    }
+
+    #[test]
+    fn mock_rail_needs_no_fee_recipient() {
+        let mut e = EconomicsConfig::default();
+        e.enabled = true;
+        e.settlement = SettlementRail::Mock;
+        e.fee_recipient = None;
+        e.validate().unwrap();
     }
 }

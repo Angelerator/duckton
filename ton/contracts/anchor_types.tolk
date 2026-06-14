@@ -4,12 +4,17 @@
 // keepers + stake-weighted acceptance, chained roots via prev_root) and §11
 // (optimistic settlement + bonded fraud proofs).
 //
-// Hash domain note: the off-chain epoch tree is built with BLAKE3 over canonical
-// JobRecords (Rust side, p2p-settlement). The ON-CHAIN inclusion verifier below
-// uses TON cell-representation hashing (`cell.hash()`), which is what an on-chain
-// dispute proof is constructed against. Production aligns the two by also
-// publishing a cell-hash root; here the contract treats the anchored root as an
-// opaque 256-bit commitment and the verifier is self-consistent on-chain.
+// Hash domain note (ALIGNED, end-to-end): the off-chain epoch tree and this
+// on-chain verifier use the SAME internal-node hash so a proof built off-chain
+// reproduces the anchored root here. Leaves are BLAKE3(canonical JobRecord)
+// 256-bit commitments (Rust side, p2p-settlement::types::JobRecord::leaf) and are
+// folded RAW (no on-chain leaf re-hash). Each parent is the TON cell
+// representation hash of an ordinary ref-less cell holding `left ‖ right` (two
+// 256-bit big-endian ints) — `hashPair` below. The Rust side reproduces this as
+// `sha256(0x00 0x80 ‖ left ‖ right)` (see crates/settlement/src/merkle.rs); the
+// `00 80` prefix is the cell descriptor for 512 byte-aligned data bits. `dir = 0`
+// keeps the running accumulator on the LEFT (sibling on the right) and `dir = 1`
+// on the right, matching the off-chain `(sibling_is_left, sibling)` proof order.
 
 import "common"
 

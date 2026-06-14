@@ -31,11 +31,14 @@ use serde::{Deserialize, Serialize};
 
 mod economics;
 mod overrides;
+mod store;
 pub use economics::{
-    EconomicsConfig, FeesEconomics, PaymentMode, PaymentPref, QualityEconomics, RankingEconomics,
-    RecordsEconomics, SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics,
+    ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,
+    PricingEconomics, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
+    SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics, TonNetwork, WalletConfig,
 };
 pub use overrides::{JoinOverrides, QueryOverrides, ShareOverrides};
+pub use store::{flatten_settings, status_rows, ConfigStore, SettingRow, StoreError};
 
 /// Errors from loading or validating configuration.
 #[derive(Debug, thiserror::Error)]
@@ -447,6 +450,10 @@ pub struct DiscoveryConfig {
     pub candidate_sample_size: usize,
     pub kademlia: KademliaConfig,
     pub gossip: GossipConfig,
+    /// Global NAT-traversal stack (identify + AutoNAT + DCUtR hole punching +
+    /// Circuit Relay v2/AutoRelay + mDNS) so nodes behind home/office NATs in
+    /// different networks can connect directly with no central server.
+    pub nat: NatConfig,
 }
 
 impl Default for DiscoveryConfig {
@@ -458,6 +465,7 @@ impl Default for DiscoveryConfig {
             candidate_sample_size: 16,
             kademlia: KademliaConfig::default(),
             gossip: GossipConfig::default(),
+            nat: NatConfig::default(),
         }
     }
 }
@@ -509,6 +517,115 @@ impl Default for GossipConfig {
             heartbeat_ms: 5_000,
             fanout: 6,
             capability_ttl_secs: 30,
+        }
+    }
+}
+
+/// Global NAT-traversal stack for the libp2p discovery overlay (architecture
+/// §8 "Networking & NAT traversal").
+///
+/// `identify` is always on (the overlay needs it to learn peer addresses and
+/// observed external addresses). These knobs gate the *optional* behaviours that
+/// let two nodes behind home/office NATs on different networks worldwide connect
+/// **directly, with no central server and no fixed IP/URL**:
+///
+/// * **AutoNAT** — probe peers to learn whether we are publicly reachable and
+///   discover our external address.
+/// * **DCUtR** — coordinated hole punching to upgrade a relayed connection into
+///   a *direct* one through NATs (works over QUIC/UDP). Requires `relay_client`.
+/// * **Circuit Relay v2 client + AutoRelay** — when hole punching fails
+///   (symmetric NAT), route through **volunteer relay peers** auto-selected from
+///   the network (never a central server). `act_as_relay` lets this node *be* a
+///   volunteer relay for others.
+/// * **mDNS** — zero-config peer discovery on the same LAN.
+///
+/// Layers like everything else: defaults → TOML (`[discovery.nat]`) →
+/// `P2P_DISCOVERY_NAT_*` env → per-call. Nothing is hard-coded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct NatConfig {
+    /// Enable AutoNAT reachability detection + external-address discovery.
+    pub autonat: bool,
+    /// Enable DCUtR hole punching (relay-assisted direct-connection upgrade).
+    /// Requires `relay_client` (DCUtR coordinates over an existing relayed link).
+    pub dcutr: bool,
+    /// Enable the Circuit Relay v2 client + AutoRelay (reserve circuit slots on
+    /// volunteer relays so unreachable peers can still be dialed).
+    pub relay_client: bool,
+    /// Act as a Circuit Relay v2 **server** — volunteer to relay traffic for
+    /// other peers (subject to `relay_limits`). Off by default.
+    pub act_as_relay: bool,
+    /// Enable mDNS zero-config discovery of peers on the local network.
+    pub mdns: bool,
+    /// How often mDNS re-queries the LAN for peers (secs). Lower = snappier LAN
+    /// discovery + recovery from a lost initial packet, at the cost of a little
+    /// multicast traffic. Only used when `mdns = true`.
+    pub mdns_query_interval_secs: u64,
+    /// Explicit externally-reachable multiaddrs to advertise to peers (augments
+    /// any AutoNAT-discovered address). e.g.
+    /// `["/ip4/203.0.113.10/udp/9595/quic-v1"]`.
+    pub external_addresses: Vec<String>,
+    /// Known relay multiaddrs (including `/p2p/<peer-id>`) to reserve a circuit
+    /// slot with on startup. Empty = AutoRelay auto-selects relays discovered
+    /// from the network (no central directory).
+    pub relays: Vec<String>,
+    /// Maximum number of relays to hold reservations with simultaneously
+    /// (AutoRelay fan-out cap). Bounds resource use regardless of swarm size.
+    pub max_relays: usize,
+    /// Limits enforced when `act_as_relay = true`.
+    pub relay_limits: RelayLimitsConfig,
+}
+
+impl Default for NatConfig {
+    fn default() -> Self {
+        Self {
+            autonat: true,
+            dcutr: true,
+            relay_client: true,
+            act_as_relay: false,
+            mdns: true,
+            mdns_query_interval_secs: 300,
+            external_addresses: Vec::new(),
+            relays: Vec::new(),
+            max_relays: 3,
+            relay_limits: RelayLimitsConfig::default(),
+        }
+    }
+}
+
+/// Resource limits applied when a node volunteers as a Circuit Relay v2 server
+/// (`discovery.nat.act_as_relay = true`). Mirror of `libp2p::relay::Config`'s
+/// caps so a volunteer relay cannot be abused into unbounded resource use.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct RelayLimitsConfig {
+    /// Max concurrent reservations across all peers.
+    pub max_reservations: usize,
+    /// Max concurrent reservations from a single peer.
+    pub max_reservations_per_peer: usize,
+    /// How long a granted reservation lasts (secs).
+    pub reservation_duration_secs: u64,
+    /// Max concurrent relayed circuits across all peers.
+    pub max_circuits: usize,
+    /// Max concurrent relayed circuits from a single source peer.
+    pub max_circuits_per_peer: usize,
+    /// Max duration of a single relayed circuit (secs).
+    pub max_circuit_duration_secs: u64,
+    /// Max bytes relayed over a single circuit before it is closed.
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimitsConfig {
+    fn default() -> Self {
+        // Matches libp2p::relay::Config defaults (safe, bounded volunteer relay).
+        Self {
+            max_reservations: 128,
+            max_reservations_per_peer: 4,
+            reservation_duration_secs: 60 * 60,
+            max_circuits: 16,
+            max_circuits_per_peer: 4,
+            max_circuit_duration_secs: 2 * 60,
+            max_circuit_bytes: 1 << 17,
         }
     }
 }
@@ -1143,6 +1260,21 @@ impl GridConfig {
                     self.discovery.kademlia.record_ttl_secs = parse(k, v)?
                 }
                 "P2P_CANDIDATE_SAMPLE_SIZE" => self.discovery.candidate_sample_size = parse(k, v)?,
+                // ---- NAT traversal (env layer) ----
+                "P2P_DISCOVERY_NAT_AUTONAT" => self.discovery.nat.autonat = parse(k, v)?,
+                "P2P_DISCOVERY_NAT_DCUTR" => self.discovery.nat.dcutr = parse(k, v)?,
+                "P2P_DISCOVERY_NAT_RELAY_CLIENT" => self.discovery.nat.relay_client = parse(k, v)?,
+                "P2P_DISCOVERY_NAT_ACT_AS_RELAY" => self.discovery.nat.act_as_relay = parse(k, v)?,
+                "P2P_DISCOVERY_NAT_MDNS" => self.discovery.nat.mdns = parse(k, v)?,
+                "P2P_DISCOVERY_NAT_EXTERNAL_ADDRESSES" => {
+                    self.discovery.nat.external_addresses =
+                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                }
+                "P2P_DISCOVERY_NAT_RELAYS" => {
+                    self.discovery.nat.relays =
+                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                }
+                "P2P_DISCOVERY_NAT_MAX_RELAYS" => self.discovery.nat.max_relays = parse(k, v)?,
                 "P2P_TRUST_STORE_PATH" => self.trust.store_path = Some(v.clone()),
                 "P2P_REPLICAS" => self.scheduler.replicas = parse(k, v)?,
                 "P2P_QUORUM" => self.scheduler.quorum = parse(k, v)?,
@@ -1297,6 +1429,21 @@ impl GridConfig {
                     }
                 }
                 "P2P_ECONOMICS_FEE_RECIPIENT" => self.economics.fee_recipient = Some(v.clone()),
+                "P2P_ECONOMICS_NETWORK" => {
+                    self.economics.network = match v.as_str() {
+                        "testnet" => economics::TonNetwork::Testnet,
+                        "mainnet" => economics::TonNetwork::Mainnet,
+                        other => {
+                            return Err(ConfigError::Env(
+                                k.clone(),
+                                format!("unknown network {other} (testnet|mainnet)"),
+                            ))
+                        }
+                    }
+                }
+                "P2P_ECONOMICS_MAINNET_CONFIRMED" => {
+                    self.economics.mainnet_confirmed = parse(k, v)?
+                }
                 // P2P_CONFIG is handled in `load`, ignore here.
                 "P2P_CONFIG" => {}
                 _ => {} // ignore unknown P2P_* to stay forward-compatible
@@ -1349,6 +1496,43 @@ impl GridConfig {
         }
         if self.discovery.gossip.fanout == 0 {
             return inv("discovery.gossip.fanout must be >= 1".into());
+        }
+
+        // ---- NAT traversal ----
+        let nat = &self.discovery.nat;
+        if nat.dcutr && !nat.relay_client {
+            return inv(
+                "discovery.nat.dcutr requires discovery.nat.relay_client = true (DCUtR hole \
+                 punching coordinates over an existing relayed connection)"
+                    .into(),
+            );
+        }
+        if nat.relay_client && nat.max_relays == 0 {
+            return inv(
+                "discovery.nat.max_relays must be >= 1 when discovery.nat.relay_client = true"
+                    .into(),
+            );
+        }
+        if nat.external_addresses.iter().any(|a| a.trim().is_empty()) {
+            return inv("discovery.nat.external_addresses entries must be non-empty".into());
+        }
+        if nat.relays.iter().any(|a| a.trim().is_empty()) {
+            return inv("discovery.nat.relays entries must be non-empty".into());
+        }
+        if nat.act_as_relay {
+            let rl = &nat.relay_limits;
+            if rl.max_reservations == 0 {
+                return inv(
+                    "discovery.nat.relay_limits.max_reservations must be >= 1 when act_as_relay = true"
+                        .into(),
+                );
+            }
+            if rl.max_circuits == 0 {
+                return inv(
+                    "discovery.nat.relay_limits.max_circuits must be >= 1 when act_as_relay = true"
+                        .into(),
+                );
+            }
         }
         let pct = |name: &str, x: f64| -> Result<(), ConfigError> {
             if !(0.0..=1.0).contains(&x) {
@@ -1549,6 +1733,69 @@ mod tests {
         assert_eq!(cfg.economics.fee_recipient.as_deref(), Some("EQ_treasury"));
         // settlement is still noop by default, so validation passes.
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn nat_defaults_are_on_and_valid() {
+        let cfg = GridConfig::default();
+        let nat = &cfg.discovery.nat;
+        assert!(nat.autonat);
+        assert!(nat.dcutr);
+        assert!(nat.relay_client);
+        assert!(!nat.act_as_relay);
+        assert!(nat.mdns);
+        assert_eq!(nat.max_relays, 3);
+        assert!(nat.relays.is_empty());
+        assert_eq!(nat.relay_limits.max_reservations, 128);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn nat_layers_defaults_then_toml_then_env() {
+        let toml = r#"
+            [discovery.nat]
+            act_as_relay = true
+            mdns = false
+            max_relays = 5
+            relays = ["/ip4/203.0.113.10/udp/9595/quic-v1/p2p/12D3KooWtest"]
+
+            [discovery.nat.relay_limits]
+            max_circuits = 32
+        "#;
+        let mut cfg = GridConfig::from_toml_str(toml).unwrap();
+        assert!(cfg.discovery.nat.act_as_relay);
+        assert!(!cfg.discovery.nat.mdns);
+        assert_eq!(cfg.discovery.nat.max_relays, 5);
+        assert_eq!(cfg.discovery.nat.relays.len(), 1);
+        assert_eq!(cfg.discovery.nat.relay_limits.max_circuits, 32);
+        // untouched relay-limit field keeps its default
+        assert_eq!(cfg.discovery.nat.relay_limits.max_reservations, 128);
+
+        // ENV overrides the TOML layer.
+        let mut env = BTreeMap::new();
+        env.insert("P2P_DISCOVERY_NAT_AUTONAT".to_string(), "false".to_string());
+        env.insert("P2P_DISCOVERY_NAT_MAX_RELAYS".to_string(), "2".to_string());
+        env.insert(
+            "P2P_DISCOVERY_NAT_RELAYS".to_string(),
+            "/ip4/198.51.100.7/udp/9595/quic-v1/p2p/12D3KooWa,/ip4/198.51.100.8/udp/9595/quic-v1/p2p/12D3KooWb".to_string(),
+        );
+        cfg.apply_env_map(&env).unwrap();
+        assert!(!cfg.discovery.nat.autonat);
+        assert_eq!(cfg.discovery.nat.max_relays, 2);
+        assert_eq!(cfg.discovery.nat.relays.len(), 2);
+        // dcutr (untouched) stays default-on; act_as_relay stays from TOML.
+        assert!(cfg.discovery.nat.dcutr);
+        assert!(cfg.discovery.nat.act_as_relay);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn nat_validation_rejects_dcutr_without_relay_client() {
+        let cfg =
+            GridConfig::from_toml_str("[discovery.nat]\ndcutr = true\nrelay_client = false\n")
+                .unwrap();
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{err}").contains("dcutr"), "got {err}");
     }
 
     #[test]

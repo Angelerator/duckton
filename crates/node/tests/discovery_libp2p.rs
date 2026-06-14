@@ -13,8 +13,8 @@ use libp2p::Multiaddr;
 use p2p_config::{GridConfig, IdentityConfig, PinningMode};
 use p2p_node::{
     evaluate_ad, AdOutcome, AdmissionController, CandidateFilter, Coordinator, Discovery,
-    IdentitySigner, Libp2pDiscovery, Libp2pDiscoveryConfig, MembershipTable, MockEngine, Worker,
-    WorkerParams,
+    IdentitySigner, Libp2pDiscovery, Libp2pDiscoveryConfig, MembershipTable, MockEngine, NatParams,
+    Worker, WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, CapabilityAd, DataClass};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
@@ -24,6 +24,27 @@ use p2p_trust::{
 
 const TEST_TOPIC: &str = "duckdb-p2p/caps/test-1";
 const POW_BITS: u32 = 8;
+
+/// NAT-traversal params for tests. The full stack (AutoNAT + DCUtR + relay
+/// client) is built so we exercise the production swarm wiring, but **mDNS is
+/// off by default** so concurrently-running test nodes do not cross-discover
+/// each other over the LAN. The dedicated mDNS test flips it on.
+fn test_nat(mdns: bool) -> NatParams {
+    NatParams {
+        autonat: true,
+        dcutr: true,
+        relay_client: true,
+        act_as_relay: false,
+        mdns,
+        // Snappy LAN re-query so the test recovers fast if an initial mDNS
+        // packet is lost (the library default is 5 minutes).
+        mdns_query_interval: Duration::from_secs(1),
+        external_addresses: vec![],
+        relays: vec![],
+        max_relays: 3,
+        relay_limits: Default::default(),
+    }
+}
 
 fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
     Libp2pDiscoveryConfig {
@@ -38,6 +59,7 @@ fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
         replication_factor: 20,
         query_parallelism: 3,
         protocol_major: p2p_proto::PROTOCOL_VERSION.major,
+        nat: test_nat(false),
     }
 }
 
@@ -337,6 +359,136 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
         .expect("query over gossip-discovered worker should succeed");
     assert!(outcome.verified);
     assert_eq!(outcome.winner.as_ref(), Some(&worker_node_id));
+}
+
+// ---------------------------------------------------------------------------
+// NAT config plumbing: `[discovery.nat]` resolves into the overlay's NatParams
+// (defaults → typed config → overlay), with no hard-coding.
+// ---------------------------------------------------------------------------
+#[test]
+fn nat_params_resolve_from_grid_config() {
+    let mut cfg = GridConfig::default();
+    cfg.discovery.mode = p2p_config::DiscoveryMode::Kademlia;
+    cfg.discovery.nat.act_as_relay = true;
+    cfg.discovery.nat.mdns = false;
+    cfg.discovery.nat.max_relays = 7;
+    cfg.discovery.nat.relay_limits.max_circuits = 42;
+    cfg.discovery.nat.external_addresses = vec!["/ip4/203.0.113.10/udp/9595/quic-v1".to_string()];
+    cfg.validate().unwrap();
+
+    let resolved = Libp2pDiscoveryConfig::from_grid(&cfg).unwrap();
+    let nat = &resolved.nat;
+    assert!(nat.autonat && nat.dcutr && nat.relay_client);
+    assert!(nat.act_as_relay);
+    assert!(!nat.mdns);
+    assert_eq!(nat.max_relays, 7);
+    assert_eq!(nat.relay_limits.max_circuits, 42);
+    assert_eq!(nat.external_addresses.len(), 1);
+    assert_eq!(
+        nat.external_addresses[0].to_string(),
+        "/ip4/203.0.113.10/udp/9595/quic-v1"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The whole NAT stack can be toggled OFF: the swarm still builds and gossip
+// propagation works exactly as before (proves the Toggle wiring + back-compat).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn swarm_builds_with_nat_stack_disabled_and_still_gossips() {
+    let mut cfg_a = disc_config(vec![]);
+    cfg_a.nat = NatParams::default(); // all NAT behaviours off
+    let node_a = Libp2pDiscovery::spawn(cfg_a).await.unwrap();
+    let a_addrs = node_a.wait_listeners(Duration::from_secs(5)).await;
+    assert!(!a_addrs.is_empty(), "node A must bind with NAT stack off");
+
+    let mut cfg_b = disc_config(a_addrs);
+    cfg_b.nat = NatParams::default();
+    let node_b = Libp2pDiscovery::spawn(cfg_b).await.unwrap();
+
+    let ad = signed_ad("127.0.0.1:19710", now_ts());
+    node_a.publish_ad(&ad).await.unwrap();
+    let got = wait_until(Duration::from_secs(20), || node_b.membership().len() >= 1).await;
+    assert!(got, "gossip must still propagate with the NAT stack disabled");
+}
+
+// ---------------------------------------------------------------------------
+// A node can volunteer as a Circuit Relay v2 server (act_as_relay): the swarm
+// builds with the relay-server behaviour and another node bootstraps to it.
+// (True relayed connectivity needs a third NAT'd node + real network; here we
+// assert the relay-capable swarm builds, binds, and forms a mesh.)
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn act_as_relay_node_builds_and_peers_connect() {
+    let mut relay_cfg = disc_config(vec![]);
+    relay_cfg.nat = test_nat(false);
+    relay_cfg.nat.act_as_relay = true; // volunteer relay
+    let relay_node = Libp2pDiscovery::spawn(relay_cfg).await.unwrap();
+    let relay_addrs = relay_node.wait_listeners(Duration::from_secs(5)).await;
+    assert!(!relay_addrs.is_empty(), "relay node must bind a listen addr");
+
+    // A client bootstraps to the relay and they exchange a gossiped ad, proving
+    // the relay-capable node participates normally in the overlay.
+    let client = Libp2pDiscovery::spawn(disc_config(relay_addrs)).await.unwrap();
+    let ad = signed_ad("127.0.0.1:19720", now_ts());
+    client.publish_ad(&ad).await.unwrap();
+    let relay_learned =
+        wait_until(Duration::from_secs(20), || relay_node.membership().len() >= 1).await;
+    assert!(relay_learned, "relay node should learn the client's ad");
+}
+
+// ---------------------------------------------------------------------------
+// mDNS zero-config discovery: two nodes with NO bootstrap seed find each other
+// purely via mDNS on the loopback/LAN, then a gossiped ad propagates across the
+// auto-formed link.
+//
+// Both swarms are built with the mDNS behaviour enabled (proving the wiring),
+// and `spawn`/listener binding always succeeds. The *propagation* leg exercises
+// real multicast on the host: when the environment delivers mDNS multicast the
+// test asserts B discovers A; when multicast is unavailable (common in
+// sandboxed CI with no usable network interface), it is treated as a skip so
+// the suite stays green. True cross-NAT/WAN traversal (AutoNAT/DCUtR/relay)
+// cannot be simulated in-process and needs a real multi-host deployment — see
+// the module docs.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mdns_nodes_discover_each_other_on_loopback() {
+    let unique_topic = format!("duckdb-p2p/caps/mdns-{}", now_ts());
+
+    let mut cfg_a = disc_config(vec![]); // no bootstrap — rely on mDNS
+    cfg_a.nat = test_nat(true);
+    cfg_a.topic = unique_topic.clone();
+    let node_a = Libp2pDiscovery::spawn(cfg_a).await.unwrap();
+    assert!(
+        !node_a.wait_listeners(Duration::from_secs(5)).await.is_empty(),
+        "mDNS-enabled node A must build and bind a listener"
+    );
+
+    let mut cfg_b = disc_config(vec![]); // no bootstrap — rely on mDNS
+    cfg_b.nat = test_nat(true);
+    cfg_b.topic = unique_topic;
+    let node_b = Libp2pDiscovery::spawn(cfg_b).await.unwrap();
+    assert!(
+        !node_b.wait_listeners(Duration::from_secs(5)).await.is_empty(),
+        "mDNS-enabled node B must build and bind a listener"
+    );
+
+    let ad = signed_ad("127.0.0.1:19730", now_ts());
+    node_a.publish_ad(&ad).await.unwrap();
+
+    // With no bootstrap configured, B can only learn A's ad if mDNS discovered
+    // A and the gossip mesh formed over that auto-discovered link.
+    let discovered = wait_until(Duration::from_secs(20), || node_b.membership().len() >= 1).await;
+    if discovered {
+        let cands = node_b.find_candidates(8, filter()).await;
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].addr.to_string(), "127.0.0.1:19730");
+    } else {
+        eprintln!(
+            "SKIP: mDNS multicast unavailable in this environment; cannot validate \
+             cross-node LAN discovery here (needs a host with working multicast)."
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

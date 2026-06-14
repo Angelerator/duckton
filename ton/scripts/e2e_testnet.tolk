@@ -34,6 +34,7 @@ import "@contracts/escrow_types"
 import "@contracts/stake_types"
 import "@wrappers/JobEscrow.gen"
 import "@wrappers/RecordAnchor.gen"
+import "@wrappers/StakeReceiptWallet.gen"
 import "@wrappers/StakeVault.gen"
 
 fun requireAddr(name: string): address {
@@ -68,6 +69,38 @@ fun main() {
     depositRes.waitForTrace();
     val vs = vault.getVaultState();
     println("::CHECK::stake_deposit::staked={}::eligible={}", vs.staked, vs.eligible);
+
+    // -- 1b. Stake-receipt jetton: minted 1:1 + transfer-locked (§8.5) -------
+    // Explicit live verification (item 5): the StakeReceiptWallet was minted 1:1
+    // with the bonded TON, and a transfer attempt is rejected (anti-exit), so the
+    // balance is unchanged afterwards.
+    val receiptAddr = vault.getReceiptWalletAddress(deployer.address);
+    val receipt = StakeReceiptWallet.fromAddress(receiptAddr);
+    val wd0 = receipt.getWalletData();
+    val locked = receipt.isTransferLocked();
+    println("::CHECK::jetton::minted={}::staked={}::locked={}", wd0.balance, vs.staked, locked);
+
+    // Attempt a standard TEP-74 transfer to dodge slashing -> must be rejected;
+    // re-read the balance to confirm it did not move.
+    val xferRes = receipt.sendJettonTransfer(
+        deployer.address,
+        11,
+        wd0.balance,
+        deployer.address,
+        deployer.address,
+        null,
+        ton("0"),
+        beginCell().endCell().beginParse(),
+        { value: ton("0.1") },
+    );
+    xferRes.waitForTrace();
+    val wd1 = receipt.getWalletData();
+    println(
+        "::CHECK::jetton_transfer::before={}::after={}::rejected={}",
+        wd0.balance,
+        wd1.balance,
+        wd1.balance == wd0.balance,
+    );
 
     // -- 2. Escrow settle (payout split, HTLC-gated) -------------------------
     // Release the per-job escrow on the agreed quorum result hash: winner base +

@@ -253,6 +253,22 @@ get fun get_receipt_wallet_address(owner: address): address {
     return calcReceiptWalletAddress(owner, contract.getAddress(), cfg.receiptWalletCode);
 }
 
+// TEP-74/TEP-64 jetton-master data for the stake-receipt jetton ("Duckton").
+// Lets wallets/explorers render the (non-transferable) receipt. The vault is the
+// master, so `adminAddress` is this contract and `jettonContent` is the on-chain
+// Duckton metadata (name/symbol/decimals/description).
+get fun get_jetton_data(): ReceiptJettonData {
+    val storage = lazy VaultStorage.load();
+    val cfg = storage.config.load();
+    return {
+        totalSupply: storage.totalSupply,
+        mintable: true,
+        adminAddress: contract.getAddress(),
+        jettonContent: buildReceiptJettonContent(),
+        jettonWalletCode: cfg.receiptWalletCode,
+    };
+}
+
 get fun is_eligible(): bool {
     val storage = lazy VaultStorage.load();
     val cfg = storage.config.load();

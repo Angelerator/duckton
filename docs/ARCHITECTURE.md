@@ -284,6 +284,23 @@ and selects workers via a **policy** chosen by data sensitivity:
 - **Bootstrap peers** are needed only to *enter* the swarm; they hold no job state and are never in the data path, preserving "no middleman" for queries.
 - Recommended implementation: **libp2p** (Kademlia + gossipsub + Noise/QUIC transport) for Phase 2; a static seed list suffices for the MVP.
 
+### 8.1 Networking & global NAT traversal ("works behind home/office NATs, no central server")
+
+The grid must let nodes behind ordinary home/office NATs on **different networks worldwide** connect **directly**, with **no central server and no fixed IP/URL**. The discovery overlay (`crates/node/src/libp2p_discovery.rs`) layers the standard libp2p NAT-traversal stack on top of the Kademlia + gossipsub overlay. Every piece is configuration-driven under `[discovery.nat]` (defaults → TOML → `P2P_DISCOVERY_NAT_*` env → per-call); nothing is hard-coded.
+
+- **identify** (always on) — peers exchange their observed/listen addresses and supported protocols. This is what lets AutoNAT, AutoRelay and Kademlia learn how to reach each other.
+- **AutoNAT** — peers probe each other to determine whether *we* are publicly reachable and to learn our **external address**. A discovered public address is advertised to the swarm, so a node with a port-forward / public IP needs no manual `advertised_addr`.
+- **DCUtR hole punching** — for the common case (cone NATs), two nodes coordinate a simultaneous dial ("hole punch") to establish a **direct** connection through their NATs. This runs over **QUIC/UDP** (the transport now includes a QUIC listener alongside TCP), upgrading an initial relay-assisted connection into a direct one. Requires the relay client.
+- **Circuit Relay v2 + AutoRelay** — when hole punching cannot succeed (e.g. **symmetric NAT**), traffic is routed through **volunteer relay peers** — ordinary nodes that opt in with `act_as_relay = true` — never a central server. A relay client **auto-selects** relays discovered from the network (any peer advertising the relay hop protocol), reserving a bounded number of circuits (`max_relays`). Explicit relays may also be pinned via `relays`. A volunteer relay bounds its exposure with `relay_limits` (max reservations/circuits, durations, bytes).
+- **mDNS** — zero-config discovery of peers on the **same LAN** (no bootstrap needed locally).
+- **DHT peer routing / rendezvous** — peers remain addressable by `PeerId` and are found via the DHT even as their addresses change freely; there is no central directory.
+
+**The bootstrap caveat (law of distributed systems).** To *join* a swarm a node needs **at least one reachable entry point** — a bootstrap seed (`discovery.bootstrap`) and/or a relay. This is unavoidable for any distributed system: a brand-new node must learn of *someone* to talk to. Crucially, that entry point is **not a central server**: it is an ordinary peer (or a community bootstrap node / volunteer relay), it **owns nothing**, holds no job state, is **never in the query data path**, and is **freely replaceable** — any reachable peer can serve the role. Once a node is in the swarm, discovery, hole punching and relaying proceed peer-to-peer.
+
+**Config surface (`[discovery.nat]`):** `autonat`, `dcutr`, `relay_client`, `act_as_relay`, `mdns` (+ `mdns_query_interval_secs`), `external_addresses` (manual overrides for the "no fixed IP/URL" case), `relays` (pinned relays; empty ⇒ AutoRelay), `max_relays`, and `relay_limits.{max_reservations,max_reservations_per_peer,reservation_duration_secs,max_circuits,max_circuits_per_peer,max_circuit_duration_secs,max_circuit_bytes}`. Validation enforces that `dcutr` requires `relay_client`, and that a volunteer relay has sane limits.
+
+**Honest testing boundary.** The protocol *wiring* is tested in-process on loopback: the swarm builds with the full NAT stack, the behaviours toggle on/off from config, config plumbs end-to-end into the overlay, relay-capable nodes build and peer, and gossip still propagates. mDNS LAN discovery is validated when the host delivers multicast (skipped, not failed, in sandboxes without it). **True cross-NAT/WAN hole punching, AutoNAT reachability detection, and relayed connectivity between genuinely NAT'd hosts cannot be simulated in a single process** — they require a real **multi-host deployment** across separate networks (e.g. two machines behind different home routers plus a third volunteer relay) to fully validate.
+
 ---
 
 ## 9. Security model
@@ -335,28 +352,157 @@ Two exposed knobs: `verify = fast` (return fastest, verify hashes in background,
 
 ---
 
-## 12. SQL surface (extension API, illustrative)
+## 12. SQL surface (extension API)
+
+### 12.0 Zero-config quickstart — the frictionless default
+
+The end-user query path is designed for **effectively zero setup**. After
+loading the extension, a user runs a query with **no prior `p2p_join` /
+`p2p_share`, no config file, and no environment variables**:
+
 ```sql
--- Become a host and donate resources
+INSTALL p2p; LOAD p2p;        -- or autoload
+
+-- That's the whole setup. Just query:
+FROM p2p_query('SELECT region, count(*) FROM ''s3://bucket/events/*.parquet'' GROUP BY region');
+```
+
+`p2p_query` **lazily auto-initializes** the node on first use from the built-in
+[`GridConfig::default()`] layering (`crates/config`) — embedded in code, so **no
+file/env is required**. The defaults are deliberately safe and frictionless:
+
+- **Free / no-chain by default** (`economics.enabled = false`) → no wallet or
+  payment friction; jobs are still scored (quorum/canary + receipts + reputation).
+- **Planner `prefer = auto`** → small queries run **locally for free** in the
+  node's own locked-down DuckDB; large ones fan out to the grid.
+- **Graceful local-first fallback**: with **no bootstrap seeds** configured (or
+  when a configured grid is unreachable), an `auto` query runs locally rather
+  than failing. Configure seeds (`p2p_join`) to fan out to a real swarm.
+- Sensible `replicas=3` / `quorum=2` / `min_trust` / `min_attestation=L0` /
+  `verify=quorum` defaults.
+
+The lazy auto-init is implemented by `p2p_node::Node` (`Node::auto(engine)` →
+`Node::query(sql, overrides)`), which assembles transport + discovery + trust +
+the free local-execution path + planner from defaults.
+
+**Customization is a one-liner** — per-call named params on `p2p_query` override
+config for that call only; you only touch them when you *want* to:
+
+```sql
+FROM p2p_query(
+  'SELECT region, count(*) FROM ''s3://bucket/events/*.parquet'' GROUP BY region',
+  replicas    => 3,          -- how many workers to race
+  quorum      => 2,          -- matching hashes required
+  verify      => 'quorum',   -- 'quorum' | 'fast'
+  prefer      => 'auto',     -- 'local' | 'remote' | 'auto'
+  payment     => 'free',     -- 'free' | 'paid' | 'auto'
+  min_trust   => 0.8,
+  min_attest  => 'L1'
+);
+```
+
+Being a host/provider stays **opt-in** (`p2p_share`) and joining a specific
+network stays available (`p2p_join`), but **neither is required just to run a
+query**. Friendly, actionable errors point at the relevant override only when
+something genuinely needs it (e.g. `payment => 'paid'` with no wallet configured
+returns a message telling you to pass `payment => 'free'` or configure a wallet).
+
+```sql
+-- Become a host and donate resources (opt-in)
 CALL p2p_share(memory => '4GB', threads => 2, max_jobs => 3, data_classes => ['public']);
 
--- Join the swarm
+-- Join a specific swarm (optional; otherwise local-first)
 CALL p2p_join(bootstrap => ['quic://seed1.example:9494', 'quic://seed2.example:9494']);
-
--- Run a query on the grid (object-storage data), with a trust policy
-SELECT *
-FROM p2p_query(
-  $$ SELECT region, count(*) FROM 's3://bucket/events/*.parquet' GROUP BY region $$,
-  replicas    => 3,
-  quorum      => 2,
-  min_trust   => 0.8,
-  min_attest  => 'L1',
-  verify      => 'quorum'
-);
 
 -- Inspect peers and their trust
 SELECT node_id, free_mem, attestation_level, trust_score FROM p2p_peers();
 ```
+
+### 12.1 SQL admin / configuration surface (business-user friendly)
+
+A **non-technical user** can set up and manage everything — blockchain on/off,
+network mode, wallet, pricing, bidding, stake, fees, trust/selection, contract
+addresses — entirely via SQL `CALL`s, **without ever editing TOML/env or
+touching contracts**. All logic, validation, persistence and secret redaction
+live in the typed `p2p_config::ConfigStore`; the extension functions are a thin
+binding. Zero-config defaults apply until something is set. Both `name => value`
+and `name = value` argument syntaxes work, via `CALL` or `SELECT * FROM`.
+
+**Inspect (read-only, secrets redacted):**
+
+```sql
+SELECT * FROM p2p_config();    -- effective settings, grouped (alias: p2p_settings)
+SELECT * FROM p2p_status();    -- node/wallet/network/economics state; shows ACTIVE network
+```
+
+**Set (grouped, validated, friendly errors):**
+
+```sql
+CALL p2p_economics(enabled => true, settlement => 'ton', network => 'testnet', fee_recipient => 'kQ...');
+CALL p2p_pricing(unit_price => 5, max_bid => 100);          -- whole TON
+CALL p2p_bidding(w_quality => 0.6, w_stake => 0.15, w_price => 0.25);
+CALL p2p_selection(replicas => 5, quorum => 3, checksum_min => 3);
+CALL p2p_fees(platform_fee_pct => 0.02, participation_commission_frac => 0.02);
+CALL p2p_trust(min_trust => 0.8, min_attest => 'L1');
+CALL p2p_contracts(stake_vault => 'kQ...', job_escrow => 'kQ...', record_anchor => 'kQ...');
+CALL p2p_set('economics.fees.platform_fee_pct', 0.02);      -- generic escape hatch to ANY key
+CALL p2p_config_reset();                                    -- restore defaults
+```
+
+**Wallet (secrets handled carefully):**
+
+```sql
+-- Prefer FILE/ENV references over pasting secrets into SQL (which would land in logs):
+CALL p2p_wallet(rpc => 'https://...', mnemonic_file => '/path/outside/repo/wallet.mnemonic',
+                api_key_file => '/path/outside/repo/toncenter.key', address => 'kQ...');
+```
+
+If a raw inline `mnemonic`/`api_key` is supplied, it is written to a `0600` file
+**outside the repo** (under the config dir's `secrets/`) and only the **path
+reference** is persisted — the raw secret is **never** written to the config
+file and **never** echoed; `p2p_config()` redacts it everywhere.
+
+**Provider stake actions:**
+
+```sql
+CALL p2p_stake(amount => 100);     -- drives the on-chain stake flow (or says what's needed)
+CALL p2p_unstake(amount => 100);
+```
+
+**Persistence & layering.** SQL settings are a **persisted runtime layer** that
+sits *above* env in the precedence chain — defaults → config file (`P2P_CONFIG`)
+→ `P2P_*` env → **SQL/runtime** → per-call — written to a sparse runtime
+overrides file (default `<config-dir>/runtime.toml`, override with
+`P2P_RUNTIME_CONFIG`) so they **survive restart**. The base hand-edited file is
+never rewritten, and **secrets are excluded** (kept in the separate `0600`
+secret files). Every setter validates through the typed `GridConfig` and returns
+a friendly, actionable message on bad input — never a panic/stack trace.
+
+### 12.2 Network mode: testnet / mainnet (real-funds safety)
+
+`economics.network` is a first-class switchable mode, **defaulting to `testnet`**
+(never silently mainnet). Per-network defaults are auto-applied (all overridable):
+
+| Network | Default RPC | Explorer |
+|---|---|---|
+| `testnet` (default) | `https://testnet.toncenter.com/api/v2/` | `testnet.tonviewer.com` |
+| `mainnet` | `https://toncenter.com/api/v2/` | `tonviewer.com` |
+
+Both networks can be configured **simultaneously** — contract addresses
+(`p2p_contracts`), wallet/API-key references (`p2p_wallet`) and RPC are stored
+**per network** under `[economics.testnet]` / `[economics.mainnet]`, so switching
+`network` flips to that network's addresses/endpoints without reconfiguring.
+
+**Mainnet safety guard (real funds).** Switching to mainnet requires an explicit
+opt-in, and paid/on-chain actions on mainnet are blocked until confirmed:
+
+```sql
+CALL p2p_economics(network => 'mainnet');                 -- ERROR: requires confirm (real TON)
+CALL p2p_economics(network => 'mainnet', confirm => true);-- OK, with a clear warning
+```
+
+`p2p_status()` prominently shows the active network, its resolved RPC/explorer
+endpoints, and a WARNING when mainnet is active (or selected-but-unconfirmed).
 
 ---
 
@@ -439,12 +585,19 @@ than misbehave. Versioning is centralized in the `p2p-proto` crate
 ## 17. Configuration system (implemented)
 
 No operational value is hard-coded. The `p2p-config` crate provides a typed,
-validated `GridConfig` with four layers, lowest → highest precedence:
+validated `GridConfig` with five layers, lowest → highest precedence:
 
-1. **Built-in defaults** (documented `Default` impls).
+1. **Built-in defaults** (documented `Default` impls) — the zero-config path
+   (§12.0) runs entirely on these.
 2. **Config file** (TOML; `P2P_CONFIG` env var or explicit path).
 3. **Environment variables** (`P2P_*`).
-4. **Per-call SQL parameters** (`QueryOverrides`/`ShareOverrides`/`JoinOverrides`
+4. **SQL / runtime layer** — settings applied via the SQL admin surface (§12.1,
+   `CALL p2p_economics(...)`, `p2p_set(...)`, …) are validated and **persisted**
+   to a sparse runtime overrides file (default `<config-dir>/runtime.toml`,
+   override with `P2P_RUNTIME_CONFIG`) so they survive restart. Managed by
+   `p2p_config::ConfigStore`. Secrets are **never** persisted here (kept in
+   separate `0600` files, redacted in all output).
+5. **Per-call SQL parameters** (`QueryOverrides`/`ShareOverrides`/`JoinOverrides`
    ⇔ args to `p2p_query`/`p2p_share`/`p2p_join`).
 
 `GridConfig::validate()` enforces cross-field invariants (e.g.

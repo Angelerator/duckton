@@ -34,6 +34,32 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Resolve the DuckDB platform string (e.g. `osx_arm64`).
+fn duckdb_platform() -> String {
+    let out = Command::new("duckdb")
+        .args(["-list", "-noheader", "-c", "PRAGMA platform;"])
+        .output()
+        .expect("run duckdb platform");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Append the DuckDB metadata footer to the cdylib, producing a loadable
+/// `.duckdb_extension` at `out`. Returns false if the tooling failed.
+fn build_loadable(dylib: &PathBuf, platform: &str, out: &PathBuf) -> bool {
+    let script = repo_root().join("scripts/append_extension_metadata.py");
+    Command::new("python3")
+        .arg(&script)
+        .args(["-l", dylib.to_str().unwrap()])
+        .args(["-n", "duckdb_p2p"])
+        .args(["-p", platform])
+        .args(["-dv", "v1.0.0"])
+        .args(["-ev", "0.1.0"])
+        .args(["-o", out.to_str().unwrap()])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[test]
 fn extension_loads_into_duckdb_and_runs_table_functions() {
     if !have("duckdb", "--version") || !have("python3", "--version") {
@@ -114,4 +140,86 @@ fn extension_loads_into_duckdb_and_runs_table_functions() {
         stdout2.contains("quic://seed-a:9494"),
         "p2p_peers() did not reflect P2P_CONFIG; got: {stdout2}"
     );
+}
+
+/// End-to-end SQL admin/config surface through the loaded extension: zero-config
+/// defaults, friendly setters, the mainnet safety guard, and secret redaction.
+/// Hermetic: all state lives under a temp `P2P_CONFIG_DIR`.
+#[test]
+fn extension_sql_admin_surface_end_to_end() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_admin_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    let ext = out_ext.display().to_string();
+
+    // Each scenario gets a fresh, isolated config dir so nothing leaks to $HOME.
+    let run = |cfg_dir: &PathBuf, sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", cfg_dir)
+            .output()
+            .expect("run duckdb admin");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // 1. Zero-config default: the active network is testnet (the safe default).
+    let d1 = tmp_dir.join("c1");
+    let (ok, stdout, stderr) = run(&d1, "SELECT value FROM p2p_status() WHERE key = 'network';");
+    assert!(ok, "p2p_status failed: {stderr}");
+    assert_eq!(stdout, "testnet", "default network should be testnet");
+
+    // 2. A friendly setter persists and is reflected in p2p_config().
+    let d2 = tmp_dir.join("c2");
+    let _ = std::fs::remove_dir_all(&d2);
+    let (ok, _o, e) = run(&d2, "CALL p2p_trust(min_trust => 0.83);");
+    assert!(ok, "p2p_trust setter failed: {e}");
+    let (ok, stdout, _e) = run(&d2, "SELECT value FROM p2p_config() WHERE key = 'min_trust';");
+    assert!(ok);
+    assert_eq!(stdout, "0.83", "setter must persist + be reflected");
+
+    // 3. Mainnet safety guard: switching to mainnet WITHOUT confirm must fail.
+    let d3 = tmp_dir.join("c3");
+    let _ = std::fs::remove_dir_all(&d3);
+    let (ok, _o, stderr) = run(&d3, "CALL p2p_economics(network => 'mainnet');");
+    assert!(!ok, "mainnet switch without confirm must fail");
+    assert!(
+        stderr.to_lowercase().contains("real ton"),
+        "guard message should warn about real TON; got: {stderr}"
+    );
+    // ...and WITH confirm it switches.
+    let (ok, _o, e) = run(&d3, "CALL p2p_economics(network => 'mainnet', confirm => true);");
+    assert!(ok, "confirmed mainnet switch failed: {e}");
+    let (_ok, stdout, _e) = run(&d3, "SELECT value FROM p2p_status() WHERE key = 'network';");
+    assert_eq!(stdout, "mainnet", "confirmed switch should activate mainnet");
+
+    // 4. Secrets are never echoed by p2p_config() nor written to the config file.
+    let d4 = tmp_dir.join("c4");
+    let _ = std::fs::remove_dir_all(&d4);
+    let (ok, _o, e) = run(&d4, "CALL p2p_wallet(mnemonic => 'abandon abandon zoo secret words');");
+    assert!(ok, "p2p_wallet failed: {e}");
+    let (ok, stdout, _e) = run(
+        &d4,
+        "SELECT count(*) FROM p2p_config() WHERE value LIKE '%abandon%';",
+    );
+    assert!(ok);
+    assert_eq!(stdout, "0", "secret must be redacted from p2p_config()");
+    let runtime = std::fs::read_to_string(d4.join("runtime.toml")).unwrap_or_default();
+    assert!(!runtime.contains("abandon"), "secret must not land in the config file");
 }

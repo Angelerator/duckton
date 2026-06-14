@@ -2,6 +2,7 @@ import "@acton/build"
 import "@acton/emulation/network"
 import "@acton/emulation/testing"
 import "@acton/testing/expect"
+import "@acton/tolk-stdlib/tvm-dicts"
 
 import "@contracts/common"
 import "@contracts/stake_types"
@@ -270,6 +271,100 @@ get fun `test keeper can finalize an unresponsive owner withdraw for a bounty`()
     expect(state.totalSupply).toEqual(ton("0"));
     // 2% of 100 = 2 TON bounty to the keeper.
     expect(testing.getAccountBalance(keeper)).toBeGreaterOrEqual(ton("2"));
+}
+
+get fun `test stake-receipt jetton exposes Duckton TEP-64 metadata`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(
+        owner.address,
+        ton("10"),
+        slasher.address,
+        randomAddress("t"),
+        randomAddress("r"),
+    );
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+
+    // TEP-74 master data: mintable, supply matches the bond, master == vault,
+    // and the receipt-wallet code is the deployed StakeReceiptWallet code.
+    val data = vault.getJettonData();
+    expect(data.mintable).toBeTrue();
+    expect(data.totalSupply).toEqual(ton("100"));
+    expect(data.adminAddress).toEqual(vault.address);
+    expect(data.jettonWalletCode.hash()).toEqual(build("StakeReceiptWallet").hash());
+
+    // TEP-64 on-chain content cell == the exact Duckton metadata, rebuilt INLINE
+    // here (not via the contract's helper) so this asserts the precise bytes:
+    // name "Duckton", symbol "DUCKTON", decimals "9", short description.
+    var expectedDict: dict = createEmptyDict();
+    expectedDict.uDictSetRef(
+        256,
+        "name".sha256(),
+        beginCell().storeUint(0, 8).storeSlice("Duckton".literalSlice()).endCell(),
+    );
+    expectedDict.uDictSetRef(
+        256,
+        "symbol".sha256(),
+        beginCell().storeUint(0, 8).storeSlice("DUCKTON".literalSlice()).endCell(),
+    );
+    expectedDict.uDictSetRef(
+        256,
+        "decimals".sha256(),
+        beginCell().storeUint(0, 8).storeSlice("9".literalSlice()).endCell(),
+    );
+    expectedDict.uDictSetRef(
+        256,
+        "description".sha256(),
+        beginCell()
+            .storeUint(0, 8)
+            .storeSlice(
+                "Non-transferable 1:1 stake-receipt for a bonded duckdb-p2p node (slashable accountability bond)."
+                    .literalSlice(),
+            )
+            .endCell(),
+    );
+    val expectedContent = beginCell().storeUint(0, 8).storeDict(expectedDict).endCell();
+    expect(data.jettonContent.hash()).toEqual(expectedContent.hash());
+}
+
+get fun `test stake deposit mints receipt 1to1 and a transfer attempt is rejected`() {
+    // Explicit combined check (BLOCKCHAIN_ECONOMICS §8.5 / item 5): after a stake
+    // deposit the StakeReceiptWallet is minted 1:1, and any transfer is rejected.
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val attacker = testing.treasury("attacker");
+    val vault = deployVault(
+        owner.address,
+        ton("10"),
+        slasher.address,
+        randomAddress("t"),
+        randomAddress("r"),
+    );
+
+    // 1:1 mint on deposit.
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+    val wallet = receiptWalletOf(vault, owner.address);
+    expect(wallet.getWalletData().balance).toEqual(ton("100"));
+    expect(wallet.isTransferLocked()).toBeTrue();
+
+    // Transfer attempt is rejected and the balance is untouched (anti-exit).
+    val res = wallet.sendJettonTransfer(
+        owner.address,
+        9,
+        ton("100"),
+        attacker.address,
+        owner.address,
+        null,
+        ton("0"),
+        beginCell().endCell().beginParse(),
+        { value: ton("1") },
+    );
+    expect(
+        res,
+    ).toHaveFailedTx({ from: owner.address, to: wallet.address, exitCode: ERROR_RECEIPT_LOCKED });
+    expect(wallet.getWalletData().balance).toEqual(ton("100"));
 }
 
 get fun `test free-tier vault (min_stake = 0) is eligible with zero stake`() {

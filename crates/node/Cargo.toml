@@ -39,7 +39,7 @@ serde_json = "1.0.150"
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
-libp2p = { version = "0.56.0", default-features = false, features = ["tcp", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "macros"], optional = true }
+libp2p = { version = "0.56.0", default-features = false, features = ["tcp", "quic", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "autonat", "dcutr", "relay", "mdns", "macros"], optional = true }
 
 # OS-level sandbox resource enforcement. Unix uses POSIX `setrlimit` (libc);
 # Windows uses Job Objects (windows-sys). Both are target-gated so neither is

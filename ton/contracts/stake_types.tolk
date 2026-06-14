@@ -4,6 +4,7 @@
 // and §8.5 (transfer-locked TEP-74 stake-receipt jetton).
 
 import "common"
+import "@acton/tolk-stdlib/tvm-dicts"
 
 // ---------------------------------------------------------------------------
 // Custom opcodes (distinct 32-bit tags)
@@ -151,6 +152,52 @@ struct VaultState {
     unbondingAt: uint32
     totalSupply: coins
     eligible: bool // staked >= minStake AND no unbonding in progress
+}
+
+// TEP-74 `get_jetton_data` shape for the stake-receipt jetton (the vault is the
+// master). `mintable` is true (the vault mints 1:1 on deposit); `adminAddress`
+// is the vault itself (master == admin); `jettonContent` is the TEP-64 on-chain
+// metadata (Duckton); `jettonWalletCode` is the receipt wallet code.
+struct ReceiptJettonData {
+    totalSupply: coins
+    mintable: bool
+    adminAddress: address
+    jettonContent: cell
+    jettonWalletCode: cell
+}
+
+// ---------------------------------------------------------------------------
+// TEP-64 on-chain metadata for the "Duckton" stake-receipt jetton (§8.5).
+//
+// Gives the (non-transferable) receipt human-readable on-chain metadata so
+// wallets/explorers show it: name "Duckton", symbol "DUCKTON", decimals 9, a
+// short description. The transfer lock is unchanged — this is metadata only.
+// Layout: on-chain content cell = `0x00` prefix + dict(sha256(key) -> ^snake),
+// each value a snake-format cell (`0x00` prefix + utf-8 bytes), per TEP-64.
+// ---------------------------------------------------------------------------
+
+const RECEIPT_JETTON_DECIMALS = 9
+
+// Wrap a UTF-8 value into a TEP-64 snake-format content cell.
+fun snakeContentCell(value: slice): cell {
+    return beginCell().storeUint(0, 8).storeSlice(value).endCell();
+}
+
+// Build the TEP-64 on-chain content cell for the Duckton receipt jetton.
+fun buildReceiptJettonContent(): cell {
+    var content: dict = createEmptyDict();
+    content.uDictSetRef(256, "name".sha256(), snakeContentCell("Duckton".literalSlice()));
+    content.uDictSetRef(256, "symbol".sha256(), snakeContentCell("DUCKTON".literalSlice()));
+    content.uDictSetRef(256, "decimals".sha256(), snakeContentCell("9".literalSlice()));
+    content.uDictSetRef(
+        256,
+        "description".sha256(),
+        snakeContentCell(
+            "Non-transferable 1:1 stake-receipt for a bonded duckdb-p2p node (slashable accountability bond)."
+                .literalSlice(),
+        ),
+    );
+    return beginCell().storeUint(0, 8).storeDict(content).endCell();
 }
 
 // ---------------------------------------------------------------------------

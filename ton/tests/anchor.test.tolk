@@ -36,6 +36,57 @@ fun proofForL0(): Cell<MerkleStep>? {
     return bottom.toCell();
 }
 
+// A deeper 8-leaf tree (3 levels), the realistic multi-record epoch case the
+// testnet e2e never exercised. Leaf values stand in for BLAKE3(JobRecord) leaves;
+// the off-chain Rust builder (crates/settlement/src/merkle.rs) folds them with the
+// IDENTICAL node hash (`sha256(00 80 ‖ left ‖ right)` == this `hashPair`), pinned
+// by the Rust cross-check test against these same `hashPair` reference values.
+const M0 = 0xa000
+const M1 = 0xb001
+const M2 = 0xc002
+const M3 = 0xd003
+const M4 = 0xe004
+const M5 = 0xf005
+const M6 = 0x1006
+const M7 = 0x2007
+
+fun tree8Left(): int {
+    // A = hashPair(hashPair(M0,M1), hashPair(M2,M3))
+    return hashPair(hashPair(M0, M1), hashPair(M2, M3));
+}
+
+fun tree8Right(): int {
+    // B = hashPair(hashPair(M4,M5), hashPair(M6,M7))
+    return hashPair(hashPair(M4, M5), hashPair(M6, M7));
+}
+
+fun tree8Root(): int {
+    return hashPair(tree8Left(), tree8Right());
+}
+
+// Inclusion proof for M5 (index 5), mixed directions across 3 levels:
+//   level 0: M5 is the RIGHT child of (M4,M5) -> sibling M4 on the LEFT  (dir = 1)
+//   level 1: hash(M4,M5) is the LEFT child of (h45,h67) -> sibling h67 RIGHT (dir = 0)
+//   level 2: B is the RIGHT child of (A,B) -> sibling A on the LEFT (dir = 1)
+fun proofForM5(): Cell<MerkleStep>? {
+    val top: MerkleStep = {
+        dir: 1,
+        sibling: tree8Left(),
+        next: null,
+    };
+    val mid: MerkleStep = {
+        dir: 0,
+        sibling: hashPair(M6, M7),
+        next: top.toCell(),
+    };
+    val bottom: MerkleStep = {
+        dir: 1,
+        sibling: M4,
+        next: mid.toCell(),
+    };
+    return bottom.toCell();
+}
+
 fun deployAnchor(authority: address, treasury: address): RecordAnchor {
     val cfg: AnchorConfig = {
         minStakeWeight: MIN_WEIGHT,
@@ -161,6 +212,63 @@ get fun `test merkle inclusion proof verification`() {
 
     // A wrong leaf does not.
     expect(anchor.verifyInclusion(0x9999, root, proofForL0())).toBeFalse();
+}
+
+get fun `test multi-leaf (8) inclusion proof folds to the anchored root on-chain`() {
+    testing.setNow(T0);
+    val keeper = testing.treasury("keeper");
+    val authority = testing.treasury("authority");
+    val treasury = randomAddress("treasury");
+    val challenger = randomAddress("challenger");
+    val anchor = deployAnchor(authority.address, treasury);
+    val root = tree8Root();
+
+    // Anchor the realistic multi-record epoch root.
+    val submit = anchor.sendAnchorSubmitRoot(
+        keeper.address,
+        1,
+        1,
+        root,
+        0,
+        MIN_WEIGHT,
+        { value: ton("1") },
+    );
+    expect(
+        submit,
+    ).toHaveSuccessfulTx<AnchorSubmitRoot>({ from: keeper.address, to: anchor.address });
+
+    // The interior leaf M5 (mixed-direction, 3-level proof) folds to the root.
+    expect(anchor.verifyInclusion(M5, root, proofForM5())).toBeTrue();
+    expect(anchor.computeRoot(M5, proofForM5())).toEqual(root);
+
+    // A tampered leaf is rejected by the pure verifier...
+    expect(anchor.verifyInclusion(M5 + 1, root, proofForM5())).toBeFalse();
+
+    // ...and a real bonded dispute carrying the genuine proof opens, while one
+    // carrying a tampered claimed root is rejected on-chain (ERROR_BAD_INCLUSION_PROOF).
+    val good = anchor.sendAnchorOpenDispute(
+        challenger,
+        1,
+        1,
+        M5,
+        root,
+        proofForM5(),
+        { value: ton("2") },
+    );
+    expect(good).toHaveSuccessfulTx<AnchorOpenDispute>({ from: challenger, to: anchor.address });
+
+    val tampered = anchor.sendAnchorOpenDispute(
+        challenger,
+        2,
+        1,
+        M5 + 1,
+        root,
+        proofForM5(),
+        { value: ton("2") },
+    );
+    expect(
+        tampered,
+    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ERROR_BAD_INCLUSION_PROOF });
 }
 
 get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verdicts`() {

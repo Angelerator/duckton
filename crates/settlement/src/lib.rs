@@ -21,17 +21,24 @@
 //! produces signed receipts, and updates reputation exactly like a paid job. The
 //! `stake_factor` seam is the only economics-gated input to the trust score.
 
+pub mod cell;
 pub mod engagement;
 pub mod merkle;
 pub mod mock;
 pub mod noop;
+pub mod quality;
 pub mod ton;
 pub mod ton_proof;
 pub mod traits;
 pub mod types;
+pub mod wiring;
 
+pub use cell::{Cell, CellBuilder, BASECHAIN};
 pub use engagement::settle_if_paid;
+pub use quality::{latency_score, quality_score, throughput_score, QualitySample};
+pub use ton::GlobalParams;
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
+pub use wiring::{resolve_ton_wiring, TonWiring};
 pub use types::{
     Amount, BindingError, EscrowHandle, Hash32, InclusionProof, JobRecord, NodeWalletBinding,
     Payout, SettleError, SettlementOutcome, SlashError, SlashReason, TonProof, WalletAddress,

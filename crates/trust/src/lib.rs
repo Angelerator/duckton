@@ -26,8 +26,8 @@ pub mod token;
 pub use canonical::{canonical_hash, evaluate_quorum, QuorumOutcome};
 pub use receipt::{sign_receipt, signing_bytes, verify_receipt, ReceiptDraft, Signer};
 pub use reputation::{
-    age_factor, attestation_gate, now_ts, soft_trust_score, InMemoryTrustStore, TrustInputs,
-    TrustStore,
+    age_factor, attestation_gate, confidence_reputation, exploration_bonus, now_ts,
+    soft_trust_score, InMemoryTrustStore, TrustInputs, TrustStore,
 };
 pub use attestation::{
     AllowlistVerifier, AttestError, Attestor, AttestationVerifier, MockAttestor,

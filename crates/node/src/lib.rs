@@ -25,6 +25,7 @@ pub mod estimator;
 #[cfg(feature = "discovery-libp2p")]
 pub mod libp2p_discovery;
 pub mod membership;
+pub mod node;
 pub mod planner;
 pub mod result_stream;
 pub mod sandbox;
@@ -53,9 +54,11 @@ pub use estimator::{
 };
 #[cfg(feature = "discovery-libp2p")]
 pub use libp2p_discovery::{
-    evaluate_ad, AdOutcome, DiscoveryError, Libp2pDiscovery, Libp2pDiscoveryConfig,
+    evaluate_ad, AdOutcome, DiscoveryError, Libp2pDiscovery, Libp2pDiscoveryConfig, NatParams,
+    RelayLimits,
 };
 pub use membership::MembershipTable;
+pub use node::{Node, NodeError};
 pub use planner::{
     is_resource_exhaustion, DefaultPlanner, LocalExecutor, LocalOrRemotePlanner, LocalReservation,
     PlanDecision, PlanReason, PlanRequest, Route,

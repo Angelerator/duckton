@@ -27,14 +27,17 @@
 //! identity that matters for trust/selection travels *inside* the signed ad
 //! (`node_id` + `pubkey` + `sig`), so the overlay PeerId is independent.
 
+use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use futures_util::StreamExt;
+use libp2p::multiaddr::Protocol;
+use libp2p::swarm::behaviour::toggle::Toggle;
 use libp2p::swarm::SwarmEvent;
-use libp2p::{gossipsub, identify, kad, noise, tcp, yamux};
+use libp2p::{autonat, dcutr, gossipsub, identify, kad, mdns, noise, relay, tcp, yamux};
 use libp2p::{Multiaddr, PeerId};
 use p2p_config::GridConfig;
 use p2p_proto::CapabilityAd;
@@ -73,6 +76,85 @@ pub struct Libp2pDiscoveryConfig {
     pub replication_factor: usize,
     pub query_parallelism: usize,
     pub protocol_major: u16,
+    /// Global NAT-traversal stack parameters (AutoNAT, DCUtR, Circuit Relay v2 +
+    /// AutoRelay, mDNS). Built from `[discovery.nat]`.
+    pub nat: NatParams,
+}
+
+/// Resolved NAT-traversal parameters for the overlay (parsed from
+/// [`p2p_config::NatConfig`] so nothing is hard-coded).
+#[derive(Debug, Clone)]
+pub struct NatParams {
+    pub autonat: bool,
+    pub dcutr: bool,
+    pub relay_client: bool,
+    pub act_as_relay: bool,
+    pub mdns: bool,
+    pub mdns_query_interval: Duration,
+    pub external_addresses: Vec<Multiaddr>,
+    pub relays: Vec<Multiaddr>,
+    pub max_relays: usize,
+    pub relay_limits: RelayLimits,
+}
+
+impl Default for NatParams {
+    fn default() -> Self {
+        Self {
+            autonat: false,
+            dcutr: false,
+            relay_client: false,
+            act_as_relay: false,
+            mdns: false,
+            mdns_query_interval: Duration::from_secs(300),
+            external_addresses: Vec::new(),
+            relays: Vec::new(),
+            max_relays: 3,
+            relay_limits: RelayLimits::default(),
+        }
+    }
+}
+
+/// Resolved volunteer-relay server limits (mirrors [`relay::Config`] caps).
+#[derive(Debug, Clone)]
+pub struct RelayLimits {
+    pub max_reservations: usize,
+    pub max_reservations_per_peer: usize,
+    pub reservation_duration: Duration,
+    pub max_circuits: usize,
+    pub max_circuits_per_peer: usize,
+    pub max_circuit_duration: Duration,
+    pub max_circuit_bytes: u64,
+}
+
+impl Default for RelayLimits {
+    fn default() -> Self {
+        Self {
+            max_reservations: 128,
+            max_reservations_per_peer: 4,
+            reservation_duration: Duration::from_secs(60 * 60),
+            max_circuits: 16,
+            max_circuits_per_peer: 4,
+            max_circuit_duration: Duration::from_secs(2 * 60),
+            max_circuit_bytes: 1 << 17,
+        }
+    }
+}
+
+impl RelayLimits {
+    /// Build a [`relay::Config`] from these limits (keeping the library's
+    /// default rate limiters).
+    fn to_relay_config(&self) -> relay::Config {
+        relay::Config {
+            max_reservations: self.max_reservations,
+            max_reservations_per_peer: self.max_reservations_per_peer,
+            reservation_duration: self.reservation_duration,
+            max_circuits: self.max_circuits,
+            max_circuits_per_peer: self.max_circuits_per_peer,
+            max_circuit_duration: self.max_circuit_duration,
+            max_circuit_bytes: self.max_circuit_bytes,
+            ..Default::default()
+        }
+    }
 }
 
 fn parse_multiaddrs(raw: &[String]) -> Result<Vec<Multiaddr>, DiscoveryError> {
@@ -105,6 +187,33 @@ impl Libp2pDiscoveryConfig {
             replication_factor: cfg.discovery.kademlia.replication_factor.max(1),
             query_parallelism: cfg.discovery.kademlia.query_parallelism.max(1),
             protocol_major,
+            nat: NatParams::from_config(&cfg.discovery.nat)?,
+        })
+    }
+}
+
+impl NatParams {
+    /// Resolve NAT-traversal parameters from the `[discovery.nat]` config.
+    pub fn from_config(cfg: &p2p_config::NatConfig) -> Result<Self, DiscoveryError> {
+        Ok(Self {
+            autonat: cfg.autonat,
+            dcutr: cfg.dcutr,
+            relay_client: cfg.relay_client,
+            act_as_relay: cfg.act_as_relay,
+            mdns: cfg.mdns,
+            mdns_query_interval: Duration::from_secs(cfg.mdns_query_interval_secs.max(1)),
+            external_addresses: parse_multiaddrs(&cfg.external_addresses)?,
+            relays: parse_multiaddrs(&cfg.relays)?,
+            max_relays: cfg.max_relays.max(1),
+            relay_limits: RelayLimits {
+                max_reservations: cfg.relay_limits.max_reservations,
+                max_reservations_per_peer: cfg.relay_limits.max_reservations_per_peer,
+                reservation_duration: Duration::from_secs(cfg.relay_limits.reservation_duration_secs),
+                max_circuits: cfg.relay_limits.max_circuits,
+                max_circuits_per_peer: cfg.relay_limits.max_circuits_per_peer,
+                max_circuit_duration: Duration::from_secs(cfg.relay_limits.max_circuit_duration_secs),
+                max_circuit_bytes: cfg.relay_limits.max_circuit_bytes,
+            },
         })
     }
 }
@@ -159,11 +268,25 @@ pub fn evaluate_ad(
 }
 
 /// Combined network behaviour for the discovery overlay.
+///
+/// Beyond Kademlia + gossipsub + identify, this carries the global NAT-traversal
+/// stack. The NAT behaviours are [`Toggle`]d so each can be enabled/disabled from
+/// `[discovery.nat]` config without changing the transport or swarm type.
 #[derive(libp2p::swarm::NetworkBehaviour)]
 struct DiscoveryBehaviour {
     gossipsub: gossipsub::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
+    /// AutoNAT: detect public reachability + learn external address.
+    autonat: Toggle<autonat::Behaviour>,
+    /// DCUtR: relay-assisted direct-connection upgrade (hole punching).
+    dcutr: Toggle<dcutr::Behaviour>,
+    /// Circuit Relay v2 client (reserve circuits on volunteer relays).
+    relay_client: Toggle<relay::client::Behaviour>,
+    /// Circuit Relay v2 server (volunteer to relay for others).
+    relay_server: Toggle<relay::Behaviour>,
+    /// mDNS zero-config LAN peer discovery.
+    mdns: Toggle<mdns::tokio::Behaviour>,
 }
 
 enum Command {
@@ -205,7 +328,15 @@ impl Libp2pDiscovery {
         let mesh_n = cfg.mesh_n;
         let replication = cfg.replication_factor;
         let parallelism = cfg.query_parallelism;
+        // NAT params: a clone is moved into the (FnOnce) behaviour constructor;
+        // the original `cfg.nat` is reused afterwards for listen/external-addr
+        // wiring.
+        let nat = cfg.nat.clone();
 
+        // Transport stack: TCP+Noise+Yamux *and* QUIC (UDP) — DCUtR hole punching
+        // and direct dials use QUIC/UDP — plus a Circuit Relay v2 *client*
+        // transport so the node can be dialed/listen via volunteer relays. The
+        // relay client behaviour is handed to the behaviour constructor.
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
             .with_tcp(
@@ -214,7 +345,10 @@ impl Libp2pDiscovery {
                 yamux::Config::default,
             )
             .map_err(|e| DiscoveryError::Build(e.to_string()))?
-            .with_behaviour(|key| {
+            .with_quic()
+            .with_relay_client(noise::Config::new, yamux::Config::default)
+            .map_err(|e| DiscoveryError::Build(e.to_string()))?
+            .with_behaviour(|key, relay_client_behaviour| {
                 let peer_id = key.public().to_peer_id();
 
                 // gossipsub: republish-friendly, small-mesh tolerant.
@@ -251,10 +385,41 @@ impl Libp2pDiscovery {
                     key.public(),
                 ));
 
+                // --- Global NAT-traversal stack (each toggled by config) ---
+                let autonat = Toggle::from(nat.autonat.then(|| {
+                    autonat::Behaviour::new(peer_id, autonat::Config::default())
+                }));
+                let dcutr = Toggle::from(nat.dcutr.then(|| dcutr::Behaviour::new(peer_id)));
+                let relay_client =
+                    Toggle::from(nat.relay_client.then_some(relay_client_behaviour));
+                let relay_server = Toggle::from(nat.act_as_relay.then(|| {
+                    relay::Behaviour::new(peer_id, nat.relay_limits.to_relay_config())
+                }));
+                let mdns = Toggle::from(if nat.mdns {
+                    let mdns_cfg = mdns::Config {
+                        query_interval: nat.mdns_query_interval,
+                        ..Default::default()
+                    };
+                    match mdns::tokio::Behaviour::new(mdns_cfg, peer_id) {
+                        Ok(b) => Some(b),
+                        Err(e) => {
+                            warn!("mDNS disabled: failed to start ({e})");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                });
+
                 Ok(DiscoveryBehaviour {
                     gossipsub,
                     kademlia,
                     identify,
+                    autonat,
+                    dcutr,
+                    relay_client,
+                    relay_server,
+                    mdns,
                 })
             })
             .map_err(|e| DiscoveryError::Build(e.to_string()))?
@@ -301,6 +466,34 @@ impl Libp2pDiscovery {
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
         }
 
+        // Advertise any operator-supplied external addresses (augments anything
+        // AutoNAT later discovers). These are the "no fixed IP/URL" override.
+        for addr in &cfg.nat.external_addresses {
+            swarm.add_external_address(addr.clone());
+        }
+
+        // Reserve a relay circuit on each explicitly-configured relay so an
+        // unreachable node is dialable immediately (before AutoRelay kicks in).
+        // Listening on `<relay>/p2p-circuit` is how the relay client requests a
+        // reservation. AutoRelay (in the driver) tops this up from relays
+        // discovered on the network, bounded by `max_relays`.
+        let mut reserved_relays: HashSet<PeerId> = HashSet::new();
+        if cfg.nat.relay_client {
+            for relay_addr in cfg.nat.relays.iter().take(cfg.nat.max_relays) {
+                if let Some(peer) = peer_id_from_multiaddr(relay_addr) {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer, relay_addr.clone());
+                    reserved_relays.insert(peer);
+                }
+                let circuit = relay_addr.clone().with(Protocol::P2pCircuit);
+                if let Err(e) = swarm.listen_on(circuit) {
+                    debug!("relay reservation on {relay_addr} failed: {e}");
+                }
+            }
+        }
+
         let listen_addrs = Arc::new(Mutex::new(Vec::new()));
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>(64);
 
@@ -313,6 +506,9 @@ impl Libp2pDiscovery {
             ttl_secs: cfg.capability_ttl_secs,
             protocol_major: cfg.protocol_major,
             heartbeat,
+            relay_client_enabled: cfg.nat.relay_client,
+            max_relays: cfg.nat.max_relays,
+            reserved_relays,
         };
         let task = tokio::spawn(driver.run(cmd_rx));
 
@@ -396,6 +592,12 @@ struct SwarmDriver {
     ttl_secs: u64,
     protocol_major: u16,
     heartbeat: Duration,
+    /// AutoRelay: whether to auto-reserve circuits on relays learned from the
+    /// network, and the cap on simultaneous relay reservations.
+    relay_client_enabled: bool,
+    max_relays: usize,
+    /// Relay peers we already hold (or requested) a reservation with.
+    reserved_relays: HashSet<PeerId>,
 }
 
 impl SwarmDriver {
@@ -463,16 +665,64 @@ impl SwarmDriver {
             )) => {
                 // Learn the peer's addresses for Kademlia routing and add it as a
                 // gossip peer so small meshes form promptly.
-                for addr in info.listen_addrs {
+                for addr in &info.listen_addrs {
                     self.swarm
                         .behaviour_mut()
                         .kademlia
-                        .add_address(&peer_id, addr);
+                        .add_address(&peer_id, addr.clone());
                 }
                 self.swarm
                     .behaviour_mut()
                     .gossipsub
                     .add_explicit_peer(&peer_id);
+                // AutoRelay: if this peer is a Circuit Relay v2 server and we are
+                // still under our reservation cap, reserve a circuit through it
+                // so unreachable peers can dial us via a VOLUNTEER relay (no
+                // central server). Relays are auto-selected from the network.
+                self.maybe_reserve_relay(peer_id, &info);
+            }
+            SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Autonat(
+                autonat::Event::StatusChanged { new, .. },
+            )) => {
+                // AutoNAT decided we are publicly reachable at `addr`: advertise
+                // it so peers can dial us directly (learned, not hard-coded).
+                if let autonat::NatStatus::Public(addr) = new {
+                    debug!("autonat: publicly reachable at {addr}");
+                    self.swarm.add_external_address(addr);
+                } else {
+                    debug!("autonat status: {new:?}");
+                }
+            }
+            SwarmEvent::Behaviour(DiscoveryBehaviourEvent::RelayClient(
+                relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
+            )) => {
+                debug!("relay reservation accepted by {relay_peer_id}");
+                self.reserved_relays.insert(relay_peer_id);
+            }
+            SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Dcutr(dcutr::Event {
+                remote_peer_id,
+                result,
+            })) => match result {
+                Ok(_) => debug!("dcutr: direct connection upgraded to {remote_peer_id}"),
+                Err(e) => debug!("dcutr: hole punch to {remote_peer_id} failed: {e}"),
+            },
+            SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Mdns(mdns::Event::Discovered(
+                peers,
+            ))) => {
+                // Zero-config LAN discovery: route + gossip-peer each found node.
+                for (peer_id, addr) in peers {
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, addr.clone());
+                    self.swarm
+                        .behaviour_mut()
+                        .gossipsub
+                        .add_explicit_peer(&peer_id);
+                    if let Err(e) = self.swarm.dial(addr.clone()) {
+                        debug!("mdns dial {addr} failed: {e}");
+                    }
+                }
             }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 self.swarm
@@ -484,6 +734,46 @@ impl SwarmDriver {
                 warn!("outgoing connection error to {peer_id:?}: {error}");
             }
             _ => {}
+        }
+    }
+
+    /// AutoRelay: reserve a relayed circuit through `peer` if it advertises the
+    /// Circuit Relay v2 hop protocol and we are still under `max_relays`. This is
+    /// how a node behind a symmetric NAT (where hole punching can't succeed)
+    /// stays dialable — through volunteer peers discovered on the network, never
+    /// a central server.
+    fn maybe_reserve_relay(&mut self, peer: PeerId, info: &identify::Info) {
+        if !self.relay_client_enabled
+            || self.reserved_relays.len() >= self.max_relays
+            || self.reserved_relays.contains(&peer)
+        {
+            return;
+        }
+        let is_relay = info
+            .protocols
+            .iter()
+            .any(|p| *p == relay::HOP_PROTOCOL_NAME);
+        if !is_relay {
+            return;
+        }
+        // Pick a concrete (non-relayed) listen address to reach the relay on.
+        let Some(base) = info
+            .listen_addrs
+            .iter()
+            .find(|a| !a.iter().any(|p| matches!(p, Protocol::P2pCircuit)))
+            .cloned()
+        else {
+            return;
+        };
+        let circuit = base
+            .with(Protocol::P2p(peer))
+            .with(Protocol::P2pCircuit);
+        match self.swarm.listen_on(circuit) {
+            Ok(_) => {
+                debug!("autorelay: reserving circuit via relay {peer}");
+                self.reserved_relays.insert(peer);
+            }
+            Err(e) => debug!("autorelay: reservation via {peer} failed: {e}"),
         }
     }
 }

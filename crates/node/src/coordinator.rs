@@ -18,8 +18,8 @@ use p2p_settlement::StakeRegistry;
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
-    age_factor, attestation_gate, canonical, now_ts, sign_receipt, soft_trust_score, ReceiptDraft,
-    TrustInputs, TrustStore,
+    age_factor, attestation_gate, canonical, exploration_bonus, now_ts, sign_receipt,
+    soft_trust_score, ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
 use tracing::debug;
@@ -551,9 +551,14 @@ impl Coordinator {
         } else {
             0.0
         };
+        // Confidence-aware reputation (BLOCKCHAIN_ECONOMICS §4.1/§7.3): the raw
+        // success ratio is replaced by a Beta/Wilson lower-confidence bound so a
+        // node with thin history is not treated as fully trusted. Unknown nodes
+        // (no history) still fall back to the bootstrap value, exactly as before.
+        let rep = &cfg.economics.reputation;
         let reputation = self
             .trust_store
-            .reputation(worker, now)
+            .confident_reputation(worker, now, rep.prior_alpha, rep.prior_beta, rep.confidence_z)
             .unwrap_or(cfg.trust.bootstrap_trust);
         let obs = self.trust_store.observation_count(worker);
         let inputs = TrustInputs {
@@ -563,7 +568,15 @@ impl Coordinator {
             stake_factor,
             penalties: self.trust_store.penalty(worker),
         };
-        soft_trust_score(&cfg.trust.weights, &inputs)
+        // Cold-start exploration (§5.2/§6): add a decaying uncertainty bonus so
+        // new honest nodes get sampled and can build reputation. ε defaults to
+        // 0.0 (pure exploitation — today's behavior) and is configurable.
+        let bonus = exploration_bonus(
+            obs,
+            cfg.economics.ranking.exploration_rate,
+            cfg.economics.ranking.exploration_saturation,
+        );
+        (soft_trust_score(&cfg.trust.weights, &inputs) + bonus).clamp(0.0, 1.0)
     }
 
     fn make_receipt(

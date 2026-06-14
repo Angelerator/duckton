@@ -41,6 +41,24 @@ pub trait TrustStore: Send + Sync {
     fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64>;
     /// Number of recorded observations for a worker.
     fn observation_count(&self, worker: &NodeId) -> usize;
+    /// **Confidence-aware** reputation (BLOCKCHAIN_ECONOMICS §4.1/§7.3): the raw
+    /// recency-weighted success ratio shrunk toward a pessimistic prior via the
+    /// Wilson lower bound, so a node with few verified jobs is not treated as
+    /// fully trusted. Returns `None` exactly when [`Self::reputation`] does (no
+    /// history). The default impl derives it from the raw ratio + observation
+    /// count, so no store needs to override it.
+    fn confident_reputation(
+        &self,
+        worker: &NodeId,
+        now: u64,
+        prior_alpha: f64,
+        prior_beta: f64,
+        z: f64,
+    ) -> Option<f64> {
+        let ratio = self.reputation(worker, now)?;
+        let obs = self.observation_count(worker);
+        Some(confidence_reputation(ratio, obs, prior_alpha, prior_beta, z))
+    }
     /// Add voucher trust to a worker (Phase 3 web-of-trust).
     fn add_vouch(&self, worker: &NodeId, weight: f64);
     /// Total voucher trust accrued for a worker.
@@ -239,6 +257,64 @@ pub fn age_factor(observations: usize, saturate_at: usize) -> f64 {
     (observations as f64 / saturate_at as f64).min(1.0)
 }
 
+/// Confidence-aware reputation (BLOCKCHAIN_ECONOMICS §4.1): the **Wilson
+/// lower-confidence-bound** of the success ratio, with configurable Beta
+/// pseudo-count priors (`prior_alpha` pseudo-successes, `prior_beta`
+/// pseudo-failures). It replaces the raw success ratio so that a node with only
+/// a few observations is *not* treated as fully trusted — a "3-for-3" newcomer
+/// scores well below a node with a long correct history, defeating cheap
+/// reputation farming.
+///
+/// * `ratio` — the raw (recency-weighted) success ratio in `[0,1]`.
+/// * `observations` — number of verified observations backing `ratio`.
+/// * `z` — Wilson confidence z-score (e.g. `1.96` ≈ 95% lower bound). `z == 0`
+///   collapses to the prior-shrunk Beta posterior **mean** (no interval term).
+///
+/// Properties (unit-tested): monotonically increasing in `observations` for a
+/// fixed `ratio`; approaches `ratio` as `observations → ∞`; strictly below
+/// `ratio` for finite `observations` when `ratio` is high.
+pub fn confidence_reputation(
+    ratio: f64,
+    observations: usize,
+    prior_alpha: f64,
+    prior_beta: f64,
+    z: f64,
+) -> f64 {
+    let n = observations as f64;
+    // Fold the Beta pseudo-counts into the observed counts.
+    let successes = (ratio.clamp(0.0, 1.0) * n) + prior_alpha.max(0.0);
+    let trials = n + prior_alpha.max(0.0) + prior_beta.max(0.0);
+    if trials <= 0.0 {
+        return 0.0;
+    }
+    let p = successes / trials;
+    if z <= 0.0 {
+        // No interval widening: the prior-shrunk posterior mean.
+        return p.clamp(0.0, 1.0);
+    }
+    // Wilson score interval lower bound over (p, trials).
+    let z2 = z * z;
+    let denom = 1.0 + z2 / trials;
+    let centre = p + z2 / (2.0 * trials);
+    let margin = z * ((p * (1.0 - p) / trials) + z2 / (4.0 * trials * trials)).max(0.0).sqrt();
+    ((centre - margin) / denom).clamp(0.0, 1.0)
+}
+
+/// Cold-start **exploration bonus** (BLOCKCHAIN_ECONOMICS §5.2/§6): an
+/// uncertainty term added to a candidate's selection score that decays linearly
+/// to zero as the node accrues verified observations. New honest nodes therefore
+/// get sampled (and can build reputation) instead of being permanently starved
+/// by incumbents. `rate` is the configured exploration rate ε; `saturation` is
+/// the observation count at which the bonus reaches zero. Returns `0.0` when
+/// `rate == 0` (pure exploitation, today's default behavior).
+pub fn exploration_bonus(observations: usize, rate: f64, saturation: usize) -> f64 {
+    if rate <= 0.0 || saturation == 0 {
+        return 0.0;
+    }
+    let remaining = 1.0 - (observations as f64 / saturation as f64).min(1.0);
+    (rate * remaining).max(0.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +394,65 @@ mod tests {
             s.record(&receipt(&format!("b3:w{i}"), Verdict::Correct, 1));
         }
         assert_eq!(s.tracked_workers(), 3);
+    }
+
+    #[test]
+    fn confidence_reputation_penalizes_thin_history() {
+        // A "perfect" newcomer (few obs) must score well below a long-correct node.
+        let newbie = confidence_reputation(1.0, 3, 1.0, 2.0, 1.96);
+        let veteran = confidence_reputation(1.0, 500, 1.0, 2.0, 1.96);
+        assert!(newbie < veteran, "newbie {newbie} should be < veteran {veteran}");
+        assert!(newbie < 1.0, "a thinly-observed node is not fully trusted");
+        assert!(veteran > 0.9, "a long correct history approaches 1.0");
+    }
+
+    #[test]
+    fn confidence_reputation_is_monotonic_in_observations() {
+        let priors = (1.0, 2.0, 1.96);
+        let a = confidence_reputation(0.9, 5, priors.0, priors.1, priors.2);
+        let b = confidence_reputation(0.9, 50, priors.0, priors.1, priors.2);
+        let c = confidence_reputation(0.9, 5000, priors.0, priors.1, priors.2);
+        assert!(a < b && b < c, "more observations at the same ratio ⇒ higher confidence");
+        // Converges to the raw ratio with overwhelming evidence.
+        assert!((c - 0.9).abs() < 0.02);
+    }
+
+    #[test]
+    fn confidence_reputation_z_zero_is_beta_posterior_mean() {
+        // With z = 0 the estimate is exactly the prior-shrunk posterior mean.
+        // 3 successes + 1 pseudo-success / (3 + 1 + 2) = 4/6.
+        let p = confidence_reputation(1.0, 3, 1.0, 2.0, 0.0);
+        assert!((p - 4.0 / 6.0).abs() < 1e-9, "got {p}");
+    }
+
+    #[test]
+    fn exploration_bonus_decays_with_observations() {
+        // Off by default (rate = 0).
+        assert_eq!(exploration_bonus(0, 0.0, 20), 0.0);
+        // A brand-new node gets the full bonus; it decays to 0 at saturation.
+        let fresh = exploration_bonus(0, 0.2, 20);
+        let mid = exploration_bonus(10, 0.2, 20);
+        let saturated = exploration_bonus(20, 0.2, 20);
+        let beyond = exploration_bonus(100, 0.2, 20);
+        assert!((fresh - 0.2).abs() < 1e-9);
+        assert!(mid < fresh && mid > saturated);
+        assert_eq!(saturated, 0.0);
+        assert_eq!(beyond, 0.0);
+    }
+
+    #[test]
+    fn confident_reputation_trait_method_uses_priors() {
+        let s = store();
+        s.record(&receipt("b3:w", Verdict::Correct, 100));
+        s.record(&receipt("b3:w", Verdict::Correct, 100));
+        s.record(&receipt("b3:w", Verdict::Correct, 100));
+        let w = NodeId("b3:w".into());
+        // Raw getter is unchanged (still the plain ratio).
+        assert_eq!(s.reputation(&w, 100), Some(1.0));
+        // Confidence-aware view shrinks the 3-for-3 newcomer below 1.0.
+        let c = s.confident_reputation(&w, 100, 1.0, 2.0, 1.96).unwrap();
+        assert!(c < 1.0 && c > 0.0, "got {c}");
+        assert!(s.confident_reputation(&NodeId("b3:none".into()), 100, 1.0, 2.0, 1.96).is_none());
     }
 
     #[test]

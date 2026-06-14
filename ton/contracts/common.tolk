@@ -44,6 +44,10 @@ const ERROR_ALREADY_SETTLED = 224 // escrow already released
 const ERROR_TIMEOUT_NOT_REACHED = 225 // refund-on-timeout before the deadline
 const ERROR_PAYOUT_EXCEEDS_ESCROW = 226 // requested payout exceeds the locked escrow B
 
+// Global params (platform-wide config)
+const ERROR_NOT_ADMIN = 260 // sender is not the configured admin (or multisig)
+const ERROR_PARAMS_OUT_OF_BOUNDS = 261 // proposed params violate a §12 invariant
+
 // Record anchor / dispute
 const ERROR_BAD_PREV_ROOT = 240 // submitted root does not chain to the stored prev_root
 const ERROR_EPOCH_REGRESSION = 241 // epoch did not advance monotonically

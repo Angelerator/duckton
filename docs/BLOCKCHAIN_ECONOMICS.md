@@ -13,8 +13,8 @@
 > - **Rust `p2p-settlement` crate** ([`crates/settlement`](../crates/settlement))
 >   implements the §10.1 trait seams (`Wallet`, `Settlement`, `StakeRegistry`,
 >   `RecordAnchor`) with `mock`, genuine `noop` (the free, no-chain path), and
->   `ton` impls, plus `ton_proof` two-way binding verification and BLAKE3 Merkle
->   proofs.
+>   `ton` impls, plus `ton_proof` two-way binding verification and Merkle proofs
+>   that use the on-chain-aligned **TON cell-representation hash** (§7.2).
 > - **Config + integration**: a `[economics]` section (§12), a per-call `payment`
 >   override (free|paid|auto), and the coordinator's `stake_factor` seam are wired,
 >   all **off by default** (`economics.enabled = false` ⇒ today's free grid).
@@ -210,21 +210,40 @@ Computed by the requester from verified history (signed receipts, §7.3) — the
 data the trust engine already keeps, extended with latency/throughput aggregates:
 
 ```
-Q = w_s·S  +  w_l·L  +  w_t·T  +  w_c·C  −  w_p·P
-    (weights sum to 1 over the positive terms; P is a separate penalty)
+Q = clamp( (w_s·S + w_l·L + w_t·T + w_c·C) / Σw ,  0, 1)  ·  Π_i (1 − P_i)
+    (positive terms are a weight-normalized blend; penalties multiply, never subtract)
 ```
 
 | Term | Meaning | How it's measured (un-gameable source) |
 |---|---|---|
-| `S` success rate | recency-weighted correctness rate `R∈[0,1]` | **Existing** `TrustStore::reputation` from signed receipts; correctness decided by **quorum + canary**, never self-reported |
-| `L` latency score | `clamp(1 − p95_latency / latency_ref, 0, 1)` | `latency_ms` in receipts, recorded by the requester at **commit-first** time |
-| `T` throughput / volume | `min(1, ln(1+bytes_verified) / ln(1+bytes_ref))` | bytes/rows of **verified** results only (result must reach the agreed hash) |
+| `S` success rate | **confidence-aware** correctness rate `∈[0,1]` (see below) | **Existing** `TrustStore::reputation` from signed receipts, shrunk by the Beta/Wilson lower bound; correctness decided by **quorum + canary**, never self-reported |
+| `L` **size-normalized** latency | `clamp(1 − latency / (latency_ref · max(1, bytes/bytes_ref)), 0, 1)` | `latency_ms` in receipts (commit-first); the latency *allowance scales with the verified data volume*, so a big job is not punished for honestly taking longer |
+| `T` throughput **as a rate** | `clamp( ln(1 + bytes/latency_ms) / ln(1 + ref_rate), 0, 1)` | bytes per ms of **verified** results only; `ref_rate = throughput_ref_bytes_per_ms` (or `bytes_ref/latency_ref_ms` when 0). A *rate*, not raw volume, so a slow provider that merely touches many bytes can't out-score a fast one |
 | `C` completion / ETA honesty | `on_time_completions / accepted` minus an ETA-deviation penalty | compares bid `eta_ms` vs actual `latency_ms` |
-| `P` penalties | failed canaries, slashes, downtime/missed heartbeats | trust-store penalties + on-chain slash events |
+| `P_i` penalties | failed canaries, slashes, downtime/missed heartbeats | trust-store penalties + on-chain slash events |
 
-`latency_ref`, `bytes_ref`, and all `w_*` are **config** (`[economics.quality]`).
-The log-scaling on `T` means volume helps but with **diminishing returns**, so a
-provider can't dominate purely by claiming huge jobs.
+`latency_ref_ms`, `bytes_ref`, `throughput_ref_bytes_per_ms`, and all `w_*` are
+**config** (`[economics.quality]`). The log-scaling on `T` means volume helps but
+with **diminishing returns**. **`Q` is clamped to `[0,1]`** and penalties apply
+**multiplicatively** (a failed canary worth 50% halves `Q`) rather than being
+subtracted — so `Q` can never go negative and ranking comparisons stay
+well-defined. Implemented in `crates/settlement/src/quality.rs`.
+
+### 4.1.1 Confidence-aware success rate (don't over-trust thin history)
+
+The raw recency-weighted ratio over-trusts a node with only a handful of jobs: a
+"3-for-3" newcomer looks identical to a node with a thousand correct jobs, which
+makes **reputation farming** cheap. At *selection time* the raw ratio is therefore
+replaced by a **Beta/Wilson lower-confidence bound** (`crates/trust/reputation.rs`,
+`confidence_reputation`): configurable Beta pseudo-count priors (`prior_alpha`
+pseudo-successes, `prior_beta` pseudo-failures) are folded into the observed
+counts, and the **Wilson lower bound** at confidence `confidence_z` is returned.
+It is monotonically increasing in the observation count, approaches the raw ratio
+with overwhelming evidence, and stays well below it for thin history. The raw
+`TrustStore::reputation` getter is unchanged (receipts/inspection); only the trust
+score's reputation input is shrunk, via the new `TrustStore::confident_reputation`
+method. Priors live in `[economics.reputation]` (`prior_alpha`, `prior_beta`,
+`confidence_z`).
 
 ### 4.2 Earning function (bounded by escrow, rewards speed + quality)
 
@@ -327,6 +346,28 @@ StakeFactor_i = min( 1,  ln(1 + stake_i/min_stake) / ln(1 + stake_cap/min_stake)
   `soft_trust_score`) and is currently passed as `0.0` in the coordinator
   ([`coordinator.rs`](../crates/node/src/coordinator.rs) `effective_trust`). Wiring
   a `StakeRegistry` into that one field is the **minimal integration point**.
+
+### 5.3 Cold-start exploration (so new honest nodes get sampled)
+
+Confidence-aware reputation (§4.1.1) deliberately under-trusts thin history — but
+that creates a chicken-and-egg trap: a brand-new honest node can never build
+reputation if it is never selected. To break it, candidate ranking adds a
+**decaying exploration bonus** (an ε-greedy / uncertainty term) to each
+candidate's selection score:
+
+```
+bonus_i = exploration_rate · (1 − min(1, observations_i / exploration_saturation))
+score_i = clamp( soft_trust_score(...) + bonus_i , 0, 1)
+```
+
+A node with no history gets the full `exploration_rate`; the bonus decays linearly
+to `0` once it has `exploration_saturation` verified observations. This is applied
+in the ranking/selection function (`coordinator.rs::effective_trust`), using the
+pure `exploration_bonus` helper in `crates/trust/src/reputation.rs`.
+`exploration_rate` defaults to **`0.0`** (pure exploitation — today's behavior);
+set a small value (e.g. `0.1`) in `[economics.ranking]` to enable sampling of
+newcomers. New honest nodes are thus periodically tried and can earn the
+verified history their (pessimistic) confidence-aware score needs.
 
 ### 5.3 Bid privacy & anti-front-running (recommended)
 
@@ -447,6 +488,21 @@ latency, payment amount) stay off-chain as today's **signed receipts**
 2. Built into a **Merkle tree**; the **root is anchored on-chain** once per epoch.
 3. Any party can later prove a specific job record is in the anchored set with a
    **~1 KB Merkle inclusion proof** — no need to trust a server.
+
+> **Hash alignment (off-chain ↔ on-chain).** A multi-leaf inclusion proof must
+> fold to the *same* root the on-chain `RecordAnchor` verifier computes, so the
+> internal **node** hash is the **TON cell-representation hash** on both sides —
+> `parent = hash(cell{ left:uint256, right:uint256 })`, which reduces to
+> `sha256(0x00 0x80 ‖ left ‖ right)` (the `00 80` is the descriptor of an
+> ordinary ref-less cell holding 512 byte-aligned bits). The off-chain builder
+> ([`merkle.rs`](../crates/settlement/src/merkle.rs)) and the contract
+> ([`anchor_types.tolk::hashPair`](../ton/contracts/anchor_types.tolk)) are pinned
+> to identical reference values. Leaves are still `BLAKE3(canonical(JobRecord))`
+> and are folded **raw** (no on-chain leaf re-hash); the differing leaf vs node
+> hash constructions provide natural domain separation. The single-leaf testnet
+> e2e never exercised this because there `root == leaf`; the multi-leaf path is
+> now tested off-chain (Rust) and on-chain (Acton emulation, 4- and 8-leaf trees,
+> incl. tamper rejection).
 
 This is the **Filecoin PoDSI / data-segment pattern** ([FRC-58](https://github.com/filecoin-project/FIPs/discussions/512),
 [Boost](https://boost.filecoin.io/experimental-features/data-segment-indexing)):
@@ -656,6 +712,17 @@ slashing** while a fraud proof is still possible. Therefore:
   [Jetton how-it-works](https://docs.ton.org/blockchain-basics/standard/tokens/jettons/how-it-works)),
   with the transfer entrypoint gated on bond state. This is **not** a governance or
   utility token and is **not** inflationary — it is a fully-collateralized receipt.
+- **TEP-64 metadata ("Duckton").** The receipt jetton carries on-chain
+  [TEP-64](https://github.com/ton-blockchain/TEPs/blob/master/text/0064-token-data-standard.md)
+  metadata so wallets/explorers render it: **name "Duckton", symbol "DUCKTON",
+  decimals 9**, plus a short description. The `StakeVault` (the receipt's master)
+  exposes `get_jetton_data` (TEP-74/TEP-89) returning `(total_supply, mintable,
+  admin_address = the vault, jetton_content, jetton_wallet_code)`, where
+  `jetton_content` is the standard on-chain dictionary content cell
+  (`buildReceiptJettonContent` in `ton/contracts/stake_types.tolk`). The metadata
+  is **display-only**; the transfer lock is unchanged — Duckton remains
+  non-transferable. (Acton test: `stake-receipt jetton exposes Duckton TEP-64
+  metadata`.)
 
 ---
 
@@ -875,14 +942,22 @@ w_quality            = 0.6
 w_stake              = 0.15
 w_price              = 0.25
 # StakeFactor is log-scaled between min_stake and stake_cap
+exploration_rate       = 0.0      # cold-start ε (§5.3): 0 = off; ~0.1 samples new nodes
+exploration_saturation = 20       # observations at which the exploration bonus hits 0
 
 [economics.quality]              # weights for Q (success/latency/throughput/eta)
 w_success            = 0.5
-w_latency            = 0.2
-w_throughput         = 0.2
+w_latency            = 0.2        # size-normalized latency (allowance scales with bytes)
+w_throughput         = 0.2        # throughput-as-rate (bytes/ms), log-scaled
 w_completion         = 0.1
 latency_ref_ms       = 5000
 bytes_ref            = 1073741824 # 1 GiB reference for log throughput scaling
+throughput_ref_bytes_per_ms = 0   # 0 => derive ref rate from bytes_ref / latency_ref_ms
+
+[economics.reputation]           # confidence-aware reputation priors (§4.1.1)
+prior_alpha          = 1.0        # Beta pseudo-successes
+prior_beta           = 2.0        # Beta pseudo-failures (pessimistic about thin history)
+confidence_z         = 1.96       # Wilson lower-bound z (≈95%); 0 = posterior mean
 
 [economics.selection]
 n_public             = 3          # default N for public/low-value jobs
@@ -920,8 +995,39 @@ anchor_quorum_pct    = 0.66       # stake-weighted signers needed to accept a ro
 **New cross-field invariants** (extend `GridConfig::validate`, ARCHITECTURE §17):
 `unbonding_secs ≥ challenge_window_secs`; `slash_to_* sum == 1.0`; all `_pct ∈
 [0,1]`; `checksum_min ≥ 1`; `n_max ≥ n_default ≥ n_public ≥ checksum_min`;
-`participation_commission_frac` small (≤ ~0.1); ranking weights ≥ 0;
-`min_stake_sensitive ≥ min_stake_internal ≥ min_stake`.
+`participation_commission_frac` small (≤ ~0.1); ranking weights ≥ 0; quality
+weights ≥ 0; reputation priors (`prior_alpha`, `prior_beta`, `confidence_z`) ≥ 0;
+`exploration_rate ∈ [0,1]`; `min_stake_sensitive ≥ min_stake_internal ≥
+min_stake`.
+
+### 12.1 On-chain `GlobalParams` contract (params live on-chain too)
+
+The `[economics]` knobs above are the **off-chain** node configuration. Their
+ecosystem-wide counterparts also live on-chain in a single **`GlobalParams`**
+contract ([`ton/contracts/GlobalParams.tolk`](../ton/contracts/GlobalParams.tolk))
+so every contract / node reads one authoritative source:
+
+- Holds `platform_fee`, `fee_recipient`, `surcharge`, `participation_commission`,
+  the slash %s + split, the min-stake tiers, `stake_cap`, `unbonding`/`challenge`
+  windows, default selection `N`/quorum/checksum, and the ranking weights — all in
+  their on-chain representation (bps / nanoton / seconds), packed into an
+  `EcoParams` child cell.
+- **Editable in place, address stable.** An admin-gated `update_params`
+  **mutates storage** (there is *no* redeploy), so the contract address never
+  changes and other contracts can hard-pin it. Each update is **bounds-validated
+  on-chain** (`validateEcoParams` mirrors the §12 invariants), **emits a
+  `ParamsUpdated` log**, and **rejects unauthorized senders** (`ERROR_NOT_ADMIN`).
+- **Admin model.** The admin is a single configurable address today, **designed to
+  later point at a multisig** — `update_admin` rotates it (e.g. single key →
+  multisig). Acton tests cover: admin update persists + address unchanged;
+  non-admin rejected; out-of-bounds rejected; admin rotation.
+- **Off-chain side.** Nodes derive the same params from `[economics]` via
+  `p2p_settlement::GlobalParams::from_economics` (single source of truth), and new
+  escrow/stake instances are parameterized from them. The admin SQL setter
+  **`CALL p2p_admin_params()`** prepares an `update_params` from the configured
+  admin wallet (`crates/extension`), gated on on-chain settlement +
+  `guard_mainnet()` + a registered `global_params` address. The deployed address
+  is configured per network under `[economics.<net>.contracts].global_params`.
 
 ---
 
@@ -1044,16 +1150,25 @@ prior open question; the rest of the doc has been updated to match.
 The v1 foundation described above is **implemented** (off by default):
 
 - **Contracts** (Tolk, via the **Acton** toolkit) in [`ton/`](../ton):
-  `StakeVault` (+ transfer-locked `StakeReceiptWallet`), `JobEscrow`,
-  `RecordAnchor`. Sharded per-node / per-job (no global contract), non-custodial.
-  Built and tested with `acton build` / `acton test` (Tolk-native emulation tests
-  + coverage); network-agnostic deploy scripts (`ton/scripts/`) are ready for
-  `acton script … --net testnet` and `acton verify`.
+  `StakeVault` (+ transfer-locked `StakeReceiptWallet`, now carrying **TEP-64
+  "Duckton" metadata** via `get_jetton_data`, §8.5), `JobEscrow`, `RecordAnchor`,
+  and the single platform-wide **`GlobalParams`** contract (§12.1: editable in
+  place, address-stable, admin-gated `update_params` with on-chain bounds
+  validation + events + admin rotation). Economic state is sharded per-node /
+  per-job (no global *economic* contract — only the params are global),
+  non-custodial. Built and tested with `acton build` / `acton test` (Tolk-native
+  emulation tests + coverage); network-agnostic deploy scripts (`ton/scripts/`,
+  incl. `deploy_global_params.tolk`) are ready for `acton script … --net testnet`
+  and `acton verify`. The live `testnet_e2e.sh` harness now also verifies the
+  receipt jetton is **minted 1:1** and a **transfer is rejected** on testnet.
 - **`crates/settlement`** (`p2p-settlement`) implements the §10.1 traits with
   `mock` (deterministic, default for tests), `noop` (the genuine free, no-chain
-  path), and `ton` (on-chain ABI + RPC seam; live calls behind the `ton-live`
+  path), and   `ton` (on-chain ABI + RPC seam; live calls behind the `ton-live`
   feature). It also provides `ton_proof` two-way binding verification (pure
-  Ed25519/SHA-256) and BLAKE3 Merkle inclusion proofs.
+  Ed25519/SHA-256), Merkle inclusion proofs using the **TON cell-representation
+  hash** end-to-end (so an off-chain proof folds to the same root the on-chain
+  `RecordAnchor` verifier computes — §7.2), and deterministic **StateInit-based**
+  per-node vault / per-job escrow address derivation.
 - **Integration**: the `[economics]` config section (§12) with cross-field
   validation, the per-call `payment` override, and the coordinator's
   `TrustInputs.stake_factor` seam — previously fed `0.0` in
@@ -1062,6 +1177,20 @@ The v1 foundation described above is **implemented** (off by default):
   (and `0.0` otherwise). Reputation/receipt scoring is a **separate, unconditional**
   path so free jobs are still fully scored.
 
+- **Scoring rationality fixes** (`crates/trust`, `crates/settlement`): the trust
+  score now uses a **confidence-aware** (Beta/Wilson lower-bound) reputation
+  (§4.1.1) and a **cold-start exploration bonus** (§5.3); the provider quality
+  score `Q` (`crates/settlement/src/quality.rs`) uses **size-normalized latency**
+  + **throughput-as-rate**, is **clamped to `[0,1]`**, and applies penalties
+  **multiplicatively** (§4.1). New knobs live in `[economics.reputation]`,
+  `[economics.ranking].exploration_*`, and `[economics.quality]`.
+- **`[economics.contracts]` wiring** (`crates/settlement/src/wiring.rs`): the live
+  TON client construction now reads `economics.resolved_rpc()`, the
+  `api_key_file`, and the per-network `contracts.*` addresses, and calls
+  `economics.guard_mainnet()` before resolving anything — so per-network
+  endpoint/address selection is automatic and mainnet is gated.
+
 Everything is **off by default** (`economics.enabled = false`); the default build
 behaves exactly as before. What still needs a live network to validate: actual
-testnet deploy/verify and live TON RPC settlement (the `ton-live` feature path).
+testnet deploy/verify and live TON RPC settlement (the `ton-live` feature path),
+including the on-chain `update_params` push and the live jetton mint/lock check.

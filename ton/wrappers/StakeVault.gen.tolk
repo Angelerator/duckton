@@ -167,6 +167,10 @@ fun StakeVault.getReceiptWalletAddress(self, owner: address): address {
     return net.runGetMethod(self.address, "get_receipt_wallet_address", [owner]);
 }
 
+fun StakeVault.getJettonData(self): ReceiptJettonData {
+    return net.runGetMethod(self.address, "get_jetton_data");
+}
+
 fun StakeVault.isEligible(self): bool {
     return net.runGetMethod(self.address, "is_eligible");
 }

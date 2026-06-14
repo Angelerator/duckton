@@ -102,6 +102,44 @@ heartbeat_ms        = 5000                # capability-ad republish interval
 fanout              = 6
 capability_ttl_secs = 30                  # ads older than this are rejected
 
+# -----------------------------------------------------------------------------
+# Global NAT traversal (architecture §8 "Networking & NAT traversal")
+# -----------------------------------------------------------------------------
+# Lets two nodes behind home/office NATs on DIFFERENT networks worldwide connect
+# DIRECTLY, with NO central server and NO fixed IP/URL. `identify` is always on;
+# these gate the optional libp2p behaviours layered on the discovery overlay:
+#   * autonat      — learn if we're publicly reachable + discover our external addr
+#   * dcutr        — coordinated hole punching: upgrade a relayed link to a DIRECT
+#                    one through NATs (works over QUIC/UDP). Requires relay_client.
+#   * relay_client — Circuit Relay v2 client + AutoRelay: when hole punching fails
+#                    (symmetric NAT), route through VOLUNTEER relay peers
+#                    auto-selected from the network (never a central server).
+#   * act_as_relay — volunteer THIS node as a Circuit Relay v2 server for others.
+#   * mdns         — zero-config peer discovery on the same LAN.
+# NOTE (law of distributed systems): at least one reachable entry point
+# (discovery.bootstrap seed or a relay) is required to JOIN the swarm — but it is
+# replaceable, owns nothing, and is never in the query data path.
+[discovery.nat]
+autonat            = true
+dcutr              = true                 # requires relay_client = true
+relay_client       = true
+act_as_relay       = false                # opt in to volunteer as a relay
+mdns               = true                 # LAN zero-config discovery
+mdns_query_interval_secs = 300            # how often mDNS re-queries the LAN
+external_addresses = []                   # e.g. ["/ip4/203.0.113.10/udp/9595/quic-v1"]
+relays             = []                    # explicit relay multiaddrs (incl. /p2p/<id>);
+                                          #  [] = AutoRelay picks relays from the network
+max_relays         = 3                    # max simultaneous relay reservations (AutoRelay cap)
+
+[discovery.nat.relay_limits]              # caps applied only when act_as_relay = true
+max_reservations          = 128
+max_reservations_per_peer = 4
+reservation_duration_secs = 3600
+max_circuits              = 16
+max_circuits_per_peer     = 4
+max_circuit_duration_secs = 120
+max_circuit_bytes         = 131072        # 128 KiB
+
 [scheduler]
 replicas              = 3                  # k workers to race (>= quorum)
 quorum                = 2                  # matching hashes required to accept
@@ -264,15 +302,39 @@ connection_pool_size     = 1024
 #   3. economics.default_payment (below)
 #   4. economics.enabled        (false => always free, no chain)
 [economics]
-enabled         = false                    # master switch (false = free, no chain)
-settlement      = "noop"                   # "noop" | "channel" | "onchain"
-custody         = "noncustodial"           # v1: code-governed contracts, no platform wallet
-accounting_unit = "ton"                    # v1: price AND settle natively in TON (no oracle)
-chain           = "ton"
-network         = "mainnet"                # "-239" mainnet / "-3" testnet
-default_payment = "auto"                   # free | paid | auto (per-call overridable)
-# fee_recipient = "EQ...treasury"          # platform fee-recipient (REQUIRED once
-                                           # enabled = true AND settlement != "noop")
+enabled           = false                  # master switch (false = free, no chain)
+settlement        = "noop"                 # "noop" | "mock" | "channel" | "onchain" (SQL: noop|mock|ton)
+custody           = "noncustodial"         # v1: code-governed contracts, no platform wallet
+accounting_unit   = "ton"                  # v1: price AND settle natively in TON (no oracle)
+chain             = "ton"
+network           = "testnet"              # "testnet" (safe default) | "mainnet" (real funds)
+mainnet_confirmed = false                  # explicit opt-in required to use mainnet
+default_payment   = "auto"                 # free | paid | auto (per-call overridable)
+# fee_recipient = "EQ...treasury"          # platform fee-recipient (REQUIRED once enabled = true
+                                           # AND settlement = "channel"|"onchain")
+
+# Per-network settings — keep BOTH networks configured at once; the active one is
+# selected by `network`. Manage these via SQL: p2p_contracts(...) / p2p_wallet(...).
+# RPC/explorer default per network (testnet -> testnet.toncenter.com / testnet.tonviewer.com;
+# mainnet -> toncenter.com / tonviewer.com) and are overridable here.
+# [economics.testnet]
+# rpc          = "https://testnet.toncenter.com/api/v2/"
+# explorer     = "testnet.tonviewer.com"
+# api_key_file = "/path/outside/repo/testnet.api_key"   # 0600 file ref, never the raw key
+# [economics.testnet.contracts]
+# stake_vault   = "kQ..."
+# job_escrow    = "kQ..."
+# record_anchor = "kQ..."
+# global_params = "kQ..."   # platform-wide params (§12); address is STABLE (edited in place)
+# [economics.testnet.wallet]
+# address       = "kQ..."
+# mnemonic_file = "/path/outside/repo/testnet.mnemonic" # 0600 file ref, never the raw mnemonic
+# [economics.mainnet] … same shape …
+
+# Pricing (role-appropriate): providers advertise unit_price; requesters cap with max_bid.
+[economics.pricing]
+unit_price = 0                             # whole TON per reference unit (0 = free)
+max_bid    = 0                             # whole TON budget cap (0 = no cap)
 
 [economics.stake]
 min_stake               = 0                # 0 = permissionless/free tier (public only)
@@ -287,14 +349,23 @@ receipt_transfer_locked = true            # receipt non-transferable while bonde
 w_quality = 0.6
 w_stake   = 0.15                           # diminishing + capped (StakeFactor, §5.2)
 w_price   = 0.25
+exploration_rate       = 0.0               # cold-start ε (§5.2/§6): 0 = pure exploitation;
+                                           # a small value (e.g. 0.1) samples new honest nodes
+exploration_saturation = 20                # obs count at which the exploration bonus hits 0
 
 [economics.quality]                        # provider quality score Q weights (§4.1)
 w_success      = 0.5
-w_latency      = 0.2
-w_throughput   = 0.2
+w_latency      = 0.2                        # size-normalized latency (allowance scales with bytes)
+w_throughput   = 0.2                        # throughput-as-rate (bytes/ms), log-scaled
 w_completion   = 0.1
 latency_ref_ms = 5000
 bytes_ref      = 1073741824                # 1 GiB reference for log throughput scaling
+throughput_ref_bytes_per_ms = 0            # 0 => derive ref rate from bytes_ref / latency_ref_ms
+
+[economics.reputation]                     # confidence-aware reputation priors (§4.1/§7.3)
+prior_alpha  = 1.0                         # Beta pseudo-successes
+prior_beta   = 2.0                         # Beta pseudo-failures (pessimistic about thin history)
+confidence_z = 1.96                        # Wilson lower-bound z (≈95%); 0 = posterior mean
 
 [economics.selection]
 n_public                = 3                # default N for public/low-value jobs

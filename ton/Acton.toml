@@ -30,6 +30,11 @@ display-name = "RecordAnchor"
 src = "contracts/RecordAnchor.tolk"
 depends = []
 
+[contracts.GlobalParams]
+display-name = "GlobalParams"
+src = "contracts/GlobalParams.tolk"
+depends = []
+
 [test]
 
 [fmt]
@@ -43,6 +48,8 @@ deploy-anchor-emulation = "acton script scripts/deploy_anchor.tolk"
 deploy-anchor-testnet = "acton script scripts/deploy_anchor.tolk --net testnet"
 deploy-escrow-emulation = "acton script scripts/deploy_escrow.tolk"
 deploy-escrow-testnet = "acton script scripts/deploy_escrow.tolk --net testnet"
+deploy-global-params-emulation = "acton script scripts/deploy_global_params.tolk"
+deploy-global-params-testnet = "acton script scripts/deploy_global_params.tolk --net testnet"
 e2e-emulation = "acton script scripts/e2e_testnet.tolk"
 e2e-testnet = "acton script scripts/e2e_testnet.tolk --net testnet"
 
