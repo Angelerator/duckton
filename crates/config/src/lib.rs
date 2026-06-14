@@ -822,10 +822,21 @@ impl Default for SybilConfig {
 pub struct StorageConfig {
     /// Default/primary credential-provider id: "local-fake" | "s3" | "az" | "gcs".
     pub provider: String,
-    /// Endpoint URL (used by local fake or S3-compatible stores).
+    /// Endpoint URL (used by local fake or S3-compatible / MinIO stores), e.g.
+    /// `minio.local:9000`. Top-level default; per-provider overrides live in
+    /// `[storage.provider_options.<id>]`.
     pub endpoint: Option<String>,
-    /// Region (cloud providers).
+    /// Region (cloud providers / S3-compatible stores).
     pub region: Option<String>,
+    /// S3 URL addressing style for S3-compatible / MinIO endpoints: `"path"`
+    /// (MinIO and most self-hosted stores) or `"vhost"` (AWS default). Maps to
+    /// the DuckDB s3 secret `URL_STYLE`. Top-level default; overridable per
+    /// provider via `[storage.provider_options.s3] url_style = "..."`.
+    pub url_style: Option<String>,
+    /// Whether S3-compatible endpoints use TLS (maps to DuckDB `USE_SSL`). MinIO
+    /// dev deployments are often plain HTTP (`false`). Top-level default;
+    /// overridable per provider via `[storage.provider_options.s3] use_ssl`.
+    pub use_ssl: Option<bool>,
     /// TTL of issued scoped credentials (secs).
     pub credential_ttl_secs: u64,
     /// TTL of per-job sealed data keys (secs).
@@ -865,6 +876,8 @@ impl Default for StorageConfig {
             provider: "local-fake".to_string(),
             endpoint: None,
             region: None,
+            url_style: None,
+            use_ssl: None,
             credential_ttl_secs: 900,
             key_ttl_secs: 900,
             enable_remote_access: false,
@@ -1318,6 +1331,8 @@ impl GridConfig {
                 "P2P_STORAGE_PROVIDER" => self.storage.provider = v.clone(),
                 "P2P_STORAGE_ENDPOINT" => self.storage.endpoint = Some(v.clone()),
                 "P2P_STORAGE_REGION" => self.storage.region = Some(v.clone()),
+                "P2P_STORAGE_URL_STYLE" => self.storage.url_style = Some(v.clone()),
+                "P2P_STORAGE_USE_SSL" => self.storage.use_ssl = Some(parse(k, v)?),
                 "P2P_STORAGE_ENABLE_REMOTE_ACCESS" => {
                     self.storage.enable_remote_access = parse(k, v)?
                 }
@@ -1665,6 +1680,23 @@ impl GridConfig {
         }
         if self.storage.enabled_providers.iter().any(|p| p.trim().is_empty()) {
             return inv("storage.enabled_providers entries must be non-empty".into());
+        }
+        // S3 URL addressing style (top-level + any per-provider override) must be
+        // a value DuckDB understands, so a typo fails closed at config time.
+        let valid_url_style = |s: &str| matches!(s.trim().to_ascii_lowercase().as_str(), "path" | "vhost");
+        if let Some(s) = &self.storage.url_style {
+            if !valid_url_style(s) {
+                return inv(format!("storage.url_style must be 'path' or 'vhost', got '{s}'"));
+            }
+        }
+        for (id, kv) in &self.storage.provider_options {
+            if let Some(s) = kv.get("url_style") {
+                if !valid_url_style(s) {
+                    return inv(format!(
+                        "storage.provider_options.{id}.url_style must be 'path' or 'vhost', got '{s}'"
+                    ));
+                }
+            }
         }
 
         // ---- planner ----

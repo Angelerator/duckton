@@ -205,7 +205,13 @@ impl DuckDbEngine {
             .map_err(|e| EngineError::Rejected(format!("add_parquet_key: {e}")))?;
         }
         if let Some(cred) = &ctx.credential {
-            match setup.providers.secret_sql_for("job_secret", cred) {
+            // Open a sealed credential just-in-time with the worker's sealing
+            // key (no-op for plaintext tokens). The decrypted key material lives
+            // only in this transient value and the generated SQL is never logged.
+            let cred = setup
+                .resolve_credential(cred)
+                .map_err(|e| EngineError::Rejected(format!("credential: {e}")))?;
+            match setup.providers.secret_sql_for("job_secret", &cred) {
                 Ok(Some(secret_sql)) => {
                     conn.execute_batch(&secret_sql)
                         .map_err(|e| EngineError::Rejected(format!("create secret: {e}")))?;

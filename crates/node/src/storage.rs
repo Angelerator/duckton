@@ -154,6 +154,37 @@ impl StorageCredentialProvider for FakeGcsProvider {
     }
 }
 
+/// **Requester side.** Build a per-job [`ScopedCredential`] whose opaque token
+/// carries `cred` **sealed** (X25519 + ChaCha20-Poly1305) to a worker's
+/// `worker_sealing_pub` key, scoped to `prefix` for `ttl_secs` (architecture
+/// §9.2/§9.3).
+///
+/// This is the encrypted-credentials path for self-hosted / MinIO S3-compatible
+/// stores: the requester puts the MinIO access key + secret in a
+/// [`CloudCredential`] (with `endpoint`/`url_style`/`use_ssl`), seals it to the
+/// **selected** worker's sealing public key — learned from that worker's
+/// attestation quote (`Enclave::attest` binds the key) or its signed capability
+/// record — and dispatches it. The plaintext never travels or persists; the
+/// worker decrypts it just-in-time at engine setup via
+/// [`StorageSetup::resolve_credential`](crate::datasource::StorageSetup::resolve_credential).
+///
+/// `provider` is the storage provider id the worker will mint a secret for
+/// (e.g. `"s3"` for MinIO / S3-compatible, `"gcs"`).
+pub fn sealed_credential(
+    provider: &str,
+    worker_sealing_pub: &[u8; 32],
+    cred: &crate::datasource::CloudCredential,
+    prefix: &str,
+    ttl_secs: u64,
+) -> ScopedCredential {
+    ScopedCredential {
+        provider: provider.to_string(),
+        token: cred.seal_token(worker_sealing_pub),
+        prefix: prefix.to_string(),
+        expires_at: now_secs() + ttl_secs,
+    }
+}
+
 fn rand_hex(n_bytes: usize) -> String {
     let mut buf = vec![0u8; n_bytes];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut buf);

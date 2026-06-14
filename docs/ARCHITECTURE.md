@@ -115,7 +115,19 @@ hard-coding) under the `[storage]` config section.
 | Concern | Supported | DuckDB mechanism |
 |---|---|---|
 | **Formats** | Parquet, CSV, JSON, Delta Lake, Apache Iceberg (extensible) | `parquet`, `json` (core/bundled), `delta`, `iceberg` extensions; CSV is core |
-| **Providers** | AWS S3, Azure ADLS (`abfss://`/`az://`), Google Cloud Storage, generic HTTPS, local | `httpfs`(+`aws`), `azure`, `httpfs`/`gcs` (S3-interop), `httpfs` |
+| **Providers** | AWS S3, **self-hosted MinIO / S3-compatible**, Azure ADLS (`abfss://`/`az://`), Google Cloud Storage, generic HTTPS, local | `httpfs`(+`aws`), `azure`, `httpfs`/`gcs` (S3-interop), `httpfs` |
+
+**Self-hosted MinIO / S3-compatible endpoints.** The `s3` provider works against
+any S3-compatible store, not just AWS. Per-provider options
+(`[storage.provider_options.s3]`, layered under the top-level `[storage]`
+defaults and `P2P_STORAGE_*` env) map to the DuckDB s3 secret: `endpoint`
+(e.g. `minio.local:9000`), `url_style` (`path` for MinIO, `vhost` for AWS),
+`use_ssl` (TLS on/off), and `region`. The worker mints
+`CREATE SECRET (TYPE s3, KEY_ID …, SECRET …, ENDPOINT 'minio.local:9000',
+URL_STYLE 'path', USE_SSL false, REGION …, SCOPE 's3://bucket/prefix/')` so
+`s3://bucket/…` reads from MinIO (Delta needs the `delta` + `httpfs`
+extensions). These options are **non-secret connection knobs only** — the access
+key / secret are never stored in config; they arrive per job, encrypted (below).
 
 **Pluggable abstraction** (`crates/node/src/datasource.rs`, mirrors the project's
 trait pattern):
@@ -166,8 +178,29 @@ the untrusted query runs:
 Config knobs (`[storage]`): `enable_remote_access`, `require_extensions`,
 `preload_extensions`, `enabled_formats`, `enabled_providers`,
 `allowed_local_paths`, `[storage.provider_options.*]`, `[storage.format_options.*]`,
-plus the existing `provider`/`endpoint`/`region`/`*_ttl_secs`. All layer through
-defaults → TOML → `P2P_STORAGE_*` env → per-call params.
+plus the existing `provider`/`endpoint`/`region`/`url_style`/`use_ssl`/`*_ttl_secs`.
+All layer through defaults → TOML → `P2P_STORAGE_*` env → per-call params
+(`P2P_STORAGE_URL_STYLE`, `P2P_STORAGE_USE_SSL`, …). All are surfaced (secrets
+redacted) via `p2p_config()` / `p2p_settings()`.
+
+**Encrypted credentials for MinIO / S3-compatible (and any provider).** The
+access key / secret are **never** in plaintext config, logs, or `p2p_config()`.
+They are delivered per job through the existing **sealed credential** path
+(architecture §9.2/§9.3): the requester puts the key material in a
+`CloudCredential` (alongside `endpoint`/`url_style`/`use_ssl`/`region`) and seals
+it (X25519 + ChaCha20-Poly1305, `seal_to`) to the **selected** worker's sealing
+public key — learned from that worker's attestation quote (`Enclave::attest`
+binds the key) or its signed capability record — via
+`p2p_node::sealed_credential("s3", worker_pub, &cred, "bucket/prefix/", ttl)`.
+The opaque `ScopedCredential.token` becomes `sealed:v1:<hex(SealedBlob)>` —
+ciphertext only. The worker, holding its sealing keypair
+(`StorageSetup::with_sealing`), opens it **just-in-time** at engine setup
+(`StorageSetup::resolve_credential`), mints the prefix-scoped `CREATE SECRET`,
+then locks the configuration. Plaintext key material exists only transiently in
+the engine connection; at rest it lives only as 0600 config/secret files
+(`ConfigStore`, outside the repo) or as blobs sealed to the worker. A worker
+that receives a sealed token but has no sealing key fails closed
+(`SealingKeyUnavailable`) rather than silently minting an empty secret.
 
 ---
 

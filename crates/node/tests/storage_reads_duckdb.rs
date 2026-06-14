@@ -248,6 +248,89 @@ async fn scoped_s3_secret_installs_when_httpfs_available() {
     }
 }
 
+/// Encrypted (sealed) MinIO / S3-compatible credential, opened just-in-time at
+/// engine setup and turned into a prefix-scoped `CREATE SECRET` carrying the
+/// MinIO endpoint / url_style / use_ssl. The access key + secret are delivered
+/// **sealed** (X25519+ChaCha20-Poly1305) to the worker — never in plaintext.
+///
+/// As with the S3 test above, the `s3` secret type only exists once `httpfs` is
+/// loaded; if it is unavailable in this offline build we skip (documented), and
+/// we never fabricate a passing cloud read. A LIVE MinIO read additionally needs
+/// the `httpfs` (+ `delta`) extensions and a running MinIO container — see the
+/// module/report notes.
+#[tokio::test]
+async fn sealed_minio_credential_installs_scoped_secret() {
+    use std::sync::Arc;
+
+    use p2p_node::sealed_credential;
+    use p2p_trust::SealingKeypair;
+
+    // MinIO connection knobs from config (non-secret); creds arrive sealed.
+    let mut cfg = StorageConfig::default();
+    cfg.enable_remote_access = true;
+    cfg.require_extensions = false; // tolerate missing httpfs in this build
+    cfg.preload_extensions = vec!["httpfs".to_string()];
+    cfg.enabled_providers = vec!["s3".to_string()];
+    let mut s3opts = BTreeMap::new();
+    s3opts.insert("endpoint".to_string(), "minio.local:9000".to_string());
+    s3opts.insert("url_style".to_string(), "path".to_string());
+    s3opts.insert("use_ssl".to_string(), "false".to_string());
+    cfg.provider_options.insert("s3".to_string(), s3opts);
+
+    // The worker's sealing keypair; its public half is what the requester seals
+    // the credential to (bound into attestation in the confidential tier).
+    let worker_key = Arc::new(SealingKeypair::generate());
+    let setup = StorageSetup::from_config(&cfg).with_sealing(worker_key.clone());
+
+    let eng = match DuckDbEngine::with_setup(setup) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("skipping: could not init remote engine ({e})");
+            return;
+        }
+    };
+
+    // Requester seals the MinIO access key/secret to the worker's public key.
+    let cred = CloudCredential {
+        key_id: Some("minioadmin".into()),
+        secret: Some("super-secret-minio-key".into()),
+        region: Some("us-east-1".into()),
+        ..Default::default()
+    };
+    let scoped = sealed_credential("s3", &worker_key.public_bytes(), &cred, "warehouse/delta/", 900);
+    // The opaque token is ciphertext only — the secret never appears in it.
+    assert!(scoped.token.starts_with("sealed:v1:"));
+    assert!(!scoped.token.contains("super-secret-minio-key"));
+
+    let ctx = JobContext {
+        credential: Some(scoped),
+        parquet_keys: Vec::new(),
+    };
+
+    let rs = eng
+        .execute_job(
+            "SELECT name, type, scope FROM duckdb_secrets()",
+            lease(),
+            &ctx,
+        )
+        .await;
+    match rs {
+        Ok(rs) => {
+            assert_eq!(rs.row_count(), 1, "exactly one scoped secret should exist");
+            assert_eq!(rs.rows[0][0], Value::Text("job_secret".into()));
+            assert_eq!(rs.rows[0][1], Value::Text("s3".into()));
+            let scope = format!("{:?}", rs.rows[0][2]);
+            assert!(scope.contains("warehouse/delta/"), "scope was {scope}");
+        }
+        Err(e) => {
+            eprintln!(
+                "skipping sealed-MinIO secret assertion: httpfs not available in this build \
+                 ({e}). A live MinIO read needs httpfs (+ delta) extensions + a running MinIO."
+            );
+        }
+    }
+}
+
 /// The `StorageSetup` resolved from config selects providers and the pre-load
 /// list deterministically (no live cloud needed).
 #[test]

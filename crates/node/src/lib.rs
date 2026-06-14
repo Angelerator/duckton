@@ -41,7 +41,7 @@ pub use coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 pub use datasource::{
     default_provider, AzureProvider, CloudCredential, DataFormat, DataSourceError, GcsProvider,
     HttpsProvider, LocalFileProvider, ProviderOptions, ProviderRegistry, S3Provider,
-    StorageProvider, StorageSetup,
+    StorageProvider, StorageSetup, SEALED_TOKEN_PREFIX,
 };
 pub use discovery::{Candidate, CandidateFilter, Discovery, StaticDiscovery};
 #[cfg(feature = "duckdb-engine")]
@@ -70,8 +70,8 @@ pub use sandbox::{
     JobBudget, JobGuard, NoopSandbox, ResourceLimits, Sandbox, SandboxError, SandboxSpec,
 };
 pub use storage::{
-    Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider, FakeStsS3Provider,
-    KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
+    sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
+    FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
 };
 pub use signer::IdentitySigner;
 pub use worker::{Worker, WorkerParams};

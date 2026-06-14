@@ -183,8 +183,11 @@ vouch_weight        = 0.05
 
 [storage]
 provider            = "local-fake"         # default credential provider: local-fake | s3 | az | gcs
-# endpoint          = "http://127.0.0.1:9000"
-# region            = "us-east-1"
+                                           # (use "s3" for AWS *and* self-hosted MinIO / S3-compatible)
+# endpoint          = "minio.local:9000"   # S3-compatible / MinIO host:port (host only; scheme via use_ssl)
+# region            = "us-east-1"          # MinIO accepts any region; must be set
+# url_style         = "path"               # "path" for MinIO/most self-hosted, "vhost" for AWS
+# use_ssl           = false                # MinIO dev is often plain HTTP; true in production
 credential_ttl_secs = 900                  # scoped credential lifetime
 key_ttl_secs        = 900                  # sealed data-key lifetime
 
@@ -210,12 +213,30 @@ enabled_providers    = ["local-fake"]
 # Local directories DuckDB may read even with external access disabled
 # (DuckDB `allowed_directories`); used for local fixtures. e.g. ["/srv/data"].
 allowed_local_paths  = []
-# Per-provider option overrides (endpoint/region/url_style/...), keyed by id:
-# [storage.provider_options.s3]
+# Per-provider option overrides (endpoint/region/url_style/use_ssl/...), keyed
+# by id. These are NON-SECRET connection knobs only — the access key / secret
+# are NEVER placed here; they are delivered per job, sealed (encrypted) to the
+# worker (see "Encrypted credentials" below).
+# [storage.provider_options.s3]            # AWS S3
 # region    = "us-east-1"
 # endpoint  = "s3.amazonaws.com"
+# Self-hosted MinIO / S3-compatible (reads Delta/Parquet/CSV/JSON/Iceberg):
+# [storage.provider_options.s3]
+# endpoint  = "minio.local:9000"
+# url_style = "path"                        # MinIO requires path-style addressing
+# use_ssl   = false                         # plain HTTP for a local MinIO; true with TLS
+# region    = "us-east-1"
 # [storage.provider_options.gcs]
 # endpoint  = "storage.googleapis.com"
+#
+# Encrypted credentials (the MinIO access key / secret) — NEVER in config:
+#   * Requester side: put the key/secret in a CloudCredential, seal it to the
+#     selected worker's X25519 sealing public key (from its attestation /
+#     capability record) with `p2p_node::sealed_credential("s3", pubkey, &cred,
+#     "bucket/prefix/", ttl)`. The token is `sealed:v1:<hex>` — ciphertext only.
+#   * Worker side: the engine opens it just-in-time at setup with its sealing
+#     key (StorageSetup::with_sealing) and mints a prefix-scoped CREATE SECRET.
+#     Plaintext never persists; at rest only 0600 files / sealed-to-worker blobs.
 # Per-format reader options, keyed by format id:
 # [storage.format_options.parquet]
 # hive_partitioning = "true"

@@ -761,6 +761,52 @@ mod tests {
     }
 
     #[test]
+    fn storage_minio_knobs_surface_in_settings_and_secrets_redacted() {
+        let mut cfg = GridConfig::default();
+        cfg.storage.endpoint = Some("minio.local:9000".to_string());
+        cfg.storage.url_style = Some("path".to_string());
+        cfg.storage.use_ssl = Some(false);
+        // Non-secret connection knobs are visible via p2p_config()/p2p_settings().
+        let mut s3 = std::collections::BTreeMap::new();
+        s3.insert("endpoint".to_string(), "minio.local:9000".to_string());
+        s3.insert("url_style".to_string(), "path".to_string());
+        // A stray secret here MUST be redacted by key name.
+        s3.insert("secret".to_string(), "should-be-redacted".to_string());
+        cfg.storage.provider_options.insert("s3".to_string(), s3);
+
+        let rows = flatten_settings(&cfg);
+        // `walk` groups by the first path segment, so "storage" is the group and
+        // the remainder is the key.
+        let find = |key: &str| {
+            rows.iter()
+                .find(|r| r.group == "storage" && r.key == key)
+                .map(|r| r.value.clone())
+        };
+        assert_eq!(find("url_style").as_deref(), Some("path"));
+        assert_eq!(find("use_ssl").as_deref(), Some("false"));
+        assert_eq!(
+            find("provider_options.s3.url_style").as_deref(),
+            Some("path")
+        );
+        // The plaintext secret never appears; it is redacted.
+        let secret_row = find("provider_options.s3.secret");
+        assert_eq!(secret_row.as_deref(), Some("<redacted>"));
+        assert!(
+            !rows.iter().any(|r| r.value.contains("should-be-redacted")),
+            "no plaintext secret may surface in settings"
+        );
+    }
+
+    #[test]
+    fn storage_url_style_validation_rejects_typo() {
+        let mut cfg = GridConfig::default();
+        cfg.storage.url_style = Some("pathh".to_string());
+        assert!(cfg.validate().is_err(), "invalid url_style must fail closed");
+        cfg.storage.url_style = Some("vhost".to_string());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
     fn unknown_key_rejected() {
         let (store, _d) = temp_store();
         let err = store.set_kv("economics.bogus_key", "1").unwrap_err();
