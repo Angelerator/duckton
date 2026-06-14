@@ -372,6 +372,41 @@ else
 fi
 
 # ----------------------------------------------------------------------------
+# 6.5 Wait for the wallet to settle before the live scenario.
+#
+# The four deploys (step 4) are separate broadcasts that each advance the
+# deployer wallet's seqno. On a real network Toncenter can lag a beat behind the
+# latest accepted external message, so the FIRST scenario send can otherwise be
+# rejected with "external message was not accepted" (a stale-seqno race that the
+# local emulator never exhibits). Poll the wallet's on-chain `seqno` until it is
+# stable across two consecutive reads (bounded), so step 7 starts cleanly.
+# ----------------------------------------------------------------------------
+step "6.5 wait for wallet seqno to settle"
+wallet_seqno() {
+  curl -s --max-time 20 "${TON_TESTNET_RPC%/}/runGetMethod" \
+    -H 'Content-Type: application/json' \
+    ${TON_TESTNET_API_KEY:+-H "X-API-Key: $TON_TESTNET_API_KEY"} \
+    -d "{\"address\":\"$WALLET_ADDR\",\"method\":\"seqno\",\"stack\":[]}" 2>/dev/null \
+    | jq -r '.result.stack[0][1] // empty' 2>/dev/null || true
+}
+SETTLE_WAIT_SECS="${E2E_SETTLE_WAIT_SECS:-45}"
+SETTLE_DEADLINE=$(( $(date +%s) + SETTLE_WAIT_SECS ))
+prev_seqno="$(wallet_seqno)"; stable=0
+while [[ $(date +%s) -lt $SETTLE_DEADLINE ]]; do
+  sleep 5
+  cur_seqno="$(wallet_seqno)"
+  if [[ -n "$cur_seqno" && "$cur_seqno" == "$prev_seqno" ]]; then
+    stable=1; break
+  fi
+  prev_seqno="$cur_seqno"
+done
+if [[ "$stable" == "1" ]]; then
+  ok "wallet seqno settled (seqno=$prev_seqno)"
+else
+  warn "wallet seqno did not confirm stable within ${SETTLE_WAIT_SECS}s (continuing; e2e may retry)"
+fi
+
+# ----------------------------------------------------------------------------
 # 7. Live end-to-end scenario
 # ----------------------------------------------------------------------------
 step "7. live end-to-end scenario"

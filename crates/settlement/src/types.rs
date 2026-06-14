@@ -47,6 +47,83 @@ impl WalletAddress {
     pub fn to_raw_string(&self) -> String {
         format!("{}:{}", self.workchain, hex::encode(self.hash))
     }
+
+    /// Parse a user-friendly **base64** TON address (`EQ…`/`UQ…`/`kQ…`/`0Q…`),
+    /// accepting both the url-safe (`-`/`_`) and standard (`+`/`/`) alphabets.
+    ///
+    /// The decoded 36-byte payload is `tag(1) ‖ workchain(i8) ‖ account(32) ‖
+    /// crc16(2)`; the CRC16-CCITT (XMODEM) checksum is verified so a typo'd
+    /// address is rejected rather than silently mis-resolved. The bounceable /
+    /// testnet tag bits do not affect the resolved `(workchain, account)`.
+    pub fn from_base64_str(s: &str) -> Result<Self, BindingError> {
+        let bytes = b64_decode(s.trim()).ok_or(BindingError::BadAddress)?;
+        if bytes.len() != 36 {
+            return Err(BindingError::BadAddress);
+        }
+        let want = u16::from_be_bytes([bytes[34], bytes[35]]);
+        if crc16_ccitt(&bytes[..34]) != want {
+            return Err(BindingError::BadAddress);
+        }
+        let workchain = (bytes[1] as i8) as i32;
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bytes[2..34]);
+        Ok(Self { workchain, hash })
+    }
+
+    /// Parse either the raw `workchain:hex64` form (`0:abcd…`) or the
+    /// user-friendly base64 form (`kQ…`/`EQ…`). This is the single entry point
+    /// the live wiring uses so config / SQL can register addresses in whichever
+    /// form the explorer / faucet / Acton printed.
+    pub fn from_any_str(s: &str) -> Result<Self, BindingError> {
+        let t = s.trim();
+        if t.contains(':') {
+            Self::from_raw_str(t)
+        } else {
+            Self::from_base64_str(t)
+        }
+    }
+}
+
+/// Decode standard or url-safe base64 (padding optional). Returns `None` on any
+/// invalid character so callers can treat it as a malformed address.
+fn b64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let s = s.trim_end_matches('=');
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u32;
+    for &c in s.as_bytes() {
+        let v = val(c)? as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
+/// CRC16-CCITT (XMODEM: poly 0x1021, init 0x0000) — the checksum TON uses in the
+/// user-friendly address encoding.
+fn crc16_ccitt(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc ^= (b as u16) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 { (crc << 1) ^ 0x1021 } else { crc << 1 };
+        }
+    }
+    crc
 }
 
 /// Reasons a node's stake can be slashed (BLOCKCHAIN_ECONOMICS §8.3).
@@ -212,6 +289,47 @@ pub enum SlashError {
     ExceedsStake { amount: Amount, slashable: Amount },
     #[error("stake backend error: {0}")]
     Backend(String),
+}
+
+#[cfg(test)]
+mod addr_tests {
+    use super::WalletAddress;
+
+    #[test]
+    fn base64_user_friendly_matches_raw_form() {
+        // Real testnet addresses + their canonical raw forms (toncenter
+        // detectAddress). The url-safe base64 (`kQ…`, note the `-`/`_`) must
+        // decode to the SAME (workchain, account) as the `0:hex` raw form.
+        let cases = [
+            (
+                "kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+                "0:8fed4a847cdc2969a3460cfdcc8a13cf05bf98779658734114f956d77268e983",
+            ),
+            (
+                "kQDBwfWwUy7EXuukEb5QCsrUme0Ri2XndhuPs0Lozb5TrrXx",
+                "0:c1c1f5b0532ec45eeba411be500acad499ed118b65e7761b8fb342e8cdbe53ae",
+            ),
+        ];
+        for (friendly, raw) in cases {
+            let a = WalletAddress::from_base64_str(friendly).expect("base64 parses");
+            let b = WalletAddress::from_raw_str(raw).expect("raw parses");
+            assert_eq!(a, b, "base64 {friendly} must equal raw {raw}");
+            assert_eq!(a.workchain, 0);
+            // from_any_str dispatches on the `:` separator.
+            assert_eq!(WalletAddress::from_any_str(friendly).unwrap(), a);
+            assert_eq!(WalletAddress::from_any_str(raw).unwrap(), b);
+        }
+    }
+
+    #[test]
+    fn base64_rejects_crc_typo() {
+        // Flip one payload char: the CRC16 check must reject it.
+        let bad = "kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg423";
+        assert!(WalletAddress::from_base64_str(bad).is_err());
+        // Garbage / wrong length is rejected too.
+        assert!(WalletAddress::from_base64_str("not-an-address").is_err());
+        assert!(WalletAddress::from_any_str("0:zz").is_err());
+    }
 }
 
 /// Errors from wallet binding / ton_proof verification.

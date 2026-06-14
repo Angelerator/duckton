@@ -56,12 +56,12 @@ fn read_optional_secret(path: Option<&str>) -> Result<Option<String>, SettleErro
     }
 }
 
-/// Best-effort parse of a configured contract address. Raw `"workchain:hex"` is
-/// supported here; user-facing base64 (`EQ…`/`kQ…`) forms are normalized by the
-/// SQL surface and resolved by the live client (so this returns `None` for them
-/// rather than failing the whole wiring).
+/// Best-effort parse of a configured contract address. Accepts BOTH the raw
+/// `"workchain:hex"` form AND the user-facing base64 (`EQ…`/`UQ…`/`kQ…`/`0Q…`)
+/// form the explorer / faucet / Acton print, normalizing the latter offline
+/// (CRC16-checked) so the deployed addresses resolve without a network hop.
 fn parse_addr(s: &Option<String>) -> Option<WalletAddress> {
-    s.as_deref().and_then(|v| WalletAddress::from_raw_str(v).ok())
+    s.as_deref().and_then(|v| WalletAddress::from_any_str(v).ok())
 }
 
 /// Resolve the live TON client wiring from `[economics]`, guarding mainnet.
@@ -147,6 +147,23 @@ mod tests {
         assert!(w.stake_vault.is_some());
         assert!(w.global_params.is_some());
         assert!(w.job_escrow.is_none());
+    }
+
+    #[test]
+    fn resolves_user_friendly_base64_addresses() {
+        // The deployed addresses are registered in the user-facing `kQ…` base64
+        // form (what the explorer / Acton print). The wiring must normalize them
+        // offline rather than dropping them (the former gap).
+        let mut e = EconomicsConfig::default();
+        e.testnet.contracts.stake_vault =
+            Some("kQDBwfWwUy7EXuukEb5QCsrUme0Ri2XndhuPs0Lozb5TrrXx".into());
+        let w = resolve_ton_wiring(&e).unwrap();
+        let vault = w.stake_vault.expect("kQ… vault address must resolve");
+        assert_eq!(vault.workchain, 0);
+        assert_eq!(
+            vault.to_raw_string(),
+            "0:c1c1f5b0532ec45eeba411be500acad499ed118b65e7761b8fb342e8cdbe53ae"
+        );
     }
 
     #[test]
