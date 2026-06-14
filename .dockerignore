@@ -1,0 +1,11 @@
+# Keep the build context lean — the builder recompiles from source anyway.
+target/
+**/target/
+dist/
+.git/
+ton/build/
+ton/node_modules/
+**/node_modules/
+*.log
+.DS_Store
+docker/_artifacts/
