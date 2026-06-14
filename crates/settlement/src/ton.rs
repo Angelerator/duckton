@@ -497,6 +497,32 @@ impl<R: TonRpc> GlobalParamsClient<R> {
     }
 }
 
+/// Object-safe read seam for the on-chain `GlobalParams` policy, so the live
+/// coordinator can hold a `dyn ParamsSource` (it cannot hold the generic
+/// [`GlobalParamsClient<R>`]) and sync at startup + on a periodic interval
+/// without pulling the TON RPC generic up into the node crate. Implemented by
+/// [`GlobalParamsClient`] over any [`TonRpc`]; a node with no live rail simply
+/// wires none (free/local jobs never read the chain).
+pub trait ParamsSource: Send + Sync {
+    /// Read the authoritative ecosystem policy (version + the values paid jobs
+    /// consume) from the on-chain `GlobalParams` contract.
+    fn read_policy(&self) -> Result<OnchainPolicy, SettleError>;
+    /// The monotonic params version/seqno in force (defaults to the version of
+    /// [`ParamsSource::read_policy`]).
+    fn params_version(&self) -> Result<u32, SettleError> {
+        Ok(self.read_policy()?.version)
+    }
+}
+
+impl<R: TonRpc> ParamsSource for GlobalParamsClient<R> {
+    fn read_policy(&self) -> Result<OnchainPolicy, SettleError> {
+        GlobalParamsClient::read_policy(self)
+    }
+    fn params_version(&self) -> Result<u32, SettleError> {
+        GlobalParamsClient::params_version(self)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Deterministic StateInit address derivation (BLOCKCHAIN_ECONOMICS §6.2, §8)
 //
@@ -637,8 +663,23 @@ pub struct TonSettlement<R: TonRpc> {
     arbiter: WalletAddress,
     /// Requester wallet that funds + receives refunds (needed to deploy escrow).
     requester: Option<WalletAddress>,
+    /// Platform-fee recipient written into a freshly-built per-job `EscrowTerms`
+    /// (the `treasury` field). When `None`, [`Settlement::open_escrow_with_terms`]
+    /// falls back to the shared `terms` cell / arbiter.
+    treasury: Option<WalletAddress>,
     /// Refund-on-timeout window (secs) used to set a fresh escrow's deadline.
     escrow_window_secs: u32,
+    /// Extra value (nanoton) attached to the funded deploy ON TOP OF the locked
+    /// bid `B`, so the per-job escrow physically holds enough to cover its own
+    /// compute + action (forward) fees when it pays out the split at settle time.
+    /// The `JobEscrow` pays `winner + fee + participants + refund == escrowAmount`
+    /// with `PAY_FEES_SEPARATELY`, so without this headroom a real settle's action
+    /// phase fails for lack of balance (the Acton deploy script funds the same
+    /// way: `escrowAmount + ton("0.15")`). The stored `escrowAmount` / handle
+    /// `max_bid` stay exactly `B`; the buffer is not part of the locked bid and is
+    /// not accounted in the payout. `0` (default) preserves the exact-`B` deploy
+    /// (used by the offline ABI tests); the live rail sets a small buffer.
+    deploy_gas_buffer: Amount,
 }
 
 impl<R: TonRpc> TonSettlement<R> {
@@ -650,7 +691,9 @@ impl<R: TonRpc> TonSettlement<R> {
             terms: Cell::default(),
             arbiter: WalletAddress::new(BASECHAIN, [0u8; 32]),
             requester: None,
+            treasury: None,
             escrow_window_secs: 3600,
+            deploy_gas_buffer: 0,
         }
     }
 
@@ -663,7 +706,9 @@ impl<R: TonRpc> TonSettlement<R> {
             terms,
             arbiter,
             requester: None,
+            treasury: None,
             escrow_window_secs: 3600,
+            deploy_gas_buffer: 0,
         }
     }
 
@@ -674,9 +719,26 @@ impl<R: TonRpc> TonSettlement<R> {
         self
     }
 
+    /// Set the platform-fee `treasury` written into per-job `EscrowTerms` built by
+    /// [`Settlement::open_escrow_with_terms`]. Without it the shared `terms` cell
+    /// (or the arbiter) is used as the treasury.
+    pub fn with_treasury(mut self, treasury: WalletAddress) -> Self {
+        self.treasury = Some(treasury);
+        self
+    }
+
     /// Set the refund-on-timeout window (secs) for newly opened escrows.
     pub fn with_escrow_window(mut self, secs: u32) -> Self {
         self.escrow_window_secs = secs;
+        self
+    }
+
+    /// Set the deploy gas buffer (nanoton) attached to the funded deploy on top of
+    /// the locked bid `B`, so the per-job escrow can pay its own settle-time
+    /// compute + forward fees (see [`TonSettlement::deploy_gas_buffer`]). The
+    /// stored `escrowAmount` / handle `max_bid` remain exactly `B`.
+    pub fn with_deploy_gas_buffer(mut self, nanoton: Amount) -> Self {
+        self.deploy_gas_buffer = nanoton;
         self
     }
 
@@ -710,7 +772,44 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         let address = WalletAddress::from_state_init(BASECHAIN, code, &data);
         let state_init = state_init_cell(code.clone(), data);
         let body = build_escrow_topup(0);
-        self.rpc.deploy(&address, max_bid, &state_init, &body)?;
+        // Fund the deploy with B + the gas buffer so the escrow can pay its own
+        // settle-time fees; `escrowAmount` (stored) and the handle stay exactly B.
+        let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
+        self.rpc.deploy(&address, deploy_value, &state_init, &body)?;
+        Ok(EscrowHandle { job: job.clone(), address, max_bid })
+    }
+
+    fn open_escrow_with_terms(
+        &self,
+        job: &JobId,
+        max_bid: Amount,
+        expected_hash: &Hash32,
+        params_version: u32,
+    ) -> Result<EscrowHandle, SettleError> {
+        // Build a FRESH per-job `EscrowTerms` binding the HTLC lock (the agreed
+        // quorum result hash) + the on-chain params version, deploy the per-job
+        // escrow funded with `B`, and return the handle. The escrow address is a
+        // pure function of (code, requester, arbiter, B, deadline, terms), so it
+        // commits to `expected_hash` + `params_version` up front.
+        let code = self
+            .escrow_code
+            .as_ref()
+            .ok_or_else(|| SettleError::Backend("open_escrow requires escrow code wiring".into()))?;
+        let requester = self
+            .requester
+            .ok_or_else(|| SettleError::Backend("open_escrow requires a requester wallet".into()))?;
+        let treasury = self.treasury.unwrap_or(self.arbiter);
+        let terms = build_escrow_terms(&treasury, expected_hash, params_version);
+        let deadline = now_secs_u32().saturating_add(self.escrow_window_secs);
+        let init = EscrowInit { requester, arbiter: self.arbiter, escrow_amount: max_bid, deadline };
+        let data = build_escrow_data(&init, terms);
+        let address = WalletAddress::from_state_init(BASECHAIN, code, &data);
+        let state_init = state_init_cell(code.clone(), data);
+        let body = build_escrow_topup(0);
+        // Fund the deploy with B + the gas buffer (see `open_escrow`); the locked
+        // `escrowAmount` and the returned handle remain exactly B.
+        let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
+        self.rpc.deploy(&address, deploy_value, &state_init, &body)?;
         Ok(EscrowHandle { job: job.clone(), address, max_bid })
     }
 

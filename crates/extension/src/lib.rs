@@ -976,8 +976,29 @@ fn host_cell() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
 fn build_node() -> std::result::Result<Arc<Node>, String> {
     let cfg = ConfigStore::open().effective().map_err(|e| e.to_string())?;
     let engine: Arc<dyn QueryEngine> = Arc::new(HostEngine::new());
+
+    // Resolve the money rail from `[economics]` (the single construction site).
+    // Defaults safely to noop/mock; the on-chain rail is built only in a ton-live
+    // build with the live wallet/addresses configured. A resolution error (e.g.
+    // unconfirmed mainnet, missing mnemonic) degrades to the free grid rather than
+    // failing node construction, so queries still run locally/free.
+    let stack = p2p_settlement::resolve_settlement_stack(&cfg.economics).ok();
+    let wire_sync = stack.as_ref().map(|s| s.params_source.is_some()).unwrap_or(false);
+
     let node = runtime()
-        .block_on(async move { Node::with_config(cfg, engine) })
+        .block_on(async move {
+            let mut node = Node::with_config(cfg, engine)?;
+            if let Some(stack) = stack {
+                node = node.with_settlement_stack(stack);
+            }
+            // Start the startup + periodic on-chain GlobalParams sync when a read
+            // seam was wired (on-chain rail only). 5-minute refresh; free/mock/noop
+            // nodes skip it. Spawned inside the runtime so the task is scheduled.
+            if wire_sync {
+                node.spawn_params_sync(std::time::Duration::from_secs(300));
+            }
+            Ok::<_, p2p_node::NodeError>(node)
+        })
         .map_err(|e| e.to_string())?;
     Ok(Arc::new(node))
 }

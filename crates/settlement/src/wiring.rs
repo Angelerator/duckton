@@ -15,12 +15,163 @@
 //! Resolution is pure (no network), so it is unit-tested in the default build;
 //! the actual HTTP hop lives behind the `ton-live` feature.
 
-use p2p_config::{EconomicsConfig, SchedulerConfig};
+use std::sync::Arc;
+
+use p2p_config::{EconomicsConfig, SchedulerConfig, SettlementRail};
 
 use crate::ton::GlobalParams;
+use crate::traits::{RecordAnchor, Settlement};
 use crate::types::{Amount, SettleError, WalletAddress};
+use crate::ParamsSource;
 
 const NANOTON_PER_TON: Amount = 1_000_000_000;
+
+/// The settlement collaborators wired onto the live coordinator for one config.
+///
+/// This is the single construction site that closes the "test callers only" gap:
+/// the production node resolves its money rail from `[economics]` here and wires
+/// the resulting `settlement` + `record_anchor` (+ optional `params_source` for
+/// the on-chain `GlobalParams` sync) onto the [`Coordinator`]. It DEFAULTS SAFELY
+/// — a disabled chain or the `noop` rail yields the genuine no-op stack, and the
+/// deterministic `mock` rail yields the in-memory doubles — so a node only ever
+/// touches the chain when explicitly configured for the on-chain (`ton`) rail in
+/// a `ton-live` build.
+pub struct SettlementStack {
+    pub settlement: Arc<dyn Settlement>,
+    pub record_anchor: Arc<dyn RecordAnchor>,
+    /// On-chain `GlobalParams` read seam for the startup + periodic policy sync.
+    /// `None` for the noop/mock rails (no chain reads).
+    pub params_source: Option<Arc<dyn ParamsSource>>,
+    /// True only for a real value-moving on-chain rail (so callers can assert
+    /// "no chain for the default/free grid").
+    pub onchain: bool,
+}
+
+/// The genuine no-op stack: no escrow, no anchor, no chain reads (the free grid).
+fn noop_stack() -> SettlementStack {
+    SettlementStack {
+        settlement: Arc::new(crate::noop::NoopSettlement),
+        record_anchor: Arc::new(crate::noop::NoopRecordAnchor),
+        params_source: None,
+        onchain: false,
+    }
+}
+
+/// Resolve the per-config settlement stack for the live coordinator path.
+///
+/// Defaults safely (see [`SettlementStack`]). The on-chain rail is built only in
+/// a `ton-live` build; without that feature an `onchain`/`channel` rail falls
+/// back to the no-op stack (a default build never attempts to broadcast).
+pub fn resolve_settlement_stack(econ: &EconomicsConfig) -> Result<SettlementStack, SettleError> {
+    // Mainnet safety gate first — never assemble a real rail on unconfirmed mainnet.
+    econ.guard_mainnet().map_err(SettleError::Backend)?;
+    if !econ.enabled {
+        return Ok(noop_stack());
+    }
+    match econ.settlement {
+        SettlementRail::Noop => Ok(noop_stack()),
+        SettlementRail::Mock => Ok(SettlementStack {
+            settlement: Arc::new(crate::mock::MockSettlement::new()),
+            record_anchor: Arc::new(crate::mock::InMemoryRecordAnchor::new()),
+            params_source: None,
+            onchain: true, // mock models the full paid path (no funds)
+        }),
+        SettlementRail::Onchain | SettlementRail::Channel => resolve_onchain_stack(econ),
+    }
+}
+
+/// Build the live on-chain stack (only with `ton-live`). Without the feature the
+/// on-chain rail safely degrades to the no-op stack so a default build can never
+/// broadcast.
+#[cfg(not(feature = "ton-live"))]
+fn resolve_onchain_stack(_econ: &EconomicsConfig) -> Result<SettlementStack, SettleError> {
+    Ok(noop_stack())
+}
+
+#[cfg(feature = "ton-live")]
+fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, SettleError> {
+    use crate::ton::{
+        build_escrow_terms, GlobalParamsClient, ToncenterRpc, TonRecordAnchor, TonSettlement,
+    };
+
+    let wiring = resolve_ton_wiring(econ)?;
+    let mnemonic_path = econ
+        .active_settings()
+        .wallet
+        .mnemonic_file
+        .clone()
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| {
+            SettleError::Backend(
+                "on-chain rail requires economics.<net>.wallet.mnemonic_file (a 0600 file)".into(),
+            )
+        })?;
+    let mnemonic = std::fs::read_to_string(&mnemonic_path)
+        .map_err(|e| SettleError::Backend(format!("cannot read mnemonic_file {mnemonic_path}: {e}")))?
+        .trim()
+        .to_string();
+
+    // The signer's wallet is the requester/arbiter/treasury for the turnkey node;
+    // a fresh ToncenterRpc per consumer (each derives the same wallet) since the
+    // RPC owns its signer by value.
+    let mk_rpc = || {
+        ToncenterRpc::new(&wiring.rpc_endpoint, wiring.api_key.clone(), &wiring.network, &mnemonic)
+    };
+    let wallet = mk_rpc()?.wallet_address();
+    let treasury = econ
+        .fee_recipient
+        .as_deref()
+        .and_then(|s| WalletAddress::from_any_str(s).ok())
+        .unwrap_or(wallet);
+
+    // Escrow code from the compiled artifact embedded at build time, so the
+    // per-job escrow address derivation matches the deployed contract.
+    let escrow_code = embedded_job_escrow_code()?;
+    let mut settlement = TonSettlement::with_escrow_code(
+        mk_rpc()?,
+        escrow_code,
+        build_escrow_terms(&treasury, &[0u8; 32], 0),
+        wallet,
+    )
+    .with_requester(wallet)
+    .with_treasury(treasury)
+    // ~0.05 TON deploy headroom so the per-job escrow can pay its own settle-time
+    // compute + forward fees (the locked B is unaffected). Mirrors the Acton
+    // deploy script's `escrowAmount + buffer` funding.
+    .with_deploy_gas_buffer(50_000_000);
+    let window = (econ.slashing.challenge_window_secs.min(u32::MAX as u64) as u32).max(600);
+    settlement = settlement.with_escrow_window(window);
+
+    let anchor: Arc<dyn RecordAnchor> = match wiring.record_anchor {
+        Some(addr) => Arc::new(TonRecordAnchor::new(mk_rpc()?, addr)),
+        None => Arc::new(crate::noop::NoopRecordAnchor),
+    };
+    let params_source: Option<Arc<dyn ParamsSource>> = match wiring.global_params {
+        Some(addr) => Some(Arc::new(GlobalParamsClient::new(mk_rpc()?, addr))),
+        None => None,
+    };
+
+    Ok(SettlementStack {
+        settlement: Arc::new(settlement),
+        record_anchor: anchor,
+        params_source,
+        onchain: true,
+    })
+}
+
+/// The compiled `JobEscrow` code cell, embedded from `ton/build/JobEscrow.json`
+/// at build time (only needed by the live rail).
+#[cfg(feature = "ton-live")]
+fn embedded_job_escrow_code() -> Result<crate::cell::Cell, SettleError> {
+    const ARTIFACT: &str = include_str!("../../../ton/build/JobEscrow.json");
+    let v: serde_json::Value = serde_json::from_str(ARTIFACT)
+        .map_err(|e| SettleError::Backend(format!("JobEscrow.json parse: {e}")))?;
+    let code_b64 = v
+        .get("code_boc64")
+        .and_then(|s| s.as_str())
+        .ok_or_else(|| SettleError::Backend("JobEscrow.json: missing code_boc64".into()))?;
+    crate::ton::escrow_code_from_boc_base64(code_b64)
+}
 
 /// Per-network TON client wiring resolved from `[economics]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +380,62 @@ mod tests {
         assert_eq!(p.attempt_deadline_ms, 60_000);
         assert_eq!(p.progress_interval_ms, 2_000);
         assert_eq!(p.progress_stall_mult, 5);
+    }
+
+    #[test]
+    fn settlement_stack_defaults_safely() {
+        // Disabled chain ⇒ genuine no-op stack (no escrow/anchor/params reads).
+        let e = EconomicsConfig::default();
+        let s = resolve_settlement_stack(&e).unwrap();
+        assert!(!s.onchain, "default/free grid is not on-chain");
+        assert!(s.params_source.is_none());
+        assert!(!s.settlement.is_onchain());
+
+        // Explicit noop rail ⇒ same no-op stack.
+        let mut e = EconomicsConfig::default();
+        e.enabled = true;
+        e.settlement = SettlementRail::Noop;
+        e.validate().unwrap();
+        let s = resolve_settlement_stack(&e).unwrap();
+        assert!(!s.onchain);
+        assert!(s.params_source.is_none());
+    }
+
+    #[test]
+    fn settlement_stack_mock_models_paid_path() {
+        let mut e = EconomicsConfig::default();
+        e.enabled = true;
+        e.settlement = SettlementRail::Mock;
+        e.validate().unwrap();
+        let s = resolve_settlement_stack(&e).unwrap();
+        assert!(s.onchain, "mock models the paid path");
+        assert!(s.settlement.is_onchain());
+        // Mock reads no on-chain GlobalParams (no params source).
+        assert!(s.params_source.is_none());
+    }
+
+    #[test]
+    fn settlement_stack_mainnet_unconfirmed_is_guarded() {
+        let mut e = EconomicsConfig::default();
+        e.enabled = true;
+        e.network = p2p_config::TonNetwork::Mainnet;
+        e.settlement = SettlementRail::Onchain;
+        // The mainnet guard must refuse to assemble any rail when unconfirmed.
+        assert!(resolve_settlement_stack(&e).is_err());
+    }
+
+    #[cfg(not(feature = "ton-live"))]
+    #[test]
+    fn settlement_stack_onchain_without_ton_live_falls_back_to_noop() {
+        let mut e = EconomicsConfig::default();
+        e.enabled = true;
+        e.settlement = SettlementRail::Onchain;
+        e.fee_recipient = Some("0:00".into());
+        e.validate().unwrap();
+        // Default (non-ton-live) build can never broadcast: degrade to no-op.
+        let s = resolve_settlement_stack(&e).unwrap();
+        assert!(!s.onchain, "on-chain rail degrades to no-op without ton-live");
+        assert!(s.params_source.is_none());
     }
 
     #[test]

@@ -184,6 +184,44 @@ impl Node {
         self
     }
 
+    /// Wire the on-chain `GlobalParams` read seam so PAID jobs follow the
+    /// authoritative on-chain policy + version. Off by default (free/local nodes
+    /// never read the chain). Pair with [`Node::spawn_params_sync`] to refresh it.
+    pub fn with_params_source(
+        mut self,
+        source: Arc<dyn p2p_settlement::ParamsSource>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_params_source(source);
+        self
+    }
+
+    /// Apply a resolved [`p2p_settlement::SettlementStack`] (the single
+    /// construction site): wires the money rail + record anchor, and the optional
+    /// on-chain `GlobalParams` read seam. Defaults safely to mock/noop per config,
+    /// so a free/default node is unaffected.
+    pub fn with_settlement_stack(mut self, stack: p2p_settlement::SettlementStack) -> Self {
+        self.coordinator = self
+            .coordinator
+            .with_settlement(stack.settlement)
+            .with_record_anchor(stack.record_anchor);
+        if let Some(src) = stack.params_source {
+            self.coordinator = self.coordinator.with_params_source(src);
+        }
+        if stack.onchain {
+            self.has_wallet = true;
+        }
+        self
+    }
+
+    /// Start the startup + periodic on-chain `GlobalParams` sync (a no-op unless a
+    /// params source is wired). Returns the task handle.
+    pub fn spawn_params_sync(
+        &self,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
+        self.coordinator.spawn_params_sync(interval)
+    }
+
     /// Inject the `NodeId → payout wallet` resolver (the node↔wallet binding
     /// lookup used to direct settlement payouts).
     pub fn with_wallet_resolver(

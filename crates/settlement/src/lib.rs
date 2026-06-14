@@ -47,13 +47,13 @@ pub use ton::{
     build_anchor_submit, build_escrow_refund, build_escrow_settle, build_escrow_terms,
     build_escrow_topup, build_stake_deposit, build_stake_slash, build_stake_unbond,
     build_update_admin, build_update_params, escrow_code_from_boc_base64, GlobalParams,
-    GlobalParamsClient, MessageBody, OnchainPolicy, TonRecordAnchor, TonRpc, TonSettlement,
-    TonStakeRegistry, VaultInit,
+    GlobalParamsClient, MessageBody, OnchainPolicy, ParamsSource, TonRecordAnchor, TonRpc,
+    TonSettlement, TonStakeRegistry, VaultInit,
 };
 #[cfg(feature = "ton-live")]
 pub use ton::ToncenterRpc;
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
-pub use wiring::{resolve_ton_wiring, TonWiring};
+pub use wiring::{resolve_settlement_stack, resolve_ton_wiring, SettlementStack, TonWiring};
 pub use types::{
     Amount, BindingError, EscrowHandle, Hash32, InclusionProof, JobRecord, NodeWalletBinding,
     Payout, SettleError, SettlementOutcome, SlashError, SlashReason, TonProof, WalletAddress,

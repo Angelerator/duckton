@@ -15,8 +15,8 @@ use p2p_proto::{
     Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
-    Amount, JobRecord, Payout, RecordAnchor, Settlement, SettlementOutcome, SlashReason,
-    StakeRegistry, WalletAddress,
+    Amount, JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement,
+    SettlementOutcome, SlashReason, StakeRegistry, WalletAddress,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
@@ -200,12 +200,31 @@ pub struct Coordinator {
     /// Latest streamed progress per job (resilience §11) — exposed for a status
     /// surface and used to reset the stall timer during commit collection.
     progress: Arc<ProgressTracker>,
-    /// On-chain `GlobalParams` version/seqno in force, bound into each settled
-    /// paid job's anchored record so all parties agree which ecosystem params
-    /// governed the job (BLOCKCHAIN_ECONOMICS §12). `0` (default) = unbound (no
-    /// `GlobalParams` synced); set via [`Coordinator::with_params_version`] from
-    /// the `GlobalParamsClient` read path.
-    params_version: u32,
+    /// On-chain `GlobalParams` policy + version/seqno in force (BLOCKCHAIN_ECONOMICS
+    /// §12), refreshed at startup + on a periodic interval by the sync task. The
+    /// cached `version` is bound into each settled paid job's anchored record and
+    /// per-job escrow terms; the cached `policy` (when present) is overlaid onto a
+    /// paid job's live `EconomicsConfig`/`SchedulerConfig`. `version == 0` +
+    /// `policy == None` (default) = unbound. Shared (`Arc`) so the background sync
+    /// task and the query path see the same cell.
+    synced_params: Arc<SyncedParams>,
+    /// Optional read seam for the on-chain `GlobalParams` policy. `None` (default)
+    /// ⇒ no chain reads at all (free/local nodes). When wired, the coordinator
+    /// syncs it at startup + periodically via [`Coordinator::spawn_params_sync`].
+    params_source: Option<Arc<dyn ParamsSource>>,
+}
+
+/// Cached on-chain `GlobalParams` policy, shared between the periodic sync task
+/// and the query path. Defaults to unbound (`version = 0`, no policy overlay).
+#[derive(Default)]
+struct SyncedParams {
+    state: Mutex<SyncedParamsState>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct SyncedParamsState {
+    version: u32,
+    policy: Option<OnchainPolicy>,
 }
 
 /// One worker that committed a result hash and whose decision stream is open.
@@ -241,7 +260,8 @@ impl Coordinator {
             blocklist: None,
             liveness: None,
             progress: Arc::new(ProgressTracker::new()),
-            params_version: 0,
+            synced_params: Arc::new(SyncedParams::default()),
+            params_source: None,
         }
     }
 
@@ -251,9 +271,77 @@ impl Coordinator {
     /// stamped into every settled paid job's anchored record, so settlement and
     /// dispute resolution reference the exact params in force. `0` (default) =
     /// unbound; free jobs never anchor a record regardless.
-    pub fn with_params_version(mut self, version: u32) -> Self {
-        self.params_version = version;
+    pub fn with_params_version(self, version: u32) -> Self {
+        self.synced_params.state.lock().unwrap().version = version;
         self
+    }
+
+    /// Wire the on-chain `GlobalParams` read seam (a
+    /// [`p2p_settlement::GlobalParamsClient`] over any RPC). Off by default; when
+    /// set, [`Coordinator::spawn_params_sync`] / [`Coordinator::sync_params_once`]
+    /// refresh the cached policy + version. Free/local jobs never consult it.
+    pub fn with_params_source(mut self, source: Arc<dyn ParamsSource>) -> Self {
+        self.params_source = Some(source);
+        self
+    }
+
+    /// The currently-cached on-chain `GlobalParams` version/seqno (`0` = unbound).
+    /// Stamped into each settled paid job's record + per-job escrow terms.
+    pub fn current_params_version(&self) -> u32 {
+        self.synced_params.state.lock().unwrap().version
+    }
+
+    /// The currently-cached on-chain policy (overlaid onto a paid job's live
+    /// config), or `None` when nothing has been synced.
+    fn synced_policy(&self) -> Option<OnchainPolicy> {
+        self.synced_params.state.lock().unwrap().policy
+    }
+
+    /// Read the on-chain `GlobalParams` policy ONCE through the wired source and
+    /// cache it (version + policy). This is the startup sync; it is also the unit
+    /// the periodic task repeats. Errors if no source is wired or the read fails
+    /// — callers on the free/local path never invoke it. NOTE: this performs a
+    /// blocking RPC read; the periodic task runs it on a blocking thread.
+    pub fn sync_params_once(&self) -> Result<OnchainPolicy, CoordinatorError> {
+        let src = self
+            .params_source
+            .as_ref()
+            .ok_or_else(|| CoordinatorError::Settlement("no GlobalParams source wired".into()))?;
+        let policy = src
+            .read_policy()
+            .map_err(|e| CoordinatorError::Settlement(e.to_string()))?;
+        let mut g = self.synced_params.state.lock().unwrap();
+        g.version = policy.version;
+        g.policy = Some(policy);
+        Ok(policy)
+    }
+
+    /// Spawn the startup + periodic `GlobalParams` sync: read the on-chain policy
+    /// immediately, then re-read every `interval`, overlaying it onto paid jobs'
+    /// live config and caching the current `params_version`. A no-op task (logs +
+    /// returns) when no source is wired, so free/local nodes are unaffected. The
+    /// blocking RPC read runs on a blocking thread so the async runtime is not
+    /// stalled. Returns the task handle (drop/abort to stop).
+    pub fn spawn_params_sync(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+        let coord = self.clone();
+        tokio::spawn(async move {
+            if coord.params_source.is_none() {
+                debug!("GlobalParams sync not started: no source wired");
+                return;
+            }
+            loop {
+                let c = coord.clone();
+                match tokio::task::spawn_blocking(move || c.sync_params_once()).await {
+                    Ok(Ok(p)) => debug!("GlobalParams synced: version={}", p.version),
+                    Ok(Err(e)) => debug!("GlobalParams sync failed: {e}"),
+                    Err(e) => debug!("GlobalParams sync task join error: {e}"),
+                }
+                if interval.is_zero() {
+                    break;
+                }
+                tokio::time::sleep(interval).await;
+            }
+        })
     }
 
     /// Wire a liveness view (phi-accrual + SWIM, architecture §8): convicted
@@ -359,10 +447,11 @@ impl Coordinator {
         sql: &str,
         overrides: QueryOverrides,
     ) -> Result<QueryOutcome, CoordinatorError> {
-        let cfg = overrides.apply(&self.base_config)?;
+        let mut cfg = overrides.apply(&self.base_config)?;
 
         // Local-first hook (minimal): the routing decision itself lives in the
-        // `planner` module; this just acts on it.
+        // `planner` module; this just acts on it. Runs BEFORE any chain overlay so
+        // the free/local path never depends on a synced policy.
         if let Some(outcome) = self.try_local_execution(sql, &cfg, None).await? {
             return Ok(outcome);
         }
@@ -375,6 +464,16 @@ impl Coordinator {
             .economics
             .resolve_payment(data_class_to_cfg(data_class))
             .is_paid();
+
+        // Overlay the synced on-chain `GlobalParams` policy onto this PAID job's
+        // live config so fees/slashing/timing follow the authoritative on-chain
+        // values (BLOCKCHAIN_ECONOMICS §12). FREE jobs are never touched and never
+        // block on a chain read — the overlay only uses the already-cached policy.
+        if paid && cfg.economics.enabled {
+            if let Some(policy) = self.synced_policy() {
+                policy.apply_to(&mut cfg.economics, &mut cfg.scheduler);
+            }
+        }
         let min_level = parse_level(&cfg.trust.min_attestation);
         let job_id = JobId::new();
         let query_hash = QueryHash::compute(sql, &self.engine_version);
@@ -643,22 +742,6 @@ impl Coordinator {
             });
         }
 
-        // Engage the paid money rail (BLOCKCHAIN_ECONOMICS §8.2): lock the
-        // requester's max bid B in a per-job escrow BEFORE dispatch. FREE jobs and
-        // a node with no settlement rail wired skip this entirely. Refunded on any
-        // failure / re-dispatch.
-        let escrow = if paid && cfg.economics.enabled {
-            match &self.settlement {
-                Some(s) => Some(
-                    s.open_escrow(job_id, escrow_bid_nanoton(cfg))
-                        .map_err(|e| CoordinatorError::Settlement(e.to_string()))?,
-                ),
-                None => None,
-            }
-        } else {
-            None
-        };
-
         // 4. Dispatch to selected workers and collect commits — progress-stall
         //    aware: a streamed Progress resets the stall timer; no progress (nor a
         //    Commit) within the stall window / attempt deadline ⇒ that provider is
@@ -735,7 +818,6 @@ impl Coordinator {
             (Some(expected), _) => (Some(expected.clone()), true),
             _ if non_verifiable => {
                 if inflight.is_empty() {
-                    self.refund_escrow(&escrow);
                     return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
                 let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
@@ -753,26 +835,22 @@ impl Coordinator {
                         .consensus_reason(frac)
                         .unwrap_or_else(|| "consensus-infeasible query".to_string());
                     self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
-                    self.refund_escrow(&escrow);
                     return Ok(AttemptResult::Infeasible { reason });
                 } else if inflight.len() >= cfg.scheduler.quorum {
                     // Enough providers committed but their hashes disagree — a
                     // genuine verification disagreement (terminal).
                     self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
-                    self.refund_escrow(&escrow);
                     return Ok(AttemptResult::QuorumDisagreement {
                         agreement: outcome.agreement,
                         quorum: outcome.quorum,
                     });
                 } else {
                     // Shortfall from silence / transient failures → re-dispatch.
-                    self.refund_escrow(&escrow);
                     return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
             }
             (None, VerifyMode::Fast) => {
                 if inflight.is_empty() {
-                    self.refund_escrow(&escrow);
                     return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
                 let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
@@ -783,7 +861,6 @@ impl Coordinator {
         let agreed = match agreed_hash {
             Some(h) => h,
             None => {
-                self.refund_escrow(&escrow);
                 return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
@@ -802,7 +879,6 @@ impl Coordinator {
                 // The authoritative answer matched no responding worker (e.g. all
                 // failed a canary) — re-dispatch to fresh nodes.
                 self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
-                self.refund_escrow(&escrow);
                 return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
@@ -920,15 +996,18 @@ impl Coordinator {
             Some(r) => r,
             None => {
                 // Winner did not actually stream a result — re-dispatch.
-                self.refund_escrow(&escrow);
                 return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
 
-        // Settle the paid job (winner + commissions + fee), then anchor the record.
+        // Settle the paid job: open the per-job escrow NOW that the verified quorum
+        // hash is known (open-escrow-per-job, BLOCKCHAIN_ECONOMICS §6.2/§12) binding
+        // the HTLC lock + synced params version, release the payout split, then
+        // anchor the record. A no-op for free jobs / no rail wired.
         self.settle_paid_job(
             cfg,
-            &escrow,
+            paid,
+            job_id,
             &winner_id,
             &agreeing_non_winners,
             &agreed,
@@ -1169,16 +1248,6 @@ impl Coordinator {
         debug!("emitted failure receipts for job {job_id}");
     }
 
-    /// Refund the per-job escrow to the requester (best-effort) on a failure
-    /// path. A no-op when no escrow was opened / no rail is wired.
-    fn refund_escrow(&self, escrow: &Option<p2p_settlement::EscrowHandle>) {
-        if let (Some(s), Some(h)) = (&self.settlement, escrow) {
-            if let Err(e) = s.refund(h) {
-                debug!("escrow refund failed: {e}");
-            }
-        }
-    }
-
     /// Resolve a worker's payout wallet via the injected resolver, or a
     /// deterministic derivation (BLAKE3 of the node id) used by tests / when no
     /// binding lookup is wired.
@@ -1189,23 +1258,52 @@ impl Coordinator {
         }
     }
 
-    /// Release the escrow per the quorum verdict and anchor the job record. A
-    /// no-op unless a settlement rail is wired AND an escrow was opened (i.e. a
-    /// PAID job on an economics-enabled node). Bounds the payout split by `B`.
+    /// Open the per-job escrow, release it per the quorum verdict, and anchor the
+    /// job record. A no-op unless this is a PAID job on an economics-enabled node
+    /// with a settlement rail wired.
+    ///
+    /// The escrow is opened HERE (open-escrow-per-job) — only AFTER the verified
+    /// quorum hash is known — so the per-job `EscrowTerms` bind the HTLC lock
+    /// (`expected_hash` = the agreed quorum result hash) AND the synced on-chain
+    /// `GlobalParams` version. The payout split is bounded by the escrowed `B`,
+    /// and the same params version is stamped into the anchored record
+    /// (BLOCKCHAIN_ECONOMICS §6.2/§12). The mock/noop rails ignore the terms.
     #[allow(clippy::too_many_arguments)]
     fn settle_paid_job(
         &self,
         cfg: &GridConfig,
-        escrow: &Option<p2p_settlement::EscrowHandle>,
+        paid: bool,
+        job_id: &JobId,
         winner: &NodeId,
         agreeing_non_winners: &[NodeId],
         agreed_hash: &str,
         query_hash: &QueryHash,
         requester: &NodeId,
     ) {
-        let (Some(settlement), Some(handle)) = (&self.settlement, escrow) else {
+        if !(paid && cfg.economics.enabled) {
+            return;
+        }
+        let Some(settlement) = &self.settlement else {
             return;
         };
+        // The HTLC lock = the agreed quorum result hash; the params version is the
+        // one currently synced from on-chain `GlobalParams` (0 = unbound).
+        let result_hash = *blake3::hash(agreed_hash.as_bytes()).as_bytes();
+        let version = self.current_params_version();
+        let max_bid = escrow_bid_nanoton(cfg);
+
+        // Open the per-job escrow binding the lock + params version into its terms
+        // (hence its deterministic address). The mock/noop rails fall back to the
+        // termless `open_escrow`; the ton rail builds the on-chain terms cell.
+        let handle = match settlement.open_escrow_with_terms(job_id, max_bid, &result_hash, version)
+        {
+            Ok(h) => h,
+            Err(e) => {
+                debug!("open_escrow failed: {e}");
+                return;
+            }
+        };
+
         let b = handle.max_bid;
         let fee = mul_frac(b, cfg.economics.fees.platform_fee_pct);
         let commission_each = mul_frac(b, cfg.economics.fees.participation_commission_frac);
@@ -1218,18 +1316,18 @@ impl Coordinator {
         // commissions; never exceeds the escrow (the rail also enforces this).
         let winner_amount = b.saturating_sub(fee).saturating_sub(total_commission);
         let outcome = SettlementOutcome {
-            result_hash: *blake3::hash(agreed_hash.as_bytes()).as_bytes(),
+            result_hash,
             winner: Payout { to: self.wallet_of(winner), amount: winner_amount },
             participants,
             platform_fee: fee,
         };
-        if let Err(e) = settlement.settle(handle, &outcome) {
+        if let Err(e) = settlement.settle(&handle, &outcome) {
             debug!("escrow settle failed: {e}");
             return;
         }
         if let Some(anchor) = &self.record_anchor {
             anchor.append(&JobRecord {
-                job_id: handle.job.0.clone(),
+                job_id: job_id.0.clone(),
                 query_hash: query_hash.0.clone(),
                 requester_wallet: self.wallet_of(requester).to_raw_string(),
                 max_bid: b,
@@ -1237,7 +1335,7 @@ impl Coordinator {
                 epoch: 0,
                 prev_root: [0u8; 32],
                 // Pin the exact on-chain params version this job ran under.
-                params_version: self.params_version,
+                params_version: version,
             });
         }
     }

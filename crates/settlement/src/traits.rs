@@ -24,6 +24,25 @@ pub trait Wallet: Send + Sync {
 pub trait Settlement: Send + Sync {
     /// Lock the requester's max bid `B` in a per-job non-custodial escrow.
     fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError>;
+    /// Open a per-job escrow whose on-chain `EscrowTerms` bind the HTLC lock
+    /// (`expected_hash` = the agreed quorum result hash) AND the on-chain
+    /// `GlobalParams` version in force (`params_version`), so the per-job escrow
+    /// address commits to both up front (BLOCKCHAIN_ECONOMICS §6.2/§12). This is
+    /// the open-escrow-per-job entry the live coordinator calls AFTER the verified
+    /// quorum hash is known. The default ignores the terms and falls back to
+    /// [`Settlement::open_escrow`] — exactly today's behavior for the `mock`/`noop`
+    /// rails and any double that does not model on-chain terms; the `ton` rail
+    /// overrides it to build the per-job terms cell.
+    fn open_escrow_with_terms(
+        &self,
+        job: &JobId,
+        max_bid: Amount,
+        expected_hash: &Hash32,
+        params_version: u32,
+    ) -> Result<EscrowHandle, SettleError> {
+        let _ = (expected_hash, params_version);
+        self.open_escrow(job, max_bid)
+    }
     /// Release escrow per the quorum verdict (HTLC-style, keyed on result hash).
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError>;
     /// Refund the full escrow to the requester (e.g. on timeout / no quorum).
