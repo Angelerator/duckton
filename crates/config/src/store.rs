@@ -250,6 +250,25 @@ impl ConfigStore {
                     out.push(("economics.mainnet_confirmed".into(), Value::Boolean(c)));
                 }
             }
+            "planner" => {
+                // Local-vs-remote routing + the remote-only ("route everything to
+                // the grid") mode. `local_execution` (alias `local_execution_enabled`)
+                // = false makes this node a pure requester / thin-client.
+                if let Some(v) = get("prefer") {
+                    let lc = v.trim().to_ascii_lowercase();
+                    validate_one_of("prefer", &lc, &["local", "remote", "auto"])?;
+                    out.push(("planner.prefer".into(), Value::String(lc)));
+                }
+                if let Some(v) = get("local_execution").or_else(|| get("local_execution_enabled")) {
+                    out.push((
+                        "planner.local_execution_enabled".into(),
+                        parse_bool(v, "local_execution")?,
+                    ));
+                }
+                if let Some(v) = get("enabled") {
+                    out.push(("planner.enabled".into(), parse_bool(v, "enabled")?));
+                }
+            }
             "trust" => {
                 if let Some(v) = get("min_trust") {
                     out.push(("trust.min_trust".into(), parse_float(v, "min_trust")?));
@@ -338,7 +357,7 @@ impl ConfigStore {
             other => {
                 return Err(StoreError::BadParam(format!(
                     "unknown settings group '{other}' (economics|trust|selection|fees|pricing|\
-                     bidding|contracts|wallet)"
+                     bidding|contracts|wallet|planner)"
                 )))
             }
         }
@@ -420,6 +439,15 @@ pub fn status_rows(cfg: &GridConfig) -> Vec<SettingRow> {
                 e.fee_recipient.is_some().to_string(),
             ),
             SettingRow::new("status", "planner_prefer", format!("{:?}", cfg.planner.prefer).to_lowercase()),
+            SettingRow::new(
+                "status",
+                "execution_mode",
+                if cfg.planner.local_execution_enabled {
+                    "local+grid".to_string()
+                } else {
+                    "remote-only (never executes locally)".to_string()
+                },
+            ),
         ];
         if e.mainnet_blocked() {
             rows.push(SettingRow::new(
@@ -743,6 +771,47 @@ mod tests {
     fn default_network_is_testnet() {
         let (store, _d) = temp_store();
         assert_eq!(store.effective().unwrap().economics.network, TonNetwork::Testnet);
+    }
+
+    #[test]
+    fn planner_group_sets_remote_only_mode() {
+        let (store, dir) = temp_store();
+        // Default is local-first.
+        assert!(store.effective().unwrap().planner.local_execution_enabled);
+
+        // CALL p2p_planner(prefer => 'remote', local_execution => false)
+        let mut p = BTreeMap::new();
+        p.insert("prefer".to_string(), "remote".to_string());
+        p.insert("local_execution".to_string(), "false".to_string());
+        let cfg = store.apply_group("planner", &p).unwrap();
+        assert_eq!(cfg.planner.prefer, crate::PreferMode::Remote);
+        assert!(!cfg.planner.local_execution_enabled);
+
+        // Persisted across reopen (runtime layer).
+        let reopened = ConfigStore::with_paths(
+            store.runtime_path().to_path_buf(),
+            None,
+            dir.path().join("secrets"),
+        );
+        let r = reopened.effective().unwrap();
+        assert_eq!(r.planner.prefer, crate::PreferMode::Remote);
+        assert!(!r.planner.local_execution_enabled);
+
+        // Generic escape hatch flips it back.
+        let cfg = store
+            .set_kv("planner.local_execution_enabled", "true")
+            .unwrap();
+        assert!(cfg.planner.local_execution_enabled);
+    }
+
+    #[test]
+    fn planner_group_rejects_bad_prefer() {
+        let (store, _d) = temp_store();
+        let mut p = BTreeMap::new();
+        p.insert("prefer".to_string(), "elsewhere".to_string());
+        let err = store.apply_group("planner", &p).unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("prefer"), "got {err}");
+        assert!(store.runtime_text().is_none(), "must not persist on failure");
     }
 
     #[test]

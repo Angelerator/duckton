@@ -179,6 +179,32 @@ mod tests {
     }
 
     #[test]
+    fn per_call_prefer_overrides_sticky_config_default_both_ways() {
+        // Sticky remote-grid default in config; a per-call `prefer => local`
+        // overrides it (and vice-versa), proving per-call wins over the runtime
+        // layer regardless of direction.
+        let mut remote_default = GridConfig::default();
+        remote_default.planner.prefer = PreferMode::Remote;
+        let eff = QueryOverrides {
+            prefer: Some(PreferMode::Local),
+            ..Default::default()
+        }
+        .apply(&remote_default)
+        .unwrap();
+        assert_eq!(eff.planner.prefer, PreferMode::Local);
+
+        let mut local_default = GridConfig::default();
+        local_default.planner.prefer = PreferMode::Local;
+        let eff = QueryOverrides {
+            prefer: Some(PreferMode::Remote),
+            ..Default::default()
+        }
+        .apply(&local_default)
+        .unwrap();
+        assert_eq!(eff.planner.prefer, PreferMode::Remote);
+    }
+
+    #[test]
     fn share_override_sets_budget() {
         let eff = ShareOverrides {
             memory_bytes: Some(8 << 30),

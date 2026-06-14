@@ -37,7 +37,12 @@ use crate::signer::IdentitySigner;
 pub enum CoordinatorError {
     #[error("config error: {0}")]
     Config(#[from] p2p_config::ConfigError),
-    #[error("no candidates discovered")]
+    #[error(
+        "no hosts available to run this query on the grid. Join a network with \
+         p2p_join(bootstrap => [...]) or add bootstrap seeds (discovery.bootstrap), \
+         and ensure reachable hosts have called p2p_share. (In remote-only mode the \
+         node will not fall back to running the query locally.)"
+    )]
     NoCandidates,
     #[error("not enough trustworthy workers: have {have}, need quorum {quorum}")]
     InsufficientWorkers { have: usize, quorum: usize },

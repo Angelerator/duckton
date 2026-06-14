@@ -445,9 +445,57 @@ CALL p2p_selection(replicas => 5, quorum => 3, checksum_min => 3);
 CALL p2p_fees(platform_fee_pct => 0.02, participation_commission_frac => 0.02);
 CALL p2p_trust(min_trust => 0.8, min_attest => 'L1');
 CALL p2p_contracts(stake_vault => 'kQ...', job_escrow => 'kQ...', record_anchor => 'kQ...');
+CALL p2p_planner(prefer => 'remote', local_execution => false);  -- remote-only mode
 CALL p2p_set('economics.fees.platform_fee_pct', 0.02);      -- generic escape hatch to ANY key
 CALL p2p_config_reset();                                    -- restore defaults
 ```
+
+#### Remote-only mode ("route everything to the hosts; never execute locally")
+
+By default a node is **local-first**: the planner (§12.0, §11) runs small/cheap
+queries for free in its own locked-down in-process DuckDB and only fans out to
+the grid when a query is too big, the node is locally saturated, or the caller
+asks for it. A requester (e.g. a **low-power / mobile / thin client**) can opt
+out of running *anything* on its own machine and route **100 % of execution to
+remote hosts** via a single planner knob, `planner.local_execution_enabled`
+(default `true`):
+
+```sql
+-- Persistent remote-only mode (survives restart; sits in the runtime layer):
+CALL p2p_planner(local_execution => false);                 -- never run locally
+CALL p2p_planner(prefer => 'remote', local_execution => false); -- + sticky remote default
+-- equivalently via the generic escape hatch:
+CALL p2p_set('planner.local_execution_enabled', false);
+CALL p2p_set('planner.prefer', 'remote');
+
+-- Per-call (highest precedence), unchanged:
+FROM p2p_query('SELECT ...', prefer => 'remote');           -- this query only
+```
+
+Semantics:
+
+- **Hard gate.** When `local_execution_enabled = false` the node **never** runs a
+  query locally — not even a tiny one that would fit, and **not even a per-call
+  `prefer => 'local'`** (the gate overrides preference). The planner returns
+  `Remote` with reason `LocalDisabled` and the coordinator's adaptive fail-over
+  **"start local" path is skipped entirely** (no local slot is ever reserved).
+- **`prefer = 'remote'`** is a softer, sticky default: it routes to the grid by
+  default but a per-call `prefer => 'local'` still wins. Use
+  `local_execution_enabled = false` for a guarantee, `prefer = 'remote'` for a
+  default.
+- **Thin-client / requester-only.** A node that never called `p2p_share` (is not
+  a host) and has local execution disabled works as a **pure requester**:
+  `p2p_query` dispatches to hosts with no dependency on a local execution
+  engine.
+- **Friendly failure.** In remote-only mode with **no reachable hosts**, a query
+  returns a clear, actionable `NoCandidates` error ("no hosts available; join a
+  network with `p2p_join` or add bootstrap seeds") instead of silently falling
+  back to local. `p2p_status()` shows `execution_mode = remote-only`.
+
+Precedence (lowest → highest), as everywhere else (§17): **built-in defaults <
+config file (`[planner]`) < `P2P_PLANNER_*` env < SQL/runtime (`p2p_planner` /
+`p2p_set`) < per-call (`prefer =>`)** — except the `local_execution_enabled`
+hard gate, which, once set, is not undone by a per-call `prefer => 'local'`.
 
 **Wallet (secrets handled carefully):**
 

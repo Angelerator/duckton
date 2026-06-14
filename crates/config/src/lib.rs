@@ -915,7 +915,20 @@ pub struct PlannerConfig {
     /// Master switch. When `false` the planner is bypassed and every query is
     /// dispatched to the grid exactly as before (back-compatible).
     pub enabled: bool,
-    /// Default routing preference when a call does not override `prefer`.
+    /// Whether this node is allowed to execute queries on its **own** machine at
+    /// all. `true` (default) keeps the local-first behavior. When `false` the
+    /// node runs in **remote-only ("route everything to the grid") mode**: every
+    /// query — even a tiny one that would otherwise fit locally — is dispatched
+    /// to the grid, the adaptive fail-over's "start local" path is skipped
+    /// entirely, and a node that never called `p2p_share` operates as a pure
+    /// thin-client requester. This is a hard gate that overrides `prefer`
+    /// (including a per-call `prefer => 'local'`). With no reachable hosts a
+    /// query returns a clear `NoCandidates` error rather than falling back to
+    /// local.
+    pub local_execution_enabled: bool,
+    /// Default routing preference when a call does not override `prefer`. Set to
+    /// `remote` for a sticky "prefer the grid" default (still allows a per-call
+    /// `prefer => 'local'` override unless `local_execution_enabled = false`).
     pub prefer: PreferMode,
     /// Fraction `alpha` in `(0,1]` of `budget.memory_bytes` the node is willing
     /// to devote to local execution. The local headroom is
@@ -942,6 +955,7 @@ impl Default for PlannerConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            local_execution_enabled: true,
             prefer: PreferMode::Auto,
             ram_fraction: 0.6,
             max_concurrent_local_jobs: 4,
@@ -1325,6 +1339,9 @@ impl GridConfig {
                         v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
                 }
                 "P2P_PLANNER_ENABLED" => self.planner.enabled = parse(k, v)?,
+                "P2P_PLANNER_LOCAL_EXECUTION_ENABLED" | "P2P_PLANNER_LOCAL_EXECUTION" => {
+                    self.planner.local_execution_enabled = parse(k, v)?
+                }
                 "P2P_PLANNER_PREFER" => {
                     self.planner.prefer = match v.trim().to_ascii_lowercase().as_str() {
                         "local" => PreferMode::Local,
@@ -1945,9 +1962,39 @@ mod tests {
     fn planner_defaults_are_valid_and_auto() {
         let cfg = GridConfig::default();
         assert!(cfg.planner.enabled);
+        // Local execution is enabled by default (local-first); remote-only is opt-in.
+        assert!(cfg.planner.local_execution_enabled);
         assert_eq!(cfg.planner.prefer, PreferMode::Auto);
         assert_eq!(cfg.planner.ram_fraction, 0.6);
         assert_eq!(cfg.planner.max_concurrent_local_jobs, 4);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn remote_only_mode_layers_defaults_then_file_then_env() {
+        // Default: local execution enabled.
+        assert!(GridConfig::default().planner.local_execution_enabled);
+
+        // FILE layer disables local execution (remote-only mode) + sticky remote.
+        let toml = r#"
+            [planner]
+            local_execution_enabled = false
+            prefer = "remote"
+        "#;
+        let mut cfg = GridConfig::from_toml_str(toml).unwrap();
+        assert!(!cfg.planner.local_execution_enabled);
+        assert_eq!(cfg.planner.prefer, PreferMode::Remote);
+
+        // ENV layer overrides the file layer (re-enables local execution).
+        let mut env = BTreeMap::new();
+        env.insert(
+            "P2P_PLANNER_LOCAL_EXECUTION_ENABLED".to_string(),
+            "true".to_string(),
+        );
+        cfg.apply_env_map(&env).unwrap();
+        assert!(cfg.planner.local_execution_enabled);
+        // env did not touch prefer set by the file layer
+        assert_eq!(cfg.planner.prefer, PreferMode::Remote);
         cfg.validate().unwrap();
     }
 

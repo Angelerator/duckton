@@ -267,6 +267,81 @@ async fn adaptive_failover_redispatches_to_grid_on_oom() {
     assert!(matches!(err, CoordinatorError::NoCandidates), "expected failover to grid, got {err:?}");
 }
 
+// ---------------------------------------------------------------------------
+// Remote-only ("route everything to the grid; never execute locally") mode
+// ---------------------------------------------------------------------------
+
+/// Build a GridConfig with local execution disabled (remote-only mode).
+fn remote_only_cfg() -> GridConfig {
+    let mut cfg = GridConfig::default();
+    cfg.planner.local_execution_enabled = false;
+    cfg.validate().unwrap();
+    cfg
+}
+
+#[tokio::test]
+async fn remote_only_mode_dispatches_tiny_fitting_query_to_grid() {
+    // A tiny query that WOULD fit locally must still be dispatched to the grid
+    // when local execution is disabled. With no workers, going remote surfaces
+    // NoCandidates — proving the local path was NOT taken.
+    let (coord, local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    // Sanity: a local slot IS available and the estimate fits, so the ONLY reason
+    // we go remote is the remote-only hard gate (not saturation / size).
+    assert!(local.slot_available());
+
+    let err = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
+}
+
+#[tokio::test]
+async fn remote_only_mode_hard_gate_overrides_per_call_prefer_local() {
+    // Even an explicit `prefer => local` cannot make a remote-only node run a
+    // query on its own machine: the hard gate wins → grid → NoCandidates.
+    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    let overrides = QueryOverrides {
+        prefer: Some(PreferMode::Local),
+        ..Default::default()
+    };
+    let err = coord.run_query("SELECT 1", overrides).await.unwrap_err();
+    assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
+}
+
+#[tokio::test]
+async fn remote_only_mode_skips_adaptive_failover_start_local_path() {
+    // The local engine would fail with OOM IF it ran — but in remote-only mode
+    // the "start local" path is skipped entirely, so the engine is never invoked
+    // and we go straight to the grid (NoCandidates). A LocalExecution error here
+    // would mean the local path ran, which must not happen.
+    let oom = Arc::new(MockEngine::failing("Out of Memory Error: failed to allocate 8GB"));
+    let (coord, _local) = local_coordinator(oom, remote_only_cfg());
+    let err = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
+}
+
+#[tokio::test]
+async fn thin_client_remote_only_dispatches_and_surfaces_no_candidates() {
+    // A thin-client requester: never called p2p_share (no worker wired here) and
+    // local execution disabled. `p2p_query` must dispatch to hosts (no dependency
+    // on a local executor) and, with no reachable peers, surface NoCandidates
+    // cleanly rather than running locally.
+    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    // Default overrides → planner.prefer = auto, but the hard gate forces remote.
+    let err = coord
+        .run_query("SELECT region, count(*) FROM 's3://b/e/*.parquet' GROUP BY region", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
+    // The actionable message points at p2p_join / bootstrap seeds.
+    let msg = err.to_string();
+    assert!(msg.contains("p2p_join") || msg.contains("bootstrap"), "unfriendly: {msg}");
+}
+
 #[tokio::test]
 async fn prefer_local_does_not_failover_and_surfaces_local_error() {
     // When the caller pins `local`, a local failure is NOT masked by a grid

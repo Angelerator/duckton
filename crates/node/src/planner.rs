@@ -43,6 +43,11 @@ pub enum PlanReason {
     ForcedLocal,
     /// Forced by preference (`prefer => remote`), or planner disabled.
     ForcedRemote,
+    /// Remote-only mode: local execution is disabled
+    /// (`planner.local_execution_enabled = false`), so the query is dispatched
+    /// to the grid regardless of preference or size — the node never runs a
+    /// query on its own machine.
+    LocalDisabled,
     /// Auto: estimate fits within headroom (+ spill tolerance) and budgets.
     FitsLocal,
     /// Auto: estimated peak working set exceeds headroom + spill tolerance.
@@ -126,6 +131,15 @@ impl LocalOrRemotePlanner for DefaultPlanner {
         // Master switch: planner off ⇒ behave exactly like before (grid only).
         if !self.cfg.enabled {
             return PlanDecision::remote(PlanReason::ForcedRemote);
+        }
+
+        // Remote-only mode (hard gate): when local execution is disabled the node
+        // NEVER runs a query on its own machine — not even a tiny one that would
+        // fit, and not even when the caller pinned `prefer => 'local'`. Every
+        // query is dispatched to the grid and the adaptive "start local" path is
+        // skipped entirely (the coordinator never reserves a local slot).
+        if !self.cfg.local_execution_enabled {
+            return PlanDecision::remote(PlanReason::LocalDisabled);
         }
 
         match req.prefer {
@@ -284,6 +298,7 @@ mod tests {
     fn cfg() -> PlannerConfig {
         PlannerConfig {
             enabled: true,
+            local_execution_enabled: true,
             prefer: PreferMode::Auto,
             ram_fraction: 0.6,
             max_concurrent_local_jobs: 4,
@@ -393,6 +408,38 @@ mod tests {
             local_slot_available: true,
         });
         assert_eq!(d, PlanDecision::local(PlanReason::ForcedLocal));
+    }
+
+    #[test]
+    fn remote_only_mode_forces_remote_even_for_fitting_tiny_query() {
+        // local_execution_enabled = false ⇒ a tiny query that WOULD fit locally
+        // is still routed to the grid.
+        let mut c = cfg();
+        c.local_execution_enabled = false;
+        let p = DefaultPlanner::new(c);
+        let d = p.decide(&PlanRequest {
+            prefer: PreferMode::Auto,
+            estimate: Some(ws(1, 1, 1)),
+            headroom_bytes: u64::MAX,
+            local_slot_available: true,
+        });
+        assert_eq!(d, PlanDecision::remote(PlanReason::LocalDisabled));
+    }
+
+    #[test]
+    fn remote_only_mode_overrides_prefer_local() {
+        // The hard gate beats an explicit `prefer => local` — the node never runs
+        // a query on its own machine in remote-only mode.
+        let mut c = cfg();
+        c.local_execution_enabled = false;
+        let p = DefaultPlanner::new(c);
+        let d = p.decide(&PlanRequest {
+            prefer: PreferMode::Local,
+            estimate: None,
+            headroom_bytes: u64::MAX,
+            local_slot_available: true,
+        });
+        assert_eq!(d, PlanDecision::remote(PlanReason::LocalDisabled));
     }
 
     #[test]

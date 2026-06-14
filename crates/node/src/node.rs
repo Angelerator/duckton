@@ -196,20 +196,28 @@ impl Node {
         let effective_prefer = overrides.prefer.unwrap_or(cfg.planner.prefer);
         let mut ov = overrides;
 
+        // Remote-only ("route everything to the grid") mode: when local execution
+        // is disabled this node is a pure requester / thin-client and must NEVER
+        // run a query on its own machine, so the local-first conveniences below
+        // are suppressed. A query with no reachable hosts surfaces NoCandidates
+        // cleanly instead of silently falling back to local.
+        let local_allowed = cfg.planner.local_execution_enabled;
+
         // Zero-config local-first: in `auto` with no reachable grid there is
         // nowhere to dispatch, so run the query locally and free rather than
         // failing with NoCandidates.
-        if matches!(effective_prefer, PreferMode::Auto) && !self.has_grid_targets {
+        if local_allowed && matches!(effective_prefer, PreferMode::Auto) && !self.has_grid_targets {
             ov.prefer = Some(PreferMode::Local);
         }
 
         match self.coordinator.run_query(sql, ov.clone()).await {
             Ok(outcome) => Ok(outcome),
             // Graceful fallback: the user did not pin remote and the grid turned
-            // out to be unreachable / insufficient → run locally for free.
+            // out to be unreachable / insufficient → run locally for free. Not in
+            // remote-only mode, where the NoCandidates error is surfaced as-is.
             Err(CoordinatorError::NoCandidates)
             | Err(CoordinatorError::InsufficientWorkers { .. })
-                if matches!(effective_prefer, PreferMode::Auto) =>
+                if local_allowed && matches!(effective_prefer, PreferMode::Auto) =>
             {
                 ov.prefer = Some(PreferMode::Local);
                 Ok(self.coordinator.run_query(sql, ov).await?)

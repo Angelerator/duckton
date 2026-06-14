@@ -117,6 +117,55 @@ async fn auto_with_unreachable_grid_falls_back_to_local() {
 }
 
 // ---------------------------------------------------------------------------
+// Remote-only ("route everything to the grid") / thin-client mode at the Node.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn remote_only_node_does_not_fall_back_to_local() {
+    // Local execution disabled. Unlike the local-first default, a thin-client
+    // requester with no reachable grid must NOT silently run locally — it
+    // surfaces NoCandidates so the caller knows to join a network.
+    let mut cfg = GridConfig::default();
+    cfg.planner.local_execution_enabled = false;
+    cfg.validate().unwrap();
+    let node = Node::with_config(cfg, engine()).unwrap();
+
+    let err = node
+        .query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeError::Query(CoordinatorError::NoCandidates)),
+        "remote-only must not fall back to local; got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn remote_only_node_ignores_per_call_prefer_local() {
+    // The hard gate beats a per-call `prefer => local`: a remote-only node never
+    // executes locally, so this dispatches to the (empty) grid → NoCandidates.
+    let mut cfg = GridConfig::default();
+    cfg.planner.local_execution_enabled = false;
+    cfg.validate().unwrap();
+    let node = Node::with_config(cfg, engine()).unwrap();
+
+    let err = node
+        .query(
+            "SELECT 1",
+            QueryOverrides {
+                prefer: Some(PreferMode::Local),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, NodeError::Query(CoordinatorError::NoCandidates)),
+        "got {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Friendly error: paid execution without a wallet → actionable message.
 // ---------------------------------------------------------------------------
 

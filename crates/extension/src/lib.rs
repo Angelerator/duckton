@@ -313,6 +313,12 @@ group_setter!(TrustVTab, "trust", [
     ("min_attest", Varchar),
     ("min_attestation", Varchar),
 ]);
+group_setter!(PlannerVTab, "planner", [
+    ("prefer", Varchar),
+    ("local_execution", Boolean),
+    ("local_execution_enabled", Boolean),
+    ("enabled", Boolean),
+]);
 group_setter!(ContractsVTab, "contracts", [
     ("stake_vault", Varchar),
     ("job_escrow", Varchar),
@@ -802,6 +808,7 @@ pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<SelectionVTab>("p2p_selection")?;
     con.register_table_function::<FeesVTab>("p2p_fees")?;
     con.register_table_function::<TrustVTab>("p2p_trust")?;
+    con.register_table_function::<PlannerVTab>("p2p_planner")?;
     con.register_table_function::<ContractsVTab>("p2p_contracts")?;
     con.register_table_function::<WalletVTab>("p2p_wallet")?;
 

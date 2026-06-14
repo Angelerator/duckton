@@ -234,8 +234,17 @@ allowed_local_paths  = []
 # is aborted and re-dispatched to the grid (adaptive fail-over).
 [planner]
 enabled                   = true           # false = always dispatch to the grid
+local_execution_enabled   = true           # false = REMOTE-ONLY mode: never run a
+                                            # query on this machine (even tiny ones);
+                                            # always route to the grid. Hard gate that
+                                            # overrides `prefer` (incl. per-call
+                                            # prefer => 'local'). Thin-client friendly:
+                                            # a node that never called p2p_share works
+                                            # as a pure requester. No hosts => clear
+                                            # NoCandidates error (no local fallback).
 prefer                    = "auto"          # default routing: local | remote | auto
                                             # (per call: p2p_query(..., prefer => 'local'))
+                                            # set "remote" for a sticky prefer-the-grid default
 ram_fraction              = 0.6             # alpha: fraction of budget.memory_bytes
                                             # usable locally (headroom basis)
 max_concurrent_local_jobs = 4               # local saturation -> route to grid
