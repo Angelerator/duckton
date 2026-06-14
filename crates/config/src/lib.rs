@@ -72,6 +72,11 @@ pub struct GridConfig {
     pub identity: IdentityConfig,
     pub discovery: DiscoveryConfig,
     pub scheduler: SchedulerConfig,
+    /// Host (worker) execution deadline + progress-streaming interval
+    /// (resilience layer, architecture §11).
+    pub worker: WorkerConfig,
+    /// Liveness / failure detection (phi-accrual + SWIM, architecture §8).
+    pub liveness: LivenessConfig,
     pub budget: BudgetConfig,
     pub trust: TrustConfig,
     pub sybil: SybilConfig,
@@ -108,6 +113,8 @@ impl Default for GridConfig {
             identity: IdentityConfig::default(),
             discovery: DiscoveryConfig::default(),
             scheduler: SchedulerConfig::default(),
+            worker: WorkerConfig::default(),
+            liveness: LivenessConfig::default(),
             budget: BudgetConfig::default(),
             trust: TrustConfig::default(),
             sybil: SybilConfig::default(),
@@ -644,7 +651,11 @@ impl Default for RelayLimitsConfig {
     }
 }
 
-/// Hedged-execution scheduler settings (requester side, architecture §11).
+/// Hedged-execution scheduler settings (requester side, architecture §11) plus
+/// the **resilience / re-dispatch** layer (architecture §8/§11): per-attempt
+/// deadline, unlimited-by-default retries with bounded exponential backoff +
+/// jitter, a global retry/hedge token-bucket budget, a wall-clock cap, and the
+/// progress-stall (streamed-heartbeat) liveness timeout.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerConfig {
@@ -658,11 +669,42 @@ pub struct SchedulerConfig {
     pub offer_timeout_ms: u64,
     /// Timeout for a dispatched job to commit a result hash (ms).
     pub dispatch_timeout_ms: u64,
-    /// Max attempts to (re)dispatch on worker failure.
+    /// Requester-side per-attempt deadline (ms): the wall-clock budget for ONE
+    /// dispatch attempt (offer → dispatch → commit). An attempt whose workers go
+    /// silent past this is treated as **inconclusive (job-fault, no provider
+    /// penalty)** and re-dispatched to a fresh candidate set.
+    pub attempt_deadline_ms: u64,
+    /// Maximum number of (re)dispatch attempts. **`0` = unlimited** (the
+    /// default): keep routing a stalled/failed job to fresh nodes until it
+    /// completes, bounded only by the backoff, the retry budget, and
+    /// `max_total_duration_ms`.
     pub max_retries: u32,
+    /// Optional wall-clock cap (ms) on the whole resilient re-dispatch loop.
+    /// `0` = no cap. When set, the loop stops re-dispatching once exceeded.
+    pub max_total_duration_ms: u64,
     /// Initial retry backoff (ms); doubles up to `backoff_max_ms`.
     pub backoff_initial_ms: u64,
     pub backoff_max_ms: u64,
+    /// Jitter fraction `[0,1]` applied to each backoff delay (full jitter at
+    /// `1.0`): the actual sleep is uniformly sampled in
+    /// `[base*(1-frac), base]` to de-synchronize retry storms across requesters.
+    pub backoff_jitter_frac: f64,
+    /// Global retry/hedge **token bucket**: maximum tokens (burst capacity). Each
+    /// re-dispatch attempt past the first costs one token; when the bucket is
+    /// empty the loop stops re-dispatching (prevents retry storms). `0` =
+    /// unlimited (no budget enforcement).
+    pub retry_budget_max_tokens: f64,
+    /// Token-bucket refill rate (tokens per second).
+    pub retry_budget_refill_per_sec: f64,
+    /// Requester-side expected progress/heartbeat interval (ms) — what the
+    /// requester assumes the host streams progress at. Combined with
+    /// `progress_stall_multiplier` to derive the stall timeout.
+    pub progress_interval_ms: u64,
+    /// Stall timeout multiplier: an attempt is declared **stalled** (and
+    /// re-dispatched) if no progress/heartbeat arrives within
+    /// `progress_interval_ms * progress_stall_multiplier`. "Several × the report
+    /// interval" per the design.
+    pub progress_stall_multiplier: u32,
     /// Maximum number of jobs a requester runs concurrently (semaphore bound).
     pub max_inflight_jobs: usize,
 }
@@ -675,10 +717,137 @@ impl Default for SchedulerConfig {
             verify_mode: VerifyModeCfg::Quorum,
             offer_timeout_ms: 2_000,
             dispatch_timeout_ms: 30_000,
-            max_retries: 2,
+            attempt_deadline_ms: 60_000,
+            max_retries: 0,
+            max_total_duration_ms: 0,
             backoff_initial_ms: 200,
             backoff_max_ms: 5_000,
+            backoff_jitter_frac: 0.5,
+            retry_budget_max_tokens: 32.0,
+            retry_budget_refill_per_sec: 4.0,
+            progress_interval_ms: 2_000,
+            progress_stall_multiplier: 5,
             max_inflight_jobs: 64,
+        }
+    }
+}
+
+impl SchedulerConfig {
+    /// The progress-stall timeout in milliseconds
+    /// (`progress_interval_ms * progress_stall_multiplier`). A non-positive
+    /// product disables stall detection (returns `0`).
+    pub fn stall_timeout_ms(&self) -> u64 {
+        self.progress_interval_ms
+            .saturating_mul(self.progress_stall_multiplier as u64)
+    }
+}
+
+/// Host (worker) execution-deadline + progress-streaming settings (architecture
+/// §11 resilience). The host abandons a job that exceeds `job_timeout_ms`, and
+/// streams a progress/heartbeat update every `progress_interval_ms` while it
+/// runs (the progress update IS the liveness signal the requester watches).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkerConfig {
+    /// Host execution deadline (ms): a job running longer than this is
+    /// **abandoned** by the host (the requester then re-dispatches). `0` =
+    /// no host-side deadline.
+    pub job_timeout_ms: u64,
+    /// How often the host streams a progress/heartbeat update to the requester
+    /// while a job executes (ms). `0` disables progress streaming.
+    pub progress_interval_ms: u64,
+}
+
+impl Default for WorkerConfig {
+    fn default() -> Self {
+        Self {
+            job_timeout_ms: 60_000,
+            progress_interval_ms: 2_000,
+        }
+    }
+}
+
+/// Liveness / failure-detection settings (architecture §8): a **phi-accrual**
+/// failure detector over heartbeat/gossip intervals plus **SWIM-style indirect
+/// probing**, layered on the libp2p gossip overlay. Unhealthy/suspect peers are
+/// excluded from candidate selection. Off-path by default: the detector only
+/// affects selection once a [`crate`]-level liveness view is wired into the
+/// coordinator, so a node with no liveness wiring behaves exactly as before.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LivenessConfig {
+    pub phi: PhiAccrualConfig,
+    pub swim: SwimConfig,
+}
+
+impl Default for LivenessConfig {
+    fn default() -> Self {
+        Self {
+            phi: PhiAccrualConfig::default(),
+            swim: SwimConfig::default(),
+        }
+    }
+}
+
+/// Phi-accrual failure detector (φ = -log10(P_late) over a sliding window of
+/// heartbeat intervals). A peer is convicted (suspected dead) once φ exceeds
+/// `convict_threshold` (~8–12 typical).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PhiAccrualConfig {
+    /// Enable the phi-accrual detector.
+    pub enabled: bool,
+    /// φ value at/above which a peer is considered dead. Higher = more
+    /// conservative (fewer false positives). Typical 8–12.
+    pub convict_threshold: f64,
+    /// Sliding-window size: number of recent heartbeat intervals retained.
+    pub window_size: usize,
+    /// Floor on the interval standard deviation (ms) to avoid over-confidence
+    /// when arrivals are very regular (prevents φ from spiking on tiny jitter).
+    pub min_std_ms: f64,
+    /// Extra slack (ms) added to the estimated mean interval — tolerates a
+    /// known acceptable pause (e.g. GC) without convicting.
+    pub acceptable_pause_ms: f64,
+    /// Bootstrap interval estimate (ms) used before enough samples accumulate
+    /// (also the assumed first inter-arrival).
+    pub first_interval_ms: f64,
+}
+
+impl Default for PhiAccrualConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            convict_threshold: 8.0,
+            window_size: 100,
+            min_std_ms: 50.0,
+            acceptable_pause_ms: 0.0,
+            first_interval_ms: 5_000.0,
+        }
+    }
+}
+
+/// SWIM-style indirect probing: before declaring a peer dead, ask `k` random
+/// peers to probe it (reduces false positives from a single bad link).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SwimConfig {
+    /// Enable SWIM indirect probing.
+    pub enabled: bool,
+    /// `k` — number of random peers asked to indirect-probe a suspect.
+    pub indirect_probe_count: usize,
+    /// Per-probe timeout (ms) for a direct probe.
+    pub probe_timeout_ms: u64,
+    /// Per-probe timeout (ms) for each indirect (relayed) probe.
+    pub indirect_probe_timeout_ms: u64,
+}
+
+impl Default for SwimConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            indirect_probe_count: 3,
+            probe_timeout_ms: 1_000,
+            indirect_probe_timeout_ms: 2_000,
         }
     }
 }
@@ -1320,6 +1489,63 @@ impl GridConfig {
                 "P2P_REPLICAS" => self.scheduler.replicas = parse(k, v)?,
                 "P2P_QUORUM" => self.scheduler.quorum = parse(k, v)?,
                 "P2P_MAX_INFLIGHT_JOBS" => self.scheduler.max_inflight_jobs = parse(k, v)?,
+                // ---- resilience / re-dispatch (env layer) ----
+                "P2P_SCHEDULER_ATTEMPT_DEADLINE_MS" => {
+                    self.scheduler.attempt_deadline_ms = parse(k, v)?
+                }
+                "P2P_SCHEDULER_MAX_RETRIES" | "P2P_MAX_RETRIES" => {
+                    self.scheduler.max_retries = parse(k, v)?
+                }
+                "P2P_SCHEDULER_MAX_TOTAL_DURATION_MS" => {
+                    self.scheduler.max_total_duration_ms = parse(k, v)?
+                }
+                "P2P_SCHEDULER_BACKOFF_INITIAL_MS" => {
+                    self.scheduler.backoff_initial_ms = parse(k, v)?
+                }
+                "P2P_SCHEDULER_BACKOFF_MAX_MS" => self.scheduler.backoff_max_ms = parse(k, v)?,
+                "P2P_SCHEDULER_BACKOFF_JITTER_FRAC" => {
+                    self.scheduler.backoff_jitter_frac = parse(k, v)?
+                }
+                "P2P_SCHEDULER_RETRY_BUDGET_MAX_TOKENS" => {
+                    self.scheduler.retry_budget_max_tokens = parse(k, v)?
+                }
+                "P2P_SCHEDULER_RETRY_BUDGET_REFILL_PER_SEC" => {
+                    self.scheduler.retry_budget_refill_per_sec = parse(k, v)?
+                }
+                "P2P_SCHEDULER_PROGRESS_INTERVAL_MS" => {
+                    self.scheduler.progress_interval_ms = parse(k, v)?
+                }
+                "P2P_SCHEDULER_PROGRESS_STALL_MULTIPLIER" => {
+                    self.scheduler.progress_stall_multiplier = parse(k, v)?
+                }
+                // ---- worker execution deadline / progress (env layer) ----
+                "P2P_WORKER_JOB_TIMEOUT_MS" => self.worker.job_timeout_ms = parse(k, v)?,
+                "P2P_WORKER_PROGRESS_INTERVAL_MS" => {
+                    self.worker.progress_interval_ms = parse(k, v)?
+                }
+                // ---- liveness: phi-accrual + SWIM (env layer) ----
+                "P2P_LIVENESS_PHI_ENABLED" => self.liveness.phi.enabled = parse(k, v)?,
+                "P2P_LIVENESS_PHI_CONVICT_THRESHOLD" => {
+                    self.liveness.phi.convict_threshold = parse(k, v)?
+                }
+                "P2P_LIVENESS_PHI_WINDOW_SIZE" => self.liveness.phi.window_size = parse(k, v)?,
+                "P2P_LIVENESS_PHI_MIN_STD_MS" => self.liveness.phi.min_std_ms = parse(k, v)?,
+                "P2P_LIVENESS_PHI_ACCEPTABLE_PAUSE_MS" => {
+                    self.liveness.phi.acceptable_pause_ms = parse(k, v)?
+                }
+                "P2P_LIVENESS_PHI_FIRST_INTERVAL_MS" => {
+                    self.liveness.phi.first_interval_ms = parse(k, v)?
+                }
+                "P2P_LIVENESS_SWIM_ENABLED" => self.liveness.swim.enabled = parse(k, v)?,
+                "P2P_LIVENESS_SWIM_INDIRECT_PROBE_COUNT" => {
+                    self.liveness.swim.indirect_probe_count = parse(k, v)?
+                }
+                "P2P_LIVENESS_SWIM_PROBE_TIMEOUT_MS" => {
+                    self.liveness.swim.probe_timeout_ms = parse(k, v)?
+                }
+                "P2P_LIVENESS_SWIM_INDIRECT_PROBE_TIMEOUT_MS" => {
+                    self.liveness.swim.indirect_probe_timeout_ms = parse(k, v)?
+                }
                 "P2P_BUDGET_MEMORY_BYTES" => self.budget.memory_bytes = parse(k, v)?,
                 "P2P_BUDGET_THREADS" => self.budget.threads = parse(k, v)?,
                 "P2P_BUDGET_MAX_JOBS" => self.budget.max_jobs = parse(k, v)?,
@@ -1598,6 +1824,42 @@ impl GridConfig {
                 "discovery.candidate_sample_size ({}) must be >= scheduler.replicas ({})",
                 self.discovery.candidate_sample_size, self.scheduler.replicas
             ));
+        }
+
+        // ---- resilience / re-dispatch ----
+        let sch = &self.scheduler;
+        if !(0.0..=1.0).contains(&sch.backoff_jitter_frac) {
+            return inv(format!(
+                "scheduler.backoff_jitter_frac must be in [0,1], got {}",
+                sch.backoff_jitter_frac
+            ));
+        }
+        if sch.backoff_max_ms < sch.backoff_initial_ms {
+            return inv(format!(
+                "scheduler.backoff_max_ms ({}) must be >= scheduler.backoff_initial_ms ({})",
+                sch.backoff_max_ms, sch.backoff_initial_ms
+            ));
+        }
+        if sch.retry_budget_max_tokens < 0.0 {
+            return inv("scheduler.retry_budget_max_tokens must be >= 0".into());
+        }
+        if sch.retry_budget_refill_per_sec < 0.0 {
+            return inv("scheduler.retry_budget_refill_per_sec must be >= 0".into());
+        }
+
+        // ---- liveness: phi-accrual + SWIM ----
+        let phi = &self.liveness.phi;
+        if phi.convict_threshold <= 0.0 {
+            return inv("liveness.phi.convict_threshold must be > 0".into());
+        }
+        if phi.window_size == 0 {
+            return inv("liveness.phi.window_size must be >= 1".into());
+        }
+        if phi.min_std_ms <= 0.0 {
+            return inv("liveness.phi.min_std_ms must be > 0".into());
+        }
+        if phi.first_interval_ms <= 0.0 {
+            return inv("liveness.phi.first_interval_ms must be > 0".into());
         }
         if self.discovery.gossip.topic.trim().is_empty() {
             return inv("discovery.gossip.topic must be non-empty".into());

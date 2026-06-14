@@ -5,24 +5,25 @@
 //! stream from the fastest *agreeing* worker, RESET the losers → emit signed
 //! receipts and update reputation.
 
-use std::collections::HashMap;
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use p2p_config::{DataClassCfg, GridConfig, QueryOverrides, VerifyModeCfg};
 use p2p_proto::{
     Ack, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, JobId, NodeId, Offer,
-    QueryHash, Receipt, ResultCommit, ResultSet, Verdict, VerifyMode, Wire,
+    Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
-    Amount, JobRecord, Payout, RecordAnchor, Settlement, SettlementOutcome, StakeRegistry,
-    WalletAddress,
+    Amount, JobRecord, Payout, RecordAnchor, Settlement, SettlementOutcome, SlashReason,
+    StakeRegistry, WalletAddress,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
-    age_factor, attestation_gate, canonical, exploration_bonus, is_nondeterministic, now_ts,
-    requester_trust_weight, sign_receipt, soft_trust_score, ReceiptDraft, TrustInputs, TrustStore,
+    age_factor, attestation_gate, canonical, classify_failure, exploration_bonus,
+    is_nondeterministic, now_ts, requester_trust_weight, sign_receipt, soft_trust_score,
+    ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
 use tracing::debug;
@@ -32,7 +33,9 @@ use crate::canary::CanaryAuditor;
 use crate::discovery::{CandidateFilter, Discovery};
 use crate::engine::ExecLease;
 use crate::estimator::WorkingSetEstimate;
+use crate::liveness::{now_ms, LivenessView};
 use crate::planner::{is_resource_exhaustion, LocalExecutor, LocalOrRemotePlanner, PlanRequest};
+use crate::retry::{Backoff, FaultTally, TokenBucket};
 use crate::signer::IdentitySigner;
 
 /// Errors from running a query on the grid.
@@ -51,6 +54,18 @@ pub enum CoordinatorError {
     InsufficientWorkers { have: usize, quorum: usize },
     #[error("quorum not reached: best agreement {agreement}/{quorum}")]
     QuorumFailed { agreement: usize, quorum: usize },
+    #[error(
+        "query is infeasible — a consensus of selected providers failed it the same way \
+         (job fault, not a provider fault): {reason}"
+    )]
+    Infeasible { reason: String },
+    #[error(
+        "re-dispatch exhausted after {attempts} attempt(s) without a usable result \
+         (last reason: {reason})"
+    )]
+    Exhausted { attempts: u32, reason: String },
+    #[error("retry/hedge budget exhausted after {attempts} attempt(s) — stopping to avoid a retry storm")]
+    RetryBudgetExhausted { attempts: u32 },
     #[error("winner did not return a result")]
     NoResult,
     #[error("settlement error: {0}")]
@@ -77,6 +92,67 @@ pub struct QueryOutcome {
     /// in-process locked-down DuckDB) with no bidding/escrow/quorum/payment.
     /// `false` for grid-dispatched queries.
     pub executed_locally: bool,
+}
+
+/// Latest streamed [`Progress`] per in-flight job, surfaced so a future SQL /
+/// status view can read "what is this job doing right now". Bounded by the
+/// number of concurrent jobs; an entry is overwritten by each newer heartbeat
+/// and cleared when the job ends.
+#[derive(Default)]
+pub struct ProgressTracker {
+    inner: Mutex<HashMap<JobId, Progress>>,
+}
+
+impl ProgressTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record the latest progress for a job (keeps only the newest by `seq`).
+    pub fn update(&self, p: Progress) {
+        let mut g = self.inner.lock().unwrap();
+        match g.get(&p.job_id) {
+            Some(prev) if prev.seq > p.seq => {}
+            _ => {
+                g.insert(p.job_id.clone(), p);
+            }
+        }
+    }
+
+    /// The latest progress for `job`, if any has been observed.
+    pub fn latest(&self, job: &JobId) -> Option<Progress> {
+        self.inner.lock().unwrap().get(job).cloned()
+    }
+
+    /// Snapshot of all currently-tracked job progress (for a status surface).
+    pub fn snapshot(&self) -> Vec<Progress> {
+        self.inner.lock().unwrap().values().cloned().collect()
+    }
+
+    /// Drop tracking for a finished job.
+    pub fn clear(&self, job: &JobId) {
+        self.inner.lock().unwrap().remove(job);
+    }
+}
+
+/// The outcome of one (re)dispatch attempt within the resilient loop.
+enum AttemptResult {
+    /// A usable result — return it.
+    Done(Box<QueryOutcome>),
+    /// Dispatched providers did not deliver enough commits (silence / timeout /
+    /// stall / mixed transient failures): re-dispatch to a fresh set. `tried` are
+    /// the providers contacted this attempt (excluded next time).
+    Inconclusive { tried: Vec<NodeId> },
+    /// A consensus of selected providers failed the **same deterministic way**
+    /// (the query is infeasible) — STOP (job fault, no provider penalty).
+    Infeasible { reason: String },
+    /// Enough providers committed but their result hashes did not agree — a
+    /// genuine verification disagreement (terminal).
+    QuorumDisagreement { agreement: usize, quorum: usize },
+    /// No candidates were available to dispatch to this attempt.
+    NoCandidates,
+    /// Too few providers cleared selection (trust/attestation gate).
+    InsufficientWorkers { have: usize, quorum: usize },
 }
 
 /// Requester coordinator.
@@ -117,6 +193,13 @@ pub struct Coordinator {
     /// blocked candidates are excluded from selection and auto-block triggers
     /// add to it. `None` (default) ⇒ no blocking, exactly today's behavior.
     blocklist: Option<Arc<Blocklist>>,
+    /// Optional liveness view (phi-accrual + SWIM, architecture §8). When set,
+    /// candidates the detector has convicted (and SWIM did not rescue) are
+    /// excluded from selection. `None` (default) ⇒ no liveness filtering.
+    liveness: Option<Arc<LivenessView>>,
+    /// Latest streamed progress per job (resilience §11) — exposed for a status
+    /// surface and used to reset the stall timer during commit collection.
+    progress: Arc<ProgressTracker>,
 }
 
 /// One worker that committed a result hash and whose decision stream is open.
@@ -150,7 +233,23 @@ impl Coordinator {
             record_anchor: None,
             wallet_resolver: None,
             blocklist: None,
+            liveness: None,
+            progress: Arc::new(ProgressTracker::new()),
         }
+    }
+
+    /// Wire a liveness view (phi-accrual + SWIM, architecture §8): convicted
+    /// peers the detector marks dead (and SWIM does not rescue) are excluded
+    /// from candidate selection. Off by default (no liveness filtering).
+    pub fn with_liveness(mut self, view: Arc<LivenessView>) -> Self {
+        self.liveness = Some(view);
+        self
+    }
+
+    /// The shared progress tracker (latest streamed heartbeat per job), for a
+    /// SQL/status surface.
+    pub fn progress_tracker(&self) -> Arc<ProgressTracker> {
+        Arc::clone(&self.progress)
     }
 
     /// Wire the money rail (BLOCKCHAIN_ECONOMICS §8/§10.1). Off by default; even
@@ -262,7 +361,152 @@ impl Coordinator {
         let job_id = JobId::new();
         let query_hash = QueryHash::compute(sql, &self.engine_version);
 
-        // 1. Discover a bounded candidate set.
+        self.run_resilient(sql, &cfg, &job_id, &query_hash, paid, min_level, data_class)
+            .await
+    }
+
+    /// The resilient re-dispatch loop (architecture §8/§11): repeatedly run one
+    /// dispatch attempt, routing a stalled / silent / timed-out job to a FRESH
+    /// candidate set until it completes — bounded by `max_retries` (default
+    /// unlimited), bounded exponential backoff + jitter, a global retry token
+    /// bucket, and an optional wall-clock cap. Fault attribution stops the loop
+    /// when a consensus of nodes fails the SAME way (the query is infeasible).
+    #[allow(clippy::too_many_arguments)]
+    async fn run_resilient(
+        &self,
+        sql: &str,
+        cfg: &GridConfig,
+        job_id: &JobId,
+        query_hash: &QueryHash,
+        paid: bool,
+        min_level: AttestationLevel,
+        data_class: DataClass,
+    ) -> Result<QueryOutcome, CoordinatorError> {
+        let mut excluded: HashSet<NodeId> = HashSet::new();
+        let mut backoff = Backoff::new(
+            cfg.scheduler.backoff_initial_ms,
+            cfg.scheduler.backoff_max_ms,
+            cfg.scheduler.backoff_jitter_frac,
+        );
+        let mut budget = TokenBucket::new(
+            cfg.scheduler.retry_budget_max_tokens,
+            cfg.scheduler.retry_budget_refill_per_sec,
+        );
+        let started = Instant::now();
+        let mut last_refill = Instant::now();
+        let mut retries: u32 = 0;
+        let mut last_reason = String::from("no attempt completed");
+
+        let result = loop {
+            let attempt = self
+                .dispatch_attempt(
+                    sql, cfg, job_id, query_hash, paid, min_level, data_class, &excluded,
+                )
+                .await;
+            match attempt {
+                Err(e) => {
+                    self.progress.clear(job_id);
+                    return Err(e);
+                }
+                Ok(AttemptResult::Done(o)) => break *o,
+                Ok(AttemptResult::Infeasible { reason }) => {
+                    self.progress.clear(job_id);
+                    return Err(CoordinatorError::Infeasible { reason });
+                }
+                Ok(AttemptResult::QuorumDisagreement { agreement, quorum }) => {
+                    self.progress.clear(job_id);
+                    return Err(CoordinatorError::QuorumFailed { agreement, quorum });
+                }
+                Ok(AttemptResult::NoCandidates) => {
+                    self.progress.clear(job_id);
+                    if retries == 0 {
+                        return Err(CoordinatorError::NoCandidates);
+                    }
+                    return Err(CoordinatorError::Exhausted {
+                        attempts: retries + 1,
+                        reason: last_reason,
+                    });
+                }
+                Ok(AttemptResult::InsufficientWorkers { have, quorum }) => {
+                    self.progress.clear(job_id);
+                    if retries == 0 {
+                        return Err(CoordinatorError::InsufficientWorkers { have, quorum });
+                    }
+                    return Err(CoordinatorError::Exhausted {
+                        attempts: retries + 1,
+                        reason: last_reason,
+                    });
+                }
+                Ok(AttemptResult::Inconclusive { tried }) => {
+                    last_reason = format!(
+                        "attempt {} stalled/silent: {} selected provider(s) did not deliver",
+                        retries + 1,
+                        tried.len()
+                    );
+                    debug!("{last_reason}; re-dispatching to a fresh candidate set");
+                    // Route around the non-delivering providers next attempt.
+                    for t in tried {
+                        excluded.insert(t);
+                    }
+                    // Stop conditions (in priority order).
+                    if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::Exhausted {
+                            attempts: retries + 1,
+                            reason: last_reason,
+                        });
+                    }
+                    if cfg.scheduler.max_total_duration_ms != 0
+                        && started.elapsed()
+                            >= Duration::from_millis(cfg.scheduler.max_total_duration_ms)
+                    {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::Exhausted {
+                            attempts: retries + 1,
+                            reason: format!("{last_reason}; max_total_duration reached"),
+                        });
+                    }
+                    // Global retry/hedge token bucket: refill by elapsed, then spend
+                    // one token per retry. An empty bucket stops a retry storm.
+                    let now = Instant::now();
+                    budget.refill(now.duration_since(last_refill));
+                    last_refill = now;
+                    if !budget.try_take() {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::RetryBudgetExhausted {
+                            attempts: retries + 1,
+                        });
+                    }
+                    // Bounded exponential backoff + jitter before the next attempt.
+                    let delay = backoff.next_delay();
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    retries += 1;
+                }
+            }
+        };
+        self.progress.clear(job_id);
+        Ok(result)
+    }
+
+    /// Run ONE dispatch attempt: discover (excluding tried / convicted peers) →
+    /// Offer/Bid → select top-`k` → dispatch + collect (progress-stall aware) →
+    /// quorum verdict → (on success) settle + receipts + broken-commitment
+    /// fining. Returns an [`AttemptResult`] the resilient loop acts on.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_attempt(
+        &self,
+        sql: &str,
+        cfg: &GridConfig,
+        job_id: &JobId,
+        query_hash: &QueryHash,
+        paid: bool,
+        min_level: AttestationLevel,
+        data_class: DataClass,
+        excluded: &HashSet<NodeId>,
+    ) -> Result<AttemptResult, CoordinatorError> {
+        // 1. Discover a bounded candidate set, excluding tried/convicted peers.
         let filter = CandidateFilter {
             data_class,
             min_attestation: min_level,
@@ -271,18 +515,33 @@ impl Coordinator {
             .discovery
             .find_candidates(cfg.discovery.candidate_sample_size, filter)
             .await;
-        // Anti-abuse: exclude blocklisted candidates (ARCHITECTURE "Abuse
-        // resistance"). Each node independently refuses flagged actors.
-        if cfg.antiabuse.enabled {
-            if let Some(bl) = &self.blocklist {
-                candidates.retain(|c| match &c.node_id {
-                    Some(id) => !bl.is_blocked(id.as_str()),
-                    None => true,
-                });
+        let now_live = now_ms();
+        candidates.retain(|c| match &c.node_id {
+            Some(id) => {
+                // Anti-abuse deny-list (each node independently refuses flagged actors).
+                if cfg.antiabuse.enabled {
+                    if let Some(bl) = &self.blocklist {
+                        if bl.is_blocked(id.as_str()) {
+                            return false;
+                        }
+                    }
+                }
+                // Already tried (responded / hard-failed) this job → route elsewhere.
+                if excluded.contains(id) {
+                    return false;
+                }
+                // Liveness: drop a phi-convicted peer SWIM did not rescue.
+                if let Some(v) = &self.liveness {
+                    if v.is_excluded(id, now_live) {
+                        return false;
+                    }
+                }
+                true
             }
-        }
+            None => true, // unknown id (TOFU) can't be tracked → keep
+        });
         if candidates.is_empty() {
-            return Err(CoordinatorError::NoCandidates);
+            return Ok(AttemptResult::NoCandidates);
         }
 
         // 2. Offer/Bid against each candidate (bounded, concurrent, timed).
@@ -336,10 +595,7 @@ impl Coordinator {
             .into_iter()
             .filter(|(_, bid)| attestation_gate(bid.attestation.level, min_level))
             .map(|(worker, bid)| {
-                let score = self.effective_trust(&worker, &cfg, now, paid);
-                // Auto-block a worker whose effective trust is below the floor
-                // (ARCHITECTURE "Abuse resistance"). It is then excluded here and
-                // for all future jobs.
+                let score = self.effective_trust(&worker, cfg, now, paid);
                 if auto_block && score < ab.blocklist.auto_block_trust_floor {
                     if let Some(bl) = &self.blocklist {
                         bl.block(
@@ -355,7 +611,6 @@ impl Coordinator {
             .filter(|(_, score, _)| *score >= cfg.trust.min_trust)
             .collect();
 
-        // sort by score desc, then ETA asc
         scored.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -364,7 +619,7 @@ impl Coordinator {
         scored.truncate(cfg.scheduler.replicas);
 
         if scored.len() < cfg.scheduler.quorum {
-            return Err(CoordinatorError::InsufficientWorkers {
+            return Ok(AttemptResult::InsufficientWorkers {
                 have: scored.len(),
                 quorum: cfg.scheduler.quorum,
             });
@@ -372,12 +627,12 @@ impl Coordinator {
 
         // Engage the paid money rail (BLOCKCHAIN_ECONOMICS §8.2): lock the
         // requester's max bid B in a per-job escrow BEFORE dispatch. FREE jobs and
-        // a node with no settlement rail wired skip this entirely (zero chain
-        // interaction). On any later failure the escrow is refunded.
+        // a node with no settlement rail wired skip this entirely. Refunded on any
+        // failure / re-dispatch.
         let escrow = if paid && cfg.economics.enabled {
             match &self.settlement {
                 Some(s) => Some(
-                    s.open_escrow(&job_id, escrow_bid_nanoton(&cfg))
+                    s.open_escrow(job_id, escrow_bid_nanoton(cfg))
                         .map_err(|e| CoordinatorError::Settlement(e.to_string()))?,
                 ),
                 None => None,
@@ -386,7 +641,10 @@ impl Coordinator {
             None
         };
 
-        // 4. Dispatch to selected workers and collect commits.
+        // 4. Dispatch to selected workers and collect commits — progress-stall
+        //    aware: a streamed Progress resets the stall timer; no progress (nor a
+        //    Commit) within the stall window / attempt deadline ⇒ that provider is
+        //    treated as silent (job-fault, no penalty) and the job re-dispatched.
         let verify_mode = match cfg.scheduler.verify_mode {
             VerifyModeCfg::Fast => VerifyMode::Fast,
             VerifyModeCfg::Quorum => VerifyMode::Quorum,
@@ -403,77 +661,102 @@ impl Coordinator {
             result_parallelism: Some(cfg.transport.result.parallelism as u32),
             compression: Some(crate::compression::algo_to_wire(cfg.transport.compression.algorithm)),
         };
-        let dispatch_timeout = Duration::from_millis(cfg.scheduler.dispatch_timeout_ms);
+        let stall_ms = {
+            let s = cfg.scheduler.stall_timeout_ms();
+            if s == 0 {
+                cfg.scheduler.dispatch_timeout_ms
+            } else {
+                s
+            }
+        };
+        let stall_to = Duration::from_millis(stall_ms.max(1));
+        let attempt_deadline = Duration::from_millis(cfg.scheduler.attempt_deadline_ms.max(1));
+        let selected: Vec<NodeId> = scored.iter().map(|(w, _, _)| w.clone()).collect();
 
-        let mut inflight: Vec<InFlight> = Vec::new();
-        let dispatch_futs = scored.iter().map(|(worker, _, _)| {
+        let collect_futs = scored.iter().map(|(worker, _, _)| {
             let conn = conns.get(worker).expect("selected worker has a conn");
             let dispatch = dispatch.clone();
             let worker = worker.clone();
-            async move {
-                match tokio::time::timeout(dispatch_timeout, dispatch_and_commit(conn, &dispatch))
-                    .await
-                {
-                    Ok(Ok((send, recv, commit))) => Some(InFlight {
-                        worker,
-                        send,
-                        recv,
-                        hash: commit.result_hash,
-                        latency_ms: commit.latency_ms,
-                    }),
-                    _ => None,
-                }
-            }
+            let progress = self.progress.as_ref();
+            async move { collect_one(conn, &dispatch, worker, stall_to, attempt_deadline, progress).await }
         });
-        for r in futures_util::future::join_all(dispatch_futs).await {
-            if let Some(f) = r {
-                inflight.push(f);
+
+        let mut inflight: Vec<InFlight> = Vec::new();
+        let mut failed: Vec<(NodeId, Verdict)> = Vec::new();
+        let mut silent: Vec<NodeId> = Vec::new();
+        for c in futures_util::future::join_all(collect_futs).await {
+            match c {
+                Collected::Committed(f) => inflight.push(f),
+                Collected::Failed(node, detail) => failed.push((node, classify_failure(&detail))),
+                Collected::Silent(node) => silent.push(node),
             }
         }
 
-        // 5. Quorum decision (or canary judgement).
+        // 5. Quorum decision (or canary judgement), with fault attribution to
+        //    decide retry-vs-stop on a no-quorum outcome.
         let hashes: Vec<&str> = inflight.iter().map(|f| f.hash.as_str()).collect();
         let outcome = canonical::evaluate_quorum(hashes, cfg.scheduler.quorum);
-
-        // If this is a canary, the authoritative answer is the known one.
-        let canary_expected = self
-            .canary
-            .as_ref()
-            .and_then(|c| c.expected(&query_hash));
-
-        // Non-determinism handling (ARCHITECTURE "Abuse resistance"): a query
-        // that can't produce a stable canonical hash (random()/now()/unordered
-        // LIMIT/…) cannot reach a meaningful quorum. Mark it NON-VERIFIABLE,
-        // return the fastest result anyway, and apply NO provider penalty for the
-        // (expected) hash divergence. A canary always has an authoritative answer
-        // so it is never treated as non-verifiable.
+        let canary_expected = self.canary.as_ref().and_then(|c| c.expected(query_hash));
         let non_verifiable =
             cfg.antiabuse.nondeterminism_active() && canary_expected.is_none() && is_nondeterministic(sql);
+
+        // Tally how the selected providers fared (for consensus-infeasible).
+        let mut tally = FaultTally::new(selected.len());
+        for _ in &inflight {
+            tally.record_committed();
+        }
+        for (_, v) in &failed {
+            tally.record(*v);
+        }
+        for _ in &silent {
+            tally.record_silent();
+        }
+        let frac = cfg.antiabuse.fault_attribution.job_consensus_fraction;
 
         let (agreed_hash, verified) = match (&canary_expected, verify_mode) {
             (Some(expected), _) => (Some(expected.clone()), true),
             _ if non_verifiable => {
-                // Fastest result wins; flagged non-verified.
+                if inflight.is_empty() {
+                    self.refund_escrow(&escrow);
+                    return Ok(AttemptResult::Inconclusive { tried: selected });
+                }
                 let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
                 (fastest, false)
             }
             (None, VerifyMode::Quorum) => {
-                if !outcome.reached() {
-                    // No quorum: with fault attribution active this is attributed
-                    // to the JOB (most/all providers disagreed), not the
-                    // providers — so the failure receipts are NEUTRAL. Any escrow
-                    // is refunded to the requester (non-custodial timeout path).
-                    self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
+                if outcome.reached() {
+                    (outcome.agreed_hash.clone(), true)
+                } else if cfg.antiabuse.fault_attribution_active()
+                    && tally.is_consensus_infeasible(frac)
+                {
+                    // Consensus-infeasible query → job fault. Neutral receipts, no
+                    // penalty, refund, and STOP re-dispatching.
+                    let reason = tally
+                        .consensus_reason(frac)
+                        .unwrap_or_else(|| "consensus-infeasible query".to_string());
+                    self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
                     self.refund_escrow(&escrow);
-                    return Err(CoordinatorError::QuorumFailed {
+                    return Ok(AttemptResult::Infeasible { reason });
+                } else if inflight.len() >= cfg.scheduler.quorum {
+                    // Enough providers committed but their hashes disagree — a
+                    // genuine verification disagreement (terminal).
+                    self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
+                    self.refund_escrow(&escrow);
+                    return Ok(AttemptResult::QuorumDisagreement {
                         agreement: outcome.agreement,
                         quorum: outcome.quorum,
                     });
+                } else {
+                    // Shortfall from silence / transient failures → re-dispatch.
+                    self.refund_escrow(&escrow);
+                    return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
-                (outcome.agreed_hash.clone(), true)
             }
             (None, VerifyMode::Fast) => {
-                // Fastest result wins immediately; verification is best-effort.
+                if inflight.is_empty() {
+                    self.refund_escrow(&escrow);
+                    return Ok(AttemptResult::Inconclusive { tried: selected });
+                }
                 let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
                 (fastest, outcome.reached())
             }
@@ -483,7 +766,7 @@ impl Coordinator {
             Some(h) => h,
             None => {
                 self.refund_escrow(&escrow);
-                return Err(CoordinatorError::NoResult);
+                return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
 
@@ -498,17 +781,15 @@ impl Coordinator {
         let winner_idx = match winner_idx {
             Some(i) => i,
             None => {
-                self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
+                // The authoritative answer matched no responding worker (e.g. all
+                // failed a canary) — re-dispatch to fresh nodes.
+                self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
                 self.refund_escrow(&escrow);
-                return Err(CoordinatorError::NoResult);
+                return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
 
-        // Requester-trust weight (ARCHITECTURE "Abuse resistance"): a job's effect
-        // on a provider's score is scaled by w(requester) ∈ [0,1] from THIS node's
-        // own reputation+age as a requester. New/unproven requester ⇒ w≈0 for
-        // negative outcomes, so a brand-new actor's heavy/incorrect job barely
-        // moves a provider's score. When the mechanism is off, w = 1.0 (today).
+        // Requester-trust weight (ARCHITECTURE "Abuse resistance").
         let self_id = self.transport.local_node_id().clone();
         let negative_weight = if cfg.antiabuse.requester_trust_active() {
             let obs = self.trust_store.requester_observation_count(&self_id);
@@ -522,23 +803,28 @@ impl Coordinator {
         } else {
             1.0
         };
+        let penalty_for = |provider_fault: bool| -> f64 {
+            if provider_fault {
+                (self.base_config.trust.incorrect_penalty * negative_weight).max(0.0)
+            } else {
+                0.0
+            }
+        };
 
         // 7. Tell winner to proceed; cancel losers (RESET). Collect the result.
         let participants: Vec<NodeId> = inflight.iter().map(|f| f.worker.clone()).collect();
         let mut result: Option<ResultSet> = None;
         let mut receipts = Vec::new();
         let winner_id = inflight[winner_idx].worker.clone();
-        // Agreeing non-winners earn the fixed participation commission on a paid
-        // settlement (§6.2).
         let mut agreeing_non_winners: Vec<NodeId> = Vec::new();
+        // Providers that ACCEPTED the paid job but did NOT deliver a valid result
+        // while the job was feasible — fined for the broken commitment (below).
+        let mut commitment_failers: Vec<NodeId> = Vec::new();
 
         for (i, mut f) in inflight.into_iter().enumerate() {
             if i != winner_idx && f.hash == agreed && !non_verifiable {
                 agreeing_non_winners.push(f.worker.clone());
             }
-            // Verdict relative to the authoritative hash, with fault attribution:
-            // a non-verifiable job is NEUTRAL (Inconclusive — no penalty); a hash
-            // mismatch against a verified quorum is provable provider fault.
             let verdict = if non_verifiable {
                 Verdict::Inconclusive
             } else if f.hash == agreed {
@@ -548,7 +834,6 @@ impl Coordinator {
             };
 
             if i == winner_idx {
-                // proceed
                 let _ = write_msg(
                     &mut f.send,
                     &Wire::Ack(Ack {
@@ -565,7 +850,6 @@ impl Coordinator {
                 }
                 let _ = f.send.finish();
             } else {
-                // RESET loser
                 let _ = write_msg(
                     &mut f.send,
                     &Wire::Cancel(Cancel {
@@ -577,55 +861,76 @@ impl Coordinator {
                 let _ = f.send.finish();
             }
 
-            receipts.push(self.make_receipt(&job_id, &f.worker, &query_hash, &f.hash, verdict, f.latency_ms));
-            // Penalize ONLY provable provider fault, scaled by the requester's
-            // standing. A new/unproven requester (negative_weight ≈ 0) can barely
-            // move a provider's score — the griefing defense. The penalty floors
-            // at 0 (never goes negative).
+            // A provider that committed a NON-matching hash on a verified-feasible
+            // job broke its commitment (distinct from being merely slow).
+            if verified && matches!(verdict, Verdict::Incorrect) {
+                commitment_failers.push(f.worker.clone());
+            }
+
+            receipts.push(self.make_receipt(job_id, &f.worker, query_hash, &f.hash, verdict, f.latency_ms));
             if verdict.is_provider_fault() {
-                let penalty = (self.base_config.trust.incorrect_penalty * negative_weight).max(0.0);
+                let penalty = penalty_for(true);
                 if penalty > 0.0 {
                     self.trust_store.penalize(&f.worker, penalty);
                 }
             }
         }
 
-        // record all receipts in the trust store (neutral verdicts are skipped
-        // inside `record`, so a non-verifiable / job-caused outcome leaves
-        // provider reputation untouched).
+        // Broken-commitment accounting for SELECTED providers that accepted the
+        // job but never delivered a valid result, ON A FEASIBLE JOB (a verified
+        // quorum was reached). They get a Timeout receipt (reputation drops) and,
+        // for a PAID job, are fined (slashed) below. A non-verified / inconclusive
+        // / infeasible job never reaches here, so a query problem is never blamed
+        // on a provider.
+        if verified {
+            for node in silent.iter().chain(failed.iter().map(|(n, _)| n)) {
+                receipts.push(self.make_receipt(job_id, node, query_hash, "", Verdict::Timeout, 0));
+                let penalty = penalty_for(true);
+                if penalty > 0.0 {
+                    self.trust_store.penalize(node, penalty);
+                }
+                commitment_failers.push(node.clone());
+            }
+        }
+
         for r in &receipts {
             self.trust_store.record(r);
         }
-
-        // The requester accrues its own age/reputation from completed jobs, which
-        // feeds the requester-trust weighting above on future jobs.
         self.trust_store.record_requester(&self_id, verified, now);
 
         let result = match result {
             Some(r) => r,
             None => {
+                // Winner did not actually stream a result — re-dispatch.
                 self.refund_escrow(&escrow);
-                return Err(CoordinatorError::NoResult);
+                return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
 
-        // Settle the paid job: release escrow per the quorum verdict (winner
-        // base+bonus + participation commissions to agreeing runners + platform
-        // fee, bounded by the escrowed B; the contract refunds any slack), then
-        // append the JobRecord to the record anchor (§7). FREE jobs / no rail:
-        // a genuine no-op — reputation scoring above already ran for both.
+        // Settle the paid job (winner + commissions + fee), then anchor the record.
         self.settle_paid_job(
-            &cfg,
+            cfg,
             &escrow,
             &winner_id,
             &agreeing_non_winners,
             &agreed,
-            &query_hash,
+            query_hash,
             &self_id,
         );
 
-        Ok(QueryOutcome {
-            job_id,
+        // FINE broken commitments (architecture §11): only on a PAID, feasible
+        // job, only for STAKED providers. Free/local jobs and unstaked free-tier
+        // providers are never fined (reputation already dropped above).
+        if verified && paid && cfg.economics.enabled {
+            if let Some(reg) = &self.stake_registry {
+                for node in &commitment_failers {
+                    self.fine_failed_commitment(reg.as_ref(), node, cfg);
+                }
+            }
+        }
+
+        Ok(AttemptResult::Done(Box::new(QueryOutcome {
+            job_id: job_id.clone(),
             result,
             agreed_hash: Some(agreed),
             agreement: outcome.agreement,
@@ -635,7 +940,28 @@ impl Coordinator {
             participants,
             receipts,
             executed_locally: false,
-        })
+        })))
+    }
+
+    /// Fine a provider for a **broken commitment** on a paid, feasible job
+    /// (architecture §11): slash a configurable fraction of its bonded stake via
+    /// the `StakeRegistry` seam. A no-op for an unstaked provider.
+    fn fine_failed_commitment(&self, reg: &dyn StakeRegistry, node: &NodeId, cfg: &GridConfig) {
+        let stake = reg.stake_of(node);
+        if stake == 0 {
+            return; // unstaked free-tier provider → no fine (reputation only)
+        }
+        let amount = mul_frac(stake, cfg.economics.slashing.slash_failed_commitment_pct);
+        if amount == 0 {
+            return;
+        }
+        match reg.slash(node, SlashReason::FailedCommitment, amount) {
+            Ok(()) => debug!(
+                provider = %node, amount,
+                "fined provider for broken commitment on a paid job"
+            ),
+            Err(e) => debug!("failed-commitment slash failed: {e}"),
+        }
     }
 
     /// Like [`Coordinator::run_query`] but with a pre-flight working-set
@@ -944,22 +1270,62 @@ async fn send_offer(conn: &Conn, offer: &Offer) -> Result<Bid, p2p_transport::Tr
     }
 }
 
-/// Open a dispatch stream, send the Dispatch, read the commit. Leaves the stream
-/// open so the requester can later proceed/cancel.
-async fn dispatch_and_commit(
+/// The per-provider outcome of one dispatch-and-collect.
+enum Collected {
+    /// Committed a result hash (stream left open to proceed/cancel + stream result).
+    Committed(InFlight),
+    /// Returned a worker error (`Ack { ok: false }`) — the detail is classified.
+    Failed(NodeId, String),
+    /// Went silent: no commit within the stall window / attempt deadline, the
+    /// stream closed, or the host abandoned the job (over its `job_timeout`).
+    Silent(NodeId),
+}
+
+/// Open a dispatch stream, send the Dispatch, then read frames until a Commit —
+/// treating streamed [`Progress`] as a liveness heartbeat that resets the stall
+/// timer (and updates the shared [`ProgressTracker`]). No progress nor commit
+/// within `stall_to` (per read) or `attempt_deadline` (overall) ⇒ `Silent`.
+async fn collect_one(
     conn: &Conn,
     dispatch: &Dispatch,
-) -> Result<(SendStream, RecvStream, ResultCommit), p2p_transport::TransportError> {
-    let (mut send, mut recv) = conn.open_bi().await?;
-    write_msg(&mut send, &Wire::Dispatch(dispatch.clone())).await?;
-    match read_msg(&mut recv).await? {
-        Wire::Commit(c) => Ok((send, recv, c)),
-        Wire::Ack(a) => Err(p2p_transport::TransportError::Connection(format!(
-            "worker declined: {}",
-            a.detail
-        ))),
-        other => Err(p2p_transport::TransportError::Connection(format!(
-            "expected Commit, got {other:?}"
-        ))),
+    worker: NodeId,
+    stall_to: Duration,
+    attempt_deadline: Duration,
+    progress: &ProgressTracker,
+) -> Collected {
+    let inner = async {
+        let (mut send, mut recv) = match conn.open_bi().await {
+            Ok(x) => x,
+            Err(_) => return Collected::Silent(worker.clone()),
+        };
+        if write_msg(&mut send, &Wire::Dispatch(dispatch.clone())).await.is_err() {
+            return Collected::Silent(worker.clone());
+        }
+        loop {
+            match tokio::time::timeout(stall_to, read_msg(&mut recv)).await {
+                Ok(Ok(Wire::Progress(p))) => {
+                    progress.update(p);
+                    continue; // heartbeat: reset the stall timer
+                }
+                Ok(Ok(Wire::Commit(c))) => {
+                    return Collected::Committed(InFlight {
+                        worker: worker.clone(),
+                        send,
+                        recv,
+                        hash: c.result_hash,
+                        latency_ms: c.latency_ms,
+                    });
+                }
+                Ok(Ok(Wire::Ack(a))) if !a.ok => {
+                    return Collected::Failed(worker.clone(), a.detail);
+                }
+                // Unexpected frame, stream error, or stall timeout → silent.
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => return Collected::Silent(worker.clone()),
+            }
+        }
+    };
+    match tokio::time::timeout(attempt_deadline, inner).await {
+        Ok(c) => c,
+        Err(_) => Collected::Silent(worker),
     }
 }

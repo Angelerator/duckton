@@ -17,6 +17,7 @@ pub mod attestation;
 pub mod canary;
 pub mod canonical;
 pub mod capability;
+pub mod failure_detector;
 pub mod persistent;
 pub mod receipt;
 pub mod reputation;
@@ -38,6 +39,7 @@ pub use attestation::{
     AllowlistVerifier, AttestError, Attestor, AttestationVerifier, MockAttestor,
 };
 pub use capability::{sign_capability_ad, verify_capability_ad, CapabilityDraft};
+pub use failure_detector::PhiDetector;
 pub use persistent::{RedbTrustStore, TrustStoreError};
 pub use sealing::{
     decrypt_at_rest, encrypt_at_rest, seal_to, SealedBlob, SealingKeypair,

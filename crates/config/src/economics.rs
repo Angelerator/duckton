@@ -430,6 +430,13 @@ pub struct SlashingEconomics {
     pub slash_cheat_pct: f64,
     pub slash_downtime_pct: f64,
     pub slash_equivocation_pct: f64,
+    /// Fine for a **broken commitment**: a provider that accepted/bid on a PAID
+    /// job then failed to deliver a valid result by the deadline (no result /
+    /// timeout / abandoned / wrong hash) WHILE the job was demonstrably feasible
+    /// (a quorum was reached / another selected node delivered). Penalizes the
+    /// broken commitment to paid work — distinct from a wrong-result slash.
+    /// Fraction `[0,1]` of the provider's bonded stake. Configurable / graduated.
+    pub slash_failed_commitment_pct: f64,
     pub challenge_window_secs: u64,
     pub slash_to_challenger: f64,
     pub slash_to_redundancy: f64,
@@ -444,6 +451,7 @@ impl Default for SlashingEconomics {
             slash_cheat_pct: 1.0,
             slash_downtime_pct: 0.02,
             slash_equivocation_pct: 0.5,
+            slash_failed_commitment_pct: 0.1,
             challenge_window_secs: 86_400,
             slash_to_challenger: 0.4,
             slash_to_redundancy: 0.3,
@@ -577,6 +585,7 @@ impl EconomicsConfig {
         pct("slashing.slash_cheat_pct", s.slash_cheat_pct)?;
         pct("slashing.slash_downtime_pct", s.slash_downtime_pct)?;
         pct("slashing.slash_equivocation_pct", s.slash_equivocation_pct)?;
+        pct("slashing.slash_failed_commitment_pct", s.slash_failed_commitment_pct)?;
         pct("slashing.slash_to_challenger", s.slash_to_challenger)?;
         pct("slashing.slash_to_redundancy", s.slash_to_redundancy)?;
         pct("slashing.slash_to_burn", s.slash_to_burn)?;

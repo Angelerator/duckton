@@ -25,10 +25,12 @@ pub mod engine;
 pub mod estimator;
 #[cfg(feature = "discovery-libp2p")]
 pub mod libp2p_discovery;
+pub mod liveness;
 pub mod membership;
 pub mod node;
 pub mod planner;
 pub mod result_stream;
+pub mod retry;
 pub mod sandbox;
 pub mod signer;
 pub mod storage;
@@ -59,8 +61,12 @@ pub use libp2p_discovery::{
     evaluate_ad, AdOutcome, DiscoveryError, Libp2pDiscovery, Libp2pDiscoveryConfig, NatParams,
     RelayLimits,
 };
+pub use liveness::{
+    now_ms, IndirectProber, LivenessFilteredDiscovery, LivenessView, Prober, SwimVerdict,
+};
 pub use membership::MembershipTable;
 pub use node::{Node, NodeError};
+pub use retry::{Backoff, FaultTally, TokenBucket};
 pub use planner::{
     is_resource_exhaustion, DefaultPlanner, LocalExecutor, LocalOrRemotePlanner, LocalReservation,
     PlanDecision, PlanReason, PlanRequest, Route,

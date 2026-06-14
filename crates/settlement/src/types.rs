@@ -134,10 +134,18 @@ pub enum SlashReason {
     Downtime,
     Equivocation,
     AnchorFault,
+    /// A **broken commitment**: the provider accepted/bid on a PAID job then
+    /// failed to deliver a valid result by the deadline (no result / timeout /
+    /// abandoned / wrong hash) WHILE the job was demonstrably feasible (a quorum
+    /// was reached, or another selected node delivered a valid result). Fines the
+    /// broken commitment to paid work — distinct from a wrong-result slash.
+    FailedCommitment,
 }
 
 impl SlashReason {
-    /// Discriminant matching the on-chain `StakeSlash.reason` byte.
+    /// Discriminant matching the on-chain `StakeSlash.reason` byte. The on-chain
+    /// `StakeVault` slash handler applies the same split for any reason byte, so
+    /// a new reason needs no contract change — only a distinct discriminant.
     pub fn code(self) -> u8 {
         match self {
             SlashReason::WrongResult => 1,
@@ -145,6 +153,7 @@ impl SlashReason {
             SlashReason::Downtime => 3,
             SlashReason::Equivocation => 4,
             SlashReason::AnchorFault => 5,
+            SlashReason::FailedCommitment => 6,
         }
     }
 }

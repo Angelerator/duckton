@@ -3,10 +3,10 @@
 //! wins (architecture §3, §10, §11).
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use p2p_proto::{
-    Ack, Attestation, Bid, BidDecision, Compression, Dispatch, Offer, ResultCommit, Wire,
+    Ack, Attestation, Bid, BidDecision, Compression, Dispatch, Offer, Progress, ResultCommit, Wire,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, QuicTransport, RecvStream, SendStream, Transport};
@@ -16,6 +16,19 @@ use tracing::{debug, warn};
 
 use crate::admission::AdmissionController;
 use crate::antiabuse::{cost_gate_reason, Blocklist, RateLimiter};
+use crate::engine::EngineError;
+use crate::liveness::now_ms;
+use p2p_proto::ResultSet;
+
+/// Result of running a job under the progress/heartbeat + deadline wrapper.
+enum ExecOutcome {
+    /// Execution completed with a result.
+    Ok(ResultSet),
+    /// The host execution deadline was exceeded — the job is abandoned.
+    Abandoned,
+    /// Execution errored (forwarded as an `Ack { ok: false }` to the requester).
+    Err(EngineError),
+}
 use crate::compression::algo_to_wire;
 use crate::engine::{ExecLease, QueryEngine};
 use crate::result_stream::SendOpts;
@@ -45,6 +58,12 @@ pub struct WorkerParams {
     /// Hard cap on concurrent uni-streams (from the QUIC tuning); the effective
     /// parallelism is clamped to this so we never exceed the transport limit.
     pub max_uni_streams: usize,
+    /// Host execution deadline: a job running longer than this is **abandoned**
+    /// (architecture §11). `Duration::ZERO` = no host-side deadline.
+    pub job_timeout: Duration,
+    /// How often the host streams a progress/heartbeat update to the requester
+    /// while a job executes. `Duration::ZERO` disables progress streaming.
+    pub progress_interval: Duration,
 }
 
 impl WorkerParams {
@@ -64,6 +83,8 @@ impl WorkerParams {
             compression_level: cfg.transport.compression.level,
             compression_min_bytes: cfg.transport.compression.min_size_bytes,
             max_uni_streams: cfg.transport.quic.max_concurrent_uni_streams as usize,
+            job_timeout: Duration::from_millis(cfg.worker.job_timeout_ms),
+            progress_interval: Duration::from_millis(cfg.worker.progress_interval_ms),
         }
     }
 
@@ -375,6 +396,105 @@ impl Worker {
         }
     }
 
+    /// Execute the job while streaming periodic [`Progress`] heartbeats on the
+    /// dispatch stream and enforcing the host execution deadline.
+    ///
+    /// The progress ticker and the (optional) `job_timeout` race the execution
+    /// future. Each tick writes a `Progress` frame (the requester's liveness
+    /// signal); the deadline aborts with [`ExecOutcome::Abandoned`]. The first
+    /// tick is delayed by one interval, so a fast job commits with no progress
+    /// frames (back-compatible with the existing commit-first flow).
+    #[allow(clippy::too_many_arguments)]
+    async fn execute_with_progress(
+        &self,
+        dispatch: &Dispatch,
+        mem: u64,
+        threads: u32,
+        ctx: &crate::engine::JobContext,
+        send: &mut SendStream,
+        worker_id: &p2p_proto::NodeId,
+        start: Instant,
+    ) -> ExecOutcome {
+        let exec = self.engine.execute_job(
+            &dispatch.sql,
+            ExecLease {
+                memory_bytes: mem,
+                threads,
+            },
+            ctx,
+        );
+        tokio::pin!(exec);
+
+        let interval = self.params.progress_interval;
+        let deadline = self.params.job_timeout;
+        let mut seq: u32 = 0;
+
+        // A never-firing branch when progress streaming / deadline is disabled.
+        let mut ticker = if interval.is_zero() {
+            None
+        } else {
+            let mut t = tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
+            t.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            Some(t)
+        };
+
+        loop {
+            // Build the deadline future fresh each iteration (cheap).
+            let timeout = async {
+                if deadline.is_zero() {
+                    std::future::pending::<()>().await
+                } else {
+                    let remaining = deadline.saturating_sub(start.elapsed());
+                    tokio::time::sleep(remaining).await
+                }
+            };
+
+            tokio::select! {
+                biased;
+                res = &mut exec => {
+                    return match res {
+                        Ok(rs) => ExecOutcome::Ok(rs),
+                        Err(e) => ExecOutcome::Err(e),
+                    };
+                }
+                _ = timeout, if !deadline.is_zero() => {
+                    return ExecOutcome::Abandoned;
+                }
+                _ = async { ticker.as_mut().unwrap().tick().await }, if ticker.is_some() => {
+                    seq = seq.saturating_add(1);
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    // Best-effort pct from elapsed vs. the host deadline (coarse;
+                    // a real engine would report rows/stages). Capped below 100
+                    // so completion is signaled by the Commit, not progress.
+                    let pct = if deadline.is_zero() {
+                        0
+                    } else {
+                        ((elapsed_ms.saturating_mul(100)
+                            / deadline.as_millis().max(1) as u64)
+                            .min(99)) as u8
+                    };
+                    let progress = Progress {
+                        job_id: dispatch.job_id.clone(),
+                        worker_id: worker_id.clone(),
+                        stage: "executing".to_string(),
+                        rows_processed: 0,
+                        pct,
+                        seq,
+                        ts_ms: now_ms(),
+                    };
+                    // A failed progress write means the requester went away
+                    // (cancelled / reset) — stop streaming and let exec finish or
+                    // the connection tear down.
+                    if write_msg(send, &Wire::Progress(progress)).await.is_err() {
+                        // Keep executing; the result will be discarded if the
+                        // stream is gone. Disable further ticks.
+                        ticker = None;
+                    }
+                }
+            }
+        }
+    }
+
     async fn handle_dispatch(
         self,
         conn: Conn,
@@ -459,21 +579,23 @@ impl Worker {
         };
 
         let start = Instant::now();
+        // Run the job while streaming periodic progress/heartbeat updates back to
+        // the requester (the progress update IS the liveness signal, §11). The
+        // host ABANDONS the job if it exceeds `job_timeout` (the requester then
+        // re-dispatches): we simply stop and drop the stream — no commit.
         let exec = self
-            .engine
-            .execute_job(
-                &dispatch.sql,
-                ExecLease {
-                    memory_bytes: mem,
-                    threads,
-                },
-                &ctx,
-            )
+            .execute_with_progress(&dispatch, mem, threads, &ctx, &mut send, &worker_id, start)
             .await;
 
         let result = match exec {
-            Ok(rs) => rs,
-            Err(e) => {
+            ExecOutcome::Ok(rs) => rs,
+            ExecOutcome::Abandoned => {
+                // Over the host deadline: abandon. Drop the stream so the
+                // requester observes a stall/no-commit and re-dispatches.
+                debug!(job = %dispatch.job_id, "host job_timeout exceeded; abandoning job");
+                return Ok(());
+            }
+            ExecOutcome::Err(e) => {
                 write_msg(
                     &mut send,
                     &Wire::Ack(Ack {

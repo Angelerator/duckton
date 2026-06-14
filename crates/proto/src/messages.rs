@@ -137,6 +137,28 @@ pub struct SealedKey {
     pub ciphertext_hex: String,
 }
 
+/// A streamed progress / heartbeat update sent by the worker **during** job
+/// execution, before the [`ResultCommit`] (architecture §11 resilience). It is
+/// both an observability signal (stage / rows / pct, surfaced to a future SQL
+/// status view) and — crucially — the **liveness signal**: if the requester
+/// sees no `Progress` (nor a `Commit`) within its stall timeout it declares the
+/// attempt stalled and re-dispatches to a fresh candidate set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Progress {
+    pub job_id: JobId,
+    pub worker_id: NodeId,
+    /// Coarse execution stage (e.g. "executing", "scanning", "finalizing").
+    pub stage: String,
+    /// Rows processed so far (best-effort; `0` when unknown).
+    pub rows_processed: u64,
+    /// Percent complete `0..=100` (best-effort estimate; `0` when unknown).
+    pub pct: u8,
+    /// Monotonic heartbeat sequence number for this job (starts at 1).
+    pub seq: u32,
+    /// Unix-millis timestamp the update was emitted.
+    pub ts_ms: u64,
+}
+
 /// Step 4: Worker commits its result hash *before* streaming data ("commit-first").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultCommit {
@@ -361,6 +383,8 @@ pub enum Wire {
     Offer(Offer),
     Bid(Bid),
     Dispatch(Dispatch),
+    /// Streamed progress / heartbeat (liveness signal) sent during execution.
+    Progress(Progress),
     Commit(ResultCommit),
     /// Describes the encoding/splitting of the bulk result (sent before bytes).
     Manifest(ResultManifest),

@@ -146,10 +146,53 @@ quorum                = 2                  # matching hashes required to accept
 verify_mode           = "quorum"          # "fast" | "quorum"
 offer_timeout_ms      = 2000
 dispatch_timeout_ms   = 30000
-max_retries           = 2
-backoff_initial_ms    = 200
-backoff_max_ms        = 5000
+# --- Resilience / re-dispatch (architecture §8/§11) ---
+attempt_deadline_ms       = 60000          # requester per-attempt deadline; a silent
+                                           #  attempt past this is inconclusive (job
+                                           #  fault, NO provider penalty) -> re-dispatch
+max_retries               = 0              # max (re)dispatch attempts; 0 = UNLIMITED
+                                           #  (route around dead/timed-out nodes until done)
+max_total_duration_ms     = 0              # optional wall-clock cap on the whole loop (0 = none)
+backoff_initial_ms        = 200            # exponential backoff start
+backoff_max_ms            = 5000           # backoff ceiling
+backoff_jitter_frac       = 0.5            # jitter fraction [0,1] to de-sync retry storms
+retry_budget_max_tokens   = 32             # global retry/hedge token bucket (burst cap; 0 = unlimited)
+retry_budget_refill_per_sec = 4            # token refill rate (tokens/sec)
+progress_interval_ms      = 2000           # requester's expected heartbeat interval
+progress_stall_multiplier = 5              # stall if no progress within interval * this
 max_inflight_jobs     = 64                 # requester-side concurrency semaphore
+
+# -----------------------------------------------------------------------------
+# Host (worker) execution deadline + progress/heartbeat streaming (resilience)
+# -----------------------------------------------------------------------------
+# The host abandons a job that exceeds job_timeout_ms (the requester then
+# re-dispatches), and streams a progress/heartbeat update every
+# progress_interval_ms while executing — the progress update IS the liveness
+# signal the requester watches for stalls.
+[worker]
+job_timeout_ms      = 60000                # host execution deadline (0 = none)
+progress_interval_ms = 2000                # how often the host streams progress (0 = off)
+
+# -----------------------------------------------------------------------------
+# Liveness / failure detection (architecture §8): phi-accrual + SWIM
+# -----------------------------------------------------------------------------
+# A phi-accrual failure detector over heartbeat/gossip intervals plus SWIM-style
+# indirect probing, layered on the libp2p gossip overlay. Unhealthy/suspect peers
+# are excluded from candidate selection. Off-path until a liveness view is wired
+# into the coordinator, so a node with no liveness wiring behaves as before.
+[liveness.phi]
+enabled            = true
+convict_threshold  = 8.0                   # phi at/above which a peer is convicted (~8-12)
+window_size        = 100                   # sliding window of recent heartbeat intervals
+min_std_ms         = 50.0                  # floor on interval std-dev (avoid over-confidence)
+acceptable_pause_ms = 0.0                  # extra slack added to the mean interval
+first_interval_ms  = 5000.0                # bootstrap interval before enough samples
+
+[liveness.swim]
+enabled                   = true
+indirect_probe_count      = 3              # k random peers asked to indirect-probe a suspect
+probe_timeout_ms          = 1000           # direct-probe timeout
+indirect_probe_timeout_ms = 2000           # each indirect (relayed) probe timeout
 
 [budget]
 memory_bytes         = 4294967296          # 4 GiB donated
@@ -418,6 +461,10 @@ slash_wrong_result_pct = 0.15
 slash_cheat_pct        = 1.0
 slash_downtime_pct     = 0.02
 slash_equivocation_pct = 0.5
+slash_failed_commitment_pct = 0.1          # FINE for a broken commitment: accepted a PAID
+                                           #  job then failed to deliver a valid result while
+                                           #  the job was feasible (quorum reached / another
+                                           #  node delivered). Distinct from a wrong-result slash.
 challenge_window_secs  = 86400             # optimistic-settlement window
 slash_to_challenger    = 0.4               # split of slashed funds (must sum to 1.0)
 slash_to_redundancy    = 0.3

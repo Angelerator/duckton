@@ -20,6 +20,13 @@ pub struct QueryOverrides {
     pub min_attestation: Option<String>,
     pub verify: Option<VerifyModeCfg>,
     pub dispatch_timeout_ms: Option<u64>,
+    /// Per-call requester per-attempt deadline (resilience layer).
+    pub attempt_deadline_ms: Option<u64>,
+    /// Per-call max (re)dispatch attempts (`0` = unlimited).
+    pub max_retries: Option<u32>,
+    /// Per-call wall-clock cap (ms) on the whole resilient re-dispatch loop
+    /// (`0` = no cap).
+    pub max_total_duration_ms: Option<u64>,
     /// Number of concurrent result-transfer streams for this call.
     pub result_parallelism: Option<usize>,
     /// Wire compression algorithm for this call's result.
@@ -55,6 +62,15 @@ impl QueryOverrides {
         }
         if let Some(d) = self.dispatch_timeout_ms {
             cfg.scheduler.dispatch_timeout_ms = d;
+        }
+        if let Some(d) = self.attempt_deadline_ms {
+            cfg.scheduler.attempt_deadline_ms = d;
+        }
+        if let Some(r) = self.max_retries {
+            cfg.scheduler.max_retries = r;
+        }
+        if let Some(d) = self.max_total_duration_ms {
+            cfg.scheduler.max_total_duration_ms = d;
         }
         if let Some(p) = self.result_parallelism {
             cfg.transport.result.parallelism = p;
