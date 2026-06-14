@@ -54,6 +54,19 @@ impl Cell {
     pub fn refs(&self) -> &[Cell] {
         &self.refs
     }
+    /// The raw data bytes (the final byte holds `bit_len % 8` significant high
+    /// bits). Exposed so a [`CellParser`] / live caller can read the slice back.
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// A read cursor over this cell's bits + child refs (TON "slice"). The inverse
+    /// of [`CellBuilder`]; used by the live layer to parse get-method results
+    /// (e.g. decode the on-chain `EcoParams` cell + `feeRecipient` address back
+    /// into typed values before re-broadcasting a toggled `update_params`).
+    pub fn parser(&self) -> CellParser<'_> {
+        CellParser { cell: self, bit: 0, next_ref: 0 }
+    }
 
     /// Cell tree depth: 0 for a ref-less cell, else `1 + max(child depth)`.
     pub fn depth(&self) -> u16 {
@@ -195,6 +208,110 @@ impl CellBuilder {
 
     pub fn build(self) -> Cell {
         self.cell
+    }
+}
+
+/// A read cursor over a [`Cell`]'s bits + child refs (the TON "slice"), the exact
+/// inverse of the subset of [`CellBuilder`] this crate emits. It is dependency-
+/// free and only implements what the live layer needs to decode get-method
+/// results: fixed `uint`/`int`, TL-B `coins` (VarUInteger16), `MsgAddressInt`
+/// (`addr_std`), raw bit runs, and child refs. Reads are MSB-first and return
+/// `None` on under-run so callers fail loudly rather than mis-parse.
+#[derive(Debug, Clone)]
+pub struct CellParser<'a> {
+    cell: &'a Cell,
+    bit: usize,
+    next_ref: usize,
+}
+
+impl<'a> CellParser<'a> {
+    /// Bits not yet consumed.
+    pub fn remaining_bits(&self) -> usize {
+        self.cell.bit_len.saturating_sub(self.bit)
+    }
+    /// Refs not yet consumed.
+    pub fn remaining_refs(&self) -> usize {
+        self.cell.refs.len().saturating_sub(self.next_ref)
+    }
+
+    fn load_bit(&mut self) -> Option<bool> {
+        if self.bit >= self.cell.bit_len {
+            return None;
+        }
+        let b = (self.cell.data[self.bit / 8] >> (7 - (self.bit % 8))) & 1 == 1;
+        self.bit += 1;
+        Some(b)
+    }
+
+    /// Read `nbits` (≤128) as an unsigned integer, MSB-first.
+    pub fn load_uint(&mut self, nbits: usize) -> Option<u128> {
+        if nbits > 128 || self.bit + nbits > self.cell.bit_len {
+            return None;
+        }
+        let mut v = 0u128;
+        for _ in 0..nbits {
+            v = (v << 1) | (self.load_bit()? as u128);
+        }
+        Some(v)
+    }
+
+    /// Read `nbits` (≤128) as a two's-complement signed integer.
+    pub fn load_int(&mut self, nbits: usize) -> Option<i128> {
+        let u = self.load_uint(nbits)?;
+        if nbits > 0 && (u >> (nbits - 1)) & 1 == 1 {
+            Some(u as i128 - (1i128 << nbits))
+        } else {
+            Some(u as i128)
+        }
+    }
+
+    /// Read a TL-B `coins` (VarUInteger16): a 4-bit byte-length `L` then `L` bytes.
+    pub fn load_coins(&mut self) -> Option<u128> {
+        let len = self.load_uint(4)? as usize;
+        if len == 0 {
+            return Some(0);
+        }
+        self.load_uint(len * 8)
+    }
+
+    /// Read `nbits` into a freshly allocated, MSB-first byte buffer (last byte
+    /// zero-padded in its low bits).
+    pub fn load_bits(&mut self, nbits: usize) -> Option<Vec<u8>> {
+        let mut out = vec![0u8; nbits.div_ceil(8)];
+        for i in 0..nbits {
+            if self.load_bit()? {
+                out[i / 8] |= 1 << (7 - (i % 8));
+            }
+        }
+        Some(out)
+    }
+
+    /// Read a `MsgAddressInt`. Returns `Some(addr)` for `addr_std$10` (no
+    /// anycast), `None` for `addr_none$00`. Other variants are unsupported.
+    pub fn load_address(&mut self) -> Option<WalletAddress> {
+        let tag = self.load_uint(2)?;
+        if tag == 0b00 {
+            return None; // addr_none
+        }
+        if tag != 0b10 {
+            return None; // addr_extern / addr_var unsupported
+        }
+        let anycast = self.load_bit()?; // Maybe Anycast (expected 0)
+        if anycast {
+            return None;
+        }
+        let wc = self.load_int(8)? as i32;
+        let bits = self.load_bits(256)?;
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&bits);
+        Some(WalletAddress::new(wc, hash))
+    }
+
+    /// Consume the next child reference.
+    pub fn load_ref(&mut self) -> Option<&'a Cell> {
+        let r = self.cell.refs.get(self.next_ref)?;
+        self.next_ref += 1;
+        Some(r)
     }
 }
 
@@ -521,6 +638,42 @@ mod tests {
         let parsed = Cell::from_boc(&boc).expect("our own BoC must parse");
         // Strongest check: the parsed tree hashes identically to the original.
         assert_eq!(parsed.repr_hash(), root.repr_hash());
+    }
+
+    #[test]
+    fn parser_round_trips_builder_fields() {
+        // Build a mixed cell, then parse it back field-for-field (MSB-first).
+        let addr = WalletAddress::new(0, [0xABu8; 32]);
+        let child = CellBuilder::new().store_uint(0xBEEF, 16).build();
+        let cell = CellBuilder::new()
+            .store_uint(0x47504101, 32) // opcode
+            .store_uint(0xDEADBEEF, 64) // a u64
+            .store_coins(1_234_567_890) // VarUInteger16 coins
+            .store_coins(0) // zero coins => 4-bit length 0
+            .store_address(&addr)
+            .store_int(-3, 8) // signed
+            .store_ref(child.clone())
+            .build();
+
+        let mut p = cell.parser();
+        assert_eq!(p.load_uint(32), Some(0x47504101));
+        assert_eq!(p.load_uint(64), Some(0xDEADBEEF));
+        assert_eq!(p.load_coins(), Some(1_234_567_890));
+        assert_eq!(p.load_coins(), Some(0));
+        assert_eq!(p.load_address(), Some(addr));
+        assert_eq!(p.load_int(8), Some(-3));
+        assert_eq!(p.remaining_bits(), 0);
+        assert_eq!(p.load_ref().map(|c| c.repr_hash()), Some(child.repr_hash()));
+        assert!(p.load_ref().is_none());
+    }
+
+    #[test]
+    fn parser_addr_none_and_under_run() {
+        // addr_none$00 yields None; an over-read past the end also yields None.
+        let cell = CellBuilder::new().store_uint(0b00, 2).build();
+        assert_eq!(cell.parser().load_address(), None);
+        let small = CellBuilder::new().store_uint(0b1, 1).build();
+        assert_eq!(small.parser().load_uint(8), None);
     }
 
     #[test]
