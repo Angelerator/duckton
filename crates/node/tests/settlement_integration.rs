@@ -98,6 +98,8 @@ fn paid_cfg(replicas: usize, quorum: usize) -> GridConfig {
     c.economics.default_payment = PaymentPref::Paid;
     c.economics.settlement = SettlementRail::Channel;
     c.economics.fee_recipient = Some(format!("0:{}", "00".repeat(32)));
+    // A concrete max bid so the per-job escrow locks a known, bounded B.
+    c.economics.pricing.max_bid = 100; // whole TON
     c.validate().unwrap();
     c
 }
@@ -390,6 +392,93 @@ async fn stake_seam_consulted_only_when_paid_and_enabled() {
         assert!(outcome.verified);
         assert!(spy.factor_calls() >= 1, "paid+enabled job must consult the stake seam");
     }
+}
+
+// --------------------------------------------------------------------------
+// Coordinator-DRIVEN engagement: the live run_query path itself opens escrow,
+// settles per the verdict, and anchors the record (not a standalone helper call).
+// --------------------------------------------------------------------------
+
+/// A PAID grid job, run through the real coordinator with a settlement + anchor
+/// rail wired, must itself: open escrow for B → settle the payout split (bounded
+/// by B) → append the JobRecord. We assert the recorded settlement events and
+/// that the anchored record proves inclusion — all driven by `run_query`, with
+/// nothing called by the test beyond `run_query`.
+#[tokio::test]
+async fn paid_job_drives_coordinator_open_settle_anchor() {
+    let w1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let cfg = paid_cfg(2, 2);
+
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    reg.set_stake(&w1.node_id, 1_000 * TON);
+    reg.set_stake(&w2.node_id, 1_000 * TON);
+    let settlement = Arc::new(p2p_settlement::MockSettlement::new());
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+
+    let coord = coordinator(&[&w1, &w2], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_stake_registry(reg)
+        .with_settlement(settlement.clone())
+        .with_record_anchor(anchor.clone());
+
+    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    assert!(outcome.verified);
+    let winner = outcome.winner.clone().unwrap();
+
+    // The coordinator opened escrow for B (max_bid 100 TON) and then settled.
+    let max_bid = 100 * TON;
+    let events = settlement.events();
+    assert_eq!(events.len(), 2, "open then settle (no refund), got {events:?}");
+    assert!(
+        matches!(&events[0], SettlementEvent::Opened { job, max_bid: b } if *job == outcome.job_id && *b == max_bid),
+        "first event must be Opened with the escrowed B, got {:?}",
+        events[0],
+    );
+    // Settled total is bounded by the escrowed B; with one agreeing non-winner
+    // the split is winner + 1 commission + platform fee == B exactly.
+    match &events[1] {
+        SettlementEvent::Settled { job, total } => {
+            assert_eq!(*job, outcome.job_id);
+            assert!(*total <= max_bid, "settle total {total} must not exceed escrow {max_bid}");
+            assert_eq!(*total, max_bid, "winner takes the remainder ⇒ total spends all of B");
+        }
+        other => panic!("second event must be Settled, got {other:?}"),
+    }
+
+    // The settled paid job anchored exactly one record, which proves inclusion.
+    assert_eq!(anchor.len(), 1, "settled paid job appends one JobRecord");
+    let proof = anchor.prove_inclusion(&outcome.job_id).expect("anchored record proves inclusion");
+    let root = anchor.epoch_root();
+    assert!(merkle::verify_inclusion(&root, &proof));
+
+    // Reputation still updated (scoring is independent of settlement).
+    assert!(st.reputation(&winner, now_ts()).is_some());
+}
+
+/// A FREE job, even with a settlement that PANICS on any call wired into the
+/// coordinator, must complete the full grid path WITHOUT engaging the rail.
+#[tokio::test]
+async fn free_job_never_engages_coordinator_settlement() {
+    let a = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let b = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    // Default economics ⇒ disabled ⇒ every job is free.
+    let cfg = base_cfg(2, 2);
+    assert!(!cfg.economics.enabled);
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+    let coord = coordinator(&[&a, &b], cfg, st as Arc<dyn TrustStore>)
+        .await
+        .with_settlement(Arc::new(PanicSettlement)) // panics if ever touched
+        .with_record_anchor(anchor.clone());
+
+    // If the coordinator engaged the rail on this free job, PanicSettlement would
+    // panic and fail the test. It completes cleanly instead.
+    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    assert!(outcome.verified);
+    assert_eq!(anchor.len(), 0, "free job anchors nothing");
 }
 
 /// On the paid grid the staked worker out-ranks an unstaked peer with identical

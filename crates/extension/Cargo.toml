@@ -17,6 +17,7 @@ duckdb = { version = "1.10503.1", default-features = false, features = ["loadabl
 duckdb-loadable-macros = "1.10503.1"
 p2p-config = { version = "0.1.0", path = "../config" }
 p2p-proto = { version = "0.1.0", path = "../proto" }
+p2p-settlement = { version = "0.1.0", path = "../settlement" }
 p2p-trust = { version = "0.1.0", path = "../trust" }
 # The distributed grid core. We deliberately disable default features so the
 # cdylib does NOT pull in libp2p (Kademlia/gossip) — `Node::auto` only needs the
@@ -32,3 +33,10 @@ async-trait = "0.1.89"
 # For persisting array-valued runtime settings (host data classes / bootstrap
 # seeds) via `ConfigStore::set`, which the friendly grouped setters don't cover.
 toml = "1.1.2"
+
+[features]
+# Enable real on-chain broadcasting from the SQL admin/stake surfaces
+# (`p2p_stake`/`p2p_unstake`/`p2p_admin_params`). Off by default: those calls
+# stay "prepared" (no network). Turning it on pulls the live toncenter client
+# (curl transport) from `p2p-settlement`.
+ton-live = ["p2p-settlement/ton-live"]

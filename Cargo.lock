@@ -2872,6 +2872,7 @@ dependencies = [
  "p2p-config",
  "p2p-node",
  "p2p-proto",
+ "p2p-settlement",
  "p2p-trust",
  "tokio",
  "toml",
@@ -2926,8 +2927,10 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "hex",
+ "hmac",
  "p2p-config",
  "p2p-proto",
+ "pbkdf2",
  "serde",
  "serde_json",
  "sha2",
@@ -3009,6 +3012,15 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "pem"
@@ -4133,7 +4145,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",

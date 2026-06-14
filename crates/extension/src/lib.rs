@@ -482,20 +482,75 @@ fn stake_action_rows(action: &str, amount: i64) -> Result<Vec<[String; 3]>, Box<
         )));
     }
 
+    let status = stake_submit_status(e, &vault, action, amount);
     Ok(vec![
         ["stake".into(), "action".into(), action.into()],
         ["stake".into(), "amount_ton".into(), amount.to_string()],
         ["stake".into(), "network".into(), e.network.as_str().into()],
         ["stake".into(), "stake_vault".into(), vault],
         ["stake".into(), "rpc_endpoint".into(), e.resolved_rpc()],
-        [
-            "stake".into(),
-            "status".into(),
-            // Honest boundary: the on-chain submission goes through the live TON
-            // client, which is wired separately (see report follow-up).
-            "prepared — submit on-chain via the configured wallet + RPC (live TON client)".into(),
-        ],
+        ["stake".into(), "status".into(), status],
     ])
+}
+
+/// The `status` row value for a stake/unstake action: when built with
+/// `--features ton-live`, this self-broadcasts a wallet-v5r1 signed
+/// `StakeDeposit`/`StakeRequestUnbond` and reports the toncenter result; without
+/// the feature it stays "prepared" (no network).
+fn stake_submit_status(_e: &p2p_config::EconomicsConfig, _vault: &str, _action: &str, _amount: i64) -> String {
+    #[cfg(feature = "ton-live")]
+    {
+        return match broadcast_stake(_e, _vault, _action, _amount) {
+            Ok(h) => format!("broadcast — toncenter accepted (tx {h})"),
+            Err(err) => format!("broadcast failed: {err}"),
+        };
+    }
+    #[cfg(not(feature = "ton-live"))]
+    {
+        "prepared — submit on-chain via the configured wallet + RPC (rebuild with --features ton-live to self-broadcast)".into()
+    }
+}
+
+/// Self-broadcast a stake/unstake message from the configured wallet (ton-live).
+#[cfg(feature = "ton-live")]
+fn broadcast_stake(
+    e: &p2p_config::EconomicsConfig,
+    vault: &str,
+    action: &str,
+    amount: i64,
+) -> Result<String, Box<dyn Error>> {
+    use p2p_settlement::{TonRpc, WalletAddress};
+    let wiring = p2p_settlement::resolve_ton_wiring(e).map_err(boxed)?;
+    let path = e
+        .active_settings()
+        .wallet
+        .mnemonic_file
+        .clone()
+        .ok_or_else(|| boxed("no wallet mnemonic_file configured"))?;
+    let mnemonic = std::fs::read_to_string(&path)
+        .map_err(|err| boxed(format!("read mnemonic_file {path}: {err}")))?;
+    let rpc = p2p_settlement::ToncenterRpc::new(
+        &wiring.rpc_endpoint,
+        wiring.api_key.clone(),
+        &wiring.network,
+        mnemonic.trim(),
+    )
+    .map_err(boxed)?;
+    let vault_addr =
+        WalletAddress::from_any_str(vault).map_err(|_| boxed("malformed stake_vault address"))?;
+    const TON: u128 = 1_000_000_000;
+    let amt = (amount.max(0) as u128) * TON;
+    let qid = now_secs();
+    let hash = match action {
+        "unstake" => rpc
+            .send_internal(&vault_addr, 0, &p2p_settlement::build_stake_unbond(qid, amt))
+            .map_err(boxed)?,
+        // stake deposit attaches the bonded value to the vault.
+        _ => rpc
+            .send_internal(&vault_addr, amt, &p2p_settlement::build_stake_deposit(qid, amt))
+            .map_err(boxed)?,
+    };
+    Ok(hash)
 }
 
 /// Gate + plan builder for the admin `update_params` action on the on-chain
@@ -544,6 +599,7 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
     // Surface the §12 params (in their on-chain representation) being pushed.
     let bps = |x: f64| ((x * 10_000.0).round() as i64).to_string();
     let s = &e.slashing;
+    let status = admin_params_submit_status(e, &gp);
     Ok(vec![
         ["admin_params".into(), "action".into(), "update_params".into()],
         ["admin_params".into(), "network".into(), e.network.as_str().into()],
@@ -570,15 +626,60 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
             "fee_recipient".into(),
             e.fee_recipient.clone().unwrap_or_else(|| "<unset>".into()),
         ],
-        [
-            "admin_params".into(),
-            "status".into(),
-            // Honest boundary: the on-chain submission goes through the live TON
-            // client (admin wallet signs `update_params`); mutates storage in
-            // place so the GlobalParams address is unchanged.
-            "prepared — admin update_params via the configured wallet + RPC (live TON client)".into(),
-        ],
+        ["admin_params".into(), "status".into(), status],
     ])
+}
+
+/// The `status` row for `p2p_admin_params`: self-broadcasts the admin
+/// `update_params` (wallet-v5r1 signed) under `--features ton-live`, else stays
+/// "prepared". Mutates `GlobalParams` storage in place (address unchanged).
+fn admin_params_submit_status(_e: &p2p_config::EconomicsConfig, _gp: &str) -> String {
+    #[cfg(feature = "ton-live")]
+    {
+        return match broadcast_admin_params(_e, _gp) {
+            Ok(h) => format!("broadcast — toncenter accepted (tx {h})"),
+            Err(err) => format!("broadcast failed: {err}"),
+        };
+    }
+    #[cfg(not(feature = "ton-live"))]
+    {
+        "prepared — admin update_params via the configured wallet + RPC (rebuild with --features ton-live to self-broadcast)".into()
+    }
+}
+
+/// Self-broadcast the admin `update_params` to the on-chain `GlobalParams`
+/// (ton-live). The §12 params are derived from `[economics]` and re-validated.
+#[cfg(feature = "ton-live")]
+fn broadcast_admin_params(e: &p2p_config::EconomicsConfig, gp: &str) -> Result<String, Box<dyn Error>> {
+    use p2p_settlement::{GlobalParams, TonRpc, WalletAddress};
+    let wiring = p2p_settlement::resolve_ton_wiring(e).map_err(boxed)?;
+    let path = e
+        .active_settings()
+        .wallet
+        .mnemonic_file
+        .clone()
+        .ok_or_else(|| boxed("no admin wallet mnemonic_file configured"))?;
+    let mnemonic = std::fs::read_to_string(&path)
+        .map_err(|err| boxed(format!("read mnemonic_file {path}: {err}")))?;
+    let rpc = p2p_settlement::ToncenterRpc::new(
+        &wiring.rpc_endpoint,
+        wiring.api_key.clone(),
+        &wiring.network,
+        mnemonic.trim(),
+    )
+    .map_err(boxed)?;
+    let gp_addr =
+        WalletAddress::from_any_str(gp).map_err(|_| boxed("malformed global_params address"))?;
+    let fee = e
+        .fee_recipient
+        .as_deref()
+        .ok_or_else(|| boxed("no fee_recipient configured for update_params"))?;
+    let fee_addr =
+        WalletAddress::from_any_str(fee).map_err(|_| boxed("malformed fee_recipient address"))?;
+    let params = GlobalParams::from_economics(e);
+    params.validate().map_err(boxed)?;
+    let body = p2p_settlement::build_update_params(now_secs(), &fee_addr, &params);
+    rpc.send_internal(&gp_addr, 0, &body).map_err(boxed)
 }
 
 /// `CALL p2p_admin_params()` — push the current `[economics]` params to the

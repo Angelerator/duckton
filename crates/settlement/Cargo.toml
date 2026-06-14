@@ -21,6 +21,8 @@ ton-live = ["dep:serde_json"]
 blake3 = "1.8.5"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 hex = "0.4.3"
+hmac = "0.12.1"
+pbkdf2 = { version = "0.12.2", default-features = false }
 p2p-config = { version = "0.1.0", path = "../config" }
 p2p-proto = { version = "0.1.0", path = "../proto" }
 serde = { version = "1.0.228", features = ["derive"] }

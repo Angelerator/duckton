@@ -97,7 +97,7 @@ impl Cell {
 
 /// Builder for an ordinary TON cell (bits stored MSB-first, refs appended in
 /// order). Mirrors the subset of `beginCell()…endCell()` we need.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CellBuilder {
     cell: Cell,
 }
@@ -174,6 +174,25 @@ impl CellBuilder {
         self
     }
 
+    /// Store a `Maybe ^Cell`: a `1` bit + a ref when `Some`, a `0` bit when `None`.
+    pub fn store_maybe_ref(self, cell: Option<Cell>) -> Self {
+        match cell {
+            Some(c) => self.store_uint(1, 1).store_ref(c),
+            None => self.store_uint(0, 1),
+        }
+    }
+
+    /// Append all of `other`'s bits AND its child refs inline (TON `storeBuilder`),
+    /// used to splice the v5 signing message into the final signed body.
+    pub fn store_cell_inline(mut self, other: &Cell) -> Self {
+        for i in 0..other.bit_len {
+            let bit = (other.data[i / 8] >> (7 - (i % 8))) & 1 == 1;
+            self.push_bit(bit);
+        }
+        self.cell.refs.extend(other.refs.iter().cloned());
+        self
+    }
+
     pub fn build(self) -> Cell {
         self.cell
     }
@@ -199,6 +218,240 @@ impl WalletAddress {
         let si = state_init_cell(code.clone(), data.clone());
         WalletAddress::new(workchain, si.repr_hash())
     }
+
+    /// Like [`WalletAddress::from_state_init`] but the `code` cell is provided only
+    /// by its `(repr_hash, depth)` — enough to hash the `StateInit` without the
+    /// full code tree. This is how the wallet **v5r1** address is derived: the
+    /// standard wallet code is a large, fixed cell whose repr-hash/depth are
+    /// well-known (`20834b7b…`, depth 6), so we never embed the code BoC and never
+    /// need it to sign/broadcast from an *already-deployed* wallet.
+    pub fn from_code_hash_state_init(
+        workchain: i32,
+        code_hash: &Hash32,
+        code_depth: u16,
+        data: &Cell,
+    ) -> Self {
+        // StateInit cell: bits b{00110} (5), refs [code, data]; descriptor (2,1),
+        // augmented data byte 0x34. The repr-hash folds in each ref's depth then
+        // each ref's repr-hash — so the external code ref needs only hash+depth.
+        let mut h = Sha256::new();
+        h.update([2u8, 1u8]); // descriptor: 2 refs, 5 data bits
+        h.update([0x34u8]); // augmented b{00110}
+        h.update(code_depth.to_be_bytes());
+        h.update(data.depth().to_be_bytes());
+        h.update(code_hash);
+        h.update(data.repr_hash());
+        WalletAddress::new(workchain, h.finalize().into())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bag-of-Cells (BoC) serialization — the on-wire encoding `sendBoc` expects.
+//
+// Only what the live broadcaster needs: a single-root, ordinary-cell tree
+// serialized with the standard `b5ee9c72` header + crc32c. A minimal inverse
+// (`from_boc`) is provided for round-trip unit tests (serialize → parse →
+// identical repr-hash), so the encoder is checked offline without a network hop.
+// ---------------------------------------------------------------------------
+
+impl Cell {
+    /// Build a [`Cell`] directly from raw parts (used by the BoC parser/tests).
+    fn from_parts(data: Vec<u8>, bit_len: usize, refs: Vec<Cell>) -> Self {
+        Cell { data, bit_len, refs }
+    }
+
+    /// Serialized size of this cell in a BoC body (descriptors + data + refs).
+    fn serialized_len(&self, ref_size: usize) -> usize {
+        2 + self.augmented_data().len() + self.refs.len() * ref_size
+    }
+
+    /// Flatten the cell tree into a parents-before-children ordering (every cell's
+    /// ref indices are strictly greater than its own), deduplicating shared cells
+    /// by repr-hash. Returns the ordered cells plus, for each, its ref indices.
+    fn topological_order(&self) -> (Vec<&Cell>, Vec<Vec<usize>>) {
+        // Collect distinct cells (by repr-hash) reachable from the root.
+        let mut order: Vec<&Cell> = Vec::new();
+        let mut index: std::collections::HashMap<Hash32, usize> = std::collections::HashMap::new();
+        // DFS post-order then reverse → parents precede children for a DAG.
+        fn visit<'a>(
+            c: &'a Cell,
+            order: &mut Vec<&'a Cell>,
+            index: &mut std::collections::HashMap<Hash32, usize>,
+            seen: &mut std::collections::HashSet<Hash32>,
+        ) {
+            let h = c.repr_hash();
+            if !seen.insert(h) {
+                return;
+            }
+            for r in &c.refs {
+                visit(r, order, index, seen);
+            }
+            order.push(c);
+        }
+        let mut seen = std::collections::HashSet::new();
+        visit(self, &mut order, &mut index, &mut seen);
+        order.reverse(); // root first, children after
+        for (i, c) in order.iter().enumerate() {
+            index.insert(c.repr_hash(), i);
+        }
+        let ref_indices: Vec<Vec<usize>> = order
+            .iter()
+            .map(|c| c.refs.iter().map(|r| index[&r.repr_hash()]).collect())
+            .collect();
+        (order, ref_indices)
+    }
+
+    /// Serialize this cell tree into a standard BoC byte string (single root,
+    /// crc32c appended). This is what gets base64-encoded for `sendBoc`.
+    pub fn to_boc(&self) -> Vec<u8> {
+        let (cells, ref_indices) = self.topological_order();
+        let cell_count = cells.len();
+
+        // Bytes needed to hold a ref index (`size`) and a data offset (`off_bytes`).
+        let ref_size = bytes_for(cell_count as u64).max(1);
+        let tot_size: usize = cells.iter().map(|c| c.serialized_len(ref_size)).sum();
+        let off_bytes = bytes_for(tot_size as u64).max(1);
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0xb5, 0xee, 0x9c, 0x72]); // magic
+        // flags byte: has_idx=0, has_crc32c=1, has_cache=0, flags=0, size=ref_size.
+        out.push((1 << 6) | (ref_size as u8 & 0b111));
+        out.push(off_bytes as u8);
+        out.extend_from_slice(&be_bytes(cell_count as u64, ref_size)); // cells
+        out.extend_from_slice(&be_bytes(1, ref_size)); // roots = 1
+        out.extend_from_slice(&be_bytes(0, ref_size)); // absent = 0
+        out.extend_from_slice(&be_bytes(tot_size as u64, off_bytes)); // tot cell size
+        out.extend_from_slice(&be_bytes(0, ref_size)); // root index = 0
+
+        for (c, refs) in cells.iter().zip(ref_indices.iter()) {
+            let [d1, d2] = c.descriptor();
+            out.push(d1);
+            out.push(d2);
+            out.extend_from_slice(&c.augmented_data());
+            for &r in refs {
+                out.extend_from_slice(&be_bytes(r as u64, ref_size));
+            }
+        }
+
+        let crc = crc32c(&out);
+        out.extend_from_slice(&crc.to_le_bytes());
+        out
+    }
+
+    /// Parse a BoC produced by [`Cell::to_boc`] back into its root cell. Supports
+    /// the subset this crate emits (single root, optional crc, no index table).
+    /// Used by round-trip tests; returns `None` on any malformed input.
+    pub fn from_boc(bytes: &[u8]) -> Option<Cell> {
+        if bytes.len() < 6 || bytes[0..4] != [0xb5, 0xee, 0x9c, 0x72] {
+            return None;
+        }
+        let flags = bytes[4];
+        let has_idx = flags & (1 << 7) != 0;
+        let has_crc = flags & (1 << 6) != 0;
+        let ref_size = (flags & 0b111) as usize;
+        let off_bytes = bytes[5] as usize;
+        let mut p = 6usize;
+        let read = |buf: &[u8], p: &mut usize, n: usize| -> Option<u64> {
+            if *p + n > buf.len() {
+                return None;
+            }
+            let mut v = 0u64;
+            for &b in &buf[*p..*p + n] {
+                v = (v << 8) | b as u64;
+            }
+            *p += n;
+            Some(v)
+        };
+        let cell_count = read(bytes, &mut p, ref_size)? as usize;
+        let _roots = read(bytes, &mut p, ref_size)?;
+        let _absent = read(bytes, &mut p, ref_size)?;
+        let _tot = read(bytes, &mut p, off_bytes)?;
+        let root_idx = read(bytes, &mut p, ref_size)? as usize;
+        if has_idx {
+            p += cell_count * off_bytes; // skip index table
+        }
+        let body_end = if has_crc { bytes.len().checked_sub(4)? } else { bytes.len() };
+        // Parse raw (descriptor + data + ref indices) for each cell in order.
+        let mut raw: Vec<(Vec<u8>, usize, Vec<usize>)> = Vec::with_capacity(cell_count);
+        for _ in 0..cell_count {
+            if p + 2 > body_end {
+                return None;
+            }
+            let d1 = bytes[p];
+            let d2 = bytes[p + 1];
+            p += 2;
+            let refs_n = (d1 & 0b111) as usize;
+            let data_bytes = (d2 as usize).div_ceil(2);
+            let not_aligned = d2 & 1 == 1;
+            if p + data_bytes > body_end {
+                return None;
+            }
+            let data = bytes[p..p + data_bytes].to_vec();
+            p += data_bytes;
+            let bit_len = if not_aligned {
+                // Strip the augmentation bit: bits = 8*(full) + position of the
+                // final set completion bit in the last byte.
+                let full = data_bytes - 1;
+                let last = data[data_bytes - 1];
+                // The augmentation bit is the LOWEST set bit of the final byte;
+                // the real data bits sit above it.
+                let mut bl = full * 8;
+                for i in 0..8 {
+                    if last & (1 << i) != 0 {
+                        bl = full * 8 + (7 - i);
+                        break;
+                    }
+                }
+                bl
+            } else {
+                data_bytes * 8
+            };
+            let mut refs = Vec::with_capacity(refs_n);
+            for _ in 0..refs_n {
+                refs.push(read(bytes, &mut p, ref_size)? as usize);
+            }
+            raw.push((data, bit_len, refs));
+        }
+        // Rebuild cells children-first (refs always have a higher index).
+        let mut built: Vec<Option<Cell>> = vec![None; cell_count];
+        for i in (0..cell_count).rev() {
+            let (data, bit_len, refs) = &raw[i];
+            let child_cells: Vec<Cell> = refs.iter().map(|&r| built[r].clone().unwrap()).collect();
+            built[i] = Some(Cell::from_parts(data.clone(), *bit_len, child_cells));
+        }
+        built[root_idx].clone()
+    }
+}
+
+/// Minimum number of bytes needed to big-endian-encode `v` (at least 0 ⇒ 0; the
+/// callers clamp to a `.max(1)`).
+fn bytes_for(v: u64) -> usize {
+    let mut n = 0usize;
+    let mut x = v;
+    while x > 0 {
+        n += 1;
+        x >>= 8;
+    }
+    n
+}
+
+/// Big-endian encode `v` into exactly `n` bytes.
+fn be_bytes(v: u64, n: usize) -> Vec<u8> {
+    let full = v.to_be_bytes();
+    full[8 - n..].to_vec()
+}
+
+/// CRC32C (Castagnoli, poly 0x1EDC6F41 reflected = 0x82F63B78) — the checksum the
+/// BoC trailer uses. Bitwise (table-free) to stay dependency-light.
+pub fn crc32c(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+        }
+    }
+    !crc
 }
 
 #[cfg(test)]
@@ -245,5 +498,46 @@ mod tests {
         assert_eq!(parent.depth(), 1);
         let grand = CellBuilder::new().store_ref(parent).build();
         assert_eq!(grand.depth(), 2);
+    }
+
+    #[test]
+    fn boc_round_trips_a_cell_tree() {
+        // A non-trivial tree: refs, a shared child, and an unaligned bit length.
+        let shared = CellBuilder::new().store_uint(0xABCD, 16).build();
+        let child = CellBuilder::new()
+            .store_uint(0b101, 3) // unaligned
+            .store_ref(shared.clone())
+            .build();
+        let root = CellBuilder::new()
+            .store_coins(123_456)
+            .store_address(&WalletAddress::new(0, [9u8; 32]))
+            .store_ref(child)
+            .store_ref(shared)
+            .build();
+
+        let boc = root.to_boc();
+        // Header magic + crc trailer present.
+        assert_eq!(&boc[0..4], &[0xb5, 0xee, 0x9c, 0x72]);
+        let parsed = Cell::from_boc(&boc).expect("our own BoC must parse");
+        // Strongest check: the parsed tree hashes identically to the original.
+        assert_eq!(parsed.repr_hash(), root.repr_hash());
+    }
+
+    #[test]
+    fn code_hash_state_init_matches_full_cell_derivation() {
+        // The (code_hash, depth) StateInit hasher must agree with hashing a full
+        // code cell — so the wallet-v5r1 address derivation is exact.
+        let code = CellBuilder::new().store_uint(0xC0DE, 16).store_ref(
+            CellBuilder::new().store_uint(0xBEEF, 16).build(),
+        ).build();
+        let data = CellBuilder::new().store_uint(0x1234_5678, 32).build();
+        let full = WalletAddress::from_state_init(BASECHAIN, &code, &data);
+        let via_hash = WalletAddress::from_code_hash_state_init(
+            BASECHAIN,
+            &code.repr_hash(),
+            code.depth(),
+            &data,
+        );
+        assert_eq!(full, via_hash);
     }
 }

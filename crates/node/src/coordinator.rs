@@ -14,7 +14,10 @@ use p2p_proto::{
     Ack, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, JobId, NodeId, Offer,
     QueryHash, Receipt, ResultCommit, ResultSet, Verdict, VerifyMode, Wire,
 };
-use p2p_settlement::StakeRegistry;
+use p2p_settlement::{
+    Amount, JobRecord, Payout, RecordAnchor, Settlement, SettlementOutcome, StakeRegistry,
+    WalletAddress,
+};
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
@@ -50,6 +53,8 @@ pub enum CoordinatorError {
     QuorumFailed { agreement: usize, quorum: usize },
     #[error("winner did not return a result")]
     NoResult,
+    #[error("settlement error: {0}")]
+    Settlement(String),
     #[error("local execution failed: {0}")]
     LocalExecution(String),
     #[error("transport error: {0}")]
@@ -96,6 +101,18 @@ pub struct Coordinator {
     /// economics-gated input to the trust score — reputation/quality scoring is
     /// independent and always runs (see `trust_store.record` below).
     stake_registry: Option<Arc<dyn StakeRegistry>>,
+    /// Optional money rail (BLOCKCHAIN_ECONOMICS §8/§10.1). Consulted ONLY for
+    /// grid jobs that resolve to PAID while `economics.enabled`: the requester's
+    /// max bid is escrowed before dispatch and released per the quorum verdict.
+    /// `None` (default) and FREE jobs never touch it — zero chain interaction.
+    settlement: Option<Arc<dyn Settlement>>,
+    /// Optional tamper-proof record anchor (§7): a settled paid job's `JobRecord`
+    /// is appended to the off-chain epoch tree (root anchored on-chain elsewhere).
+    record_anchor: Option<Arc<dyn RecordAnchor>>,
+    /// Resolves a worker `NodeId` to its bound payout wallet. Defaults to a
+    /// deterministic derivation; the live wiring injects the real node↔wallet
+    /// binding lookup.
+    wallet_resolver: Option<Arc<dyn Fn(&NodeId) -> WalletAddress + Send + Sync>>,
     /// Optional local deny-list (ARCHITECTURE "Abuse resistance"). When set,
     /// blocked candidates are excluded from selection and auto-block triggers
     /// add to it. `None` (default) ⇒ no blocking, exactly today's behavior.
@@ -129,8 +146,35 @@ impl Coordinator {
             local: None,
             planner: None,
             stake_registry: None,
+            settlement: None,
+            record_anchor: None,
+            wallet_resolver: None,
             blocklist: None,
         }
+    }
+
+    /// Wire the money rail (BLOCKCHAIN_ECONOMICS §8/§10.1). Off by default; even
+    /// when set it only engages for PAID grid jobs while `economics.enabled`
+    /// (free jobs and chain-off nodes never touch it). Use the deterministic
+    /// `mock` impl in tests and the `ton` impl in production.
+    pub fn with_settlement(mut self, settlement: Arc<dyn Settlement>) -> Self {
+        self.settlement = Some(settlement);
+        self
+    }
+
+    /// Wire the record anchor (§7): a settled paid job's record is appended here.
+    pub fn with_record_anchor(mut self, anchor: Arc<dyn RecordAnchor>) -> Self {
+        self.record_anchor = Some(anchor);
+        self
+    }
+
+    /// Wire a `NodeId → payout wallet` resolver (the node↔wallet binding lookup).
+    pub fn with_wallet_resolver(
+        mut self,
+        resolver: Arc<dyn Fn(&NodeId) -> WalletAddress + Send + Sync>,
+    ) -> Self {
+        self.wallet_resolver = Some(resolver);
+        self
     }
 
     /// Wire a local deny-list (ARCHITECTURE "Abuse resistance"): blocked
@@ -326,6 +370,22 @@ impl Coordinator {
             });
         }
 
+        // Engage the paid money rail (BLOCKCHAIN_ECONOMICS §8.2): lock the
+        // requester's max bid B in a per-job escrow BEFORE dispatch. FREE jobs and
+        // a node with no settlement rail wired skip this entirely (zero chain
+        // interaction). On any later failure the escrow is refunded.
+        let escrow = if paid && cfg.economics.enabled {
+            match &self.settlement {
+                Some(s) => Some(
+                    s.open_escrow(&job_id, escrow_bid_nanoton(&cfg))
+                        .map_err(|e| CoordinatorError::Settlement(e.to_string()))?,
+                ),
+                None => None,
+            }
+        } else {
+            None
+        };
+
         // 4. Dispatch to selected workers and collect commits.
         let verify_mode = match cfg.scheduler.verify_mode {
             VerifyModeCfg::Fast => VerifyMode::Fast,
@@ -401,8 +461,10 @@ impl Coordinator {
                 if !outcome.reached() {
                     // No quorum: with fault attribution active this is attributed
                     // to the JOB (most/all providers disagreed), not the
-                    // providers — so the failure receipts are NEUTRAL.
+                    // providers — so the failure receipts are NEUTRAL. Any escrow
+                    // is refunded to the requester (non-custodial timeout path).
                     self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
+                    self.refund_escrow(&escrow);
                     return Err(CoordinatorError::QuorumFailed {
                         agreement: outcome.agreement,
                         quorum: outcome.quorum,
@@ -419,7 +481,10 @@ impl Coordinator {
 
         let agreed = match agreed_hash {
             Some(h) => h,
-            None => return Err(CoordinatorError::NoResult),
+            None => {
+                self.refund_escrow(&escrow);
+                return Err(CoordinatorError::NoResult);
+            }
         };
 
         // 6. Pick the fastest worker whose hash matches the agreed hash.
@@ -434,6 +499,7 @@ impl Coordinator {
             Some(i) => i,
             None => {
                 self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
+                self.refund_escrow(&escrow);
                 return Err(CoordinatorError::NoResult);
             }
         };
@@ -462,8 +528,14 @@ impl Coordinator {
         let mut result: Option<ResultSet> = None;
         let mut receipts = Vec::new();
         let winner_id = inflight[winner_idx].worker.clone();
+        // Agreeing non-winners earn the fixed participation commission on a paid
+        // settlement (§6.2).
+        let mut agreeing_non_winners: Vec<NodeId> = Vec::new();
 
         for (i, mut f) in inflight.into_iter().enumerate() {
+            if i != winner_idx && f.hash == agreed && !non_verifiable {
+                agreeing_non_winners.push(f.worker.clone());
+            }
             // Verdict relative to the authoritative hash, with fault attribution:
             // a non-verifiable job is NEUTRAL (Inconclusive — no penalty); a hash
             // mismatch against a verified quorum is provable provider fault.
@@ -529,7 +601,28 @@ impl Coordinator {
         // feeds the requester-trust weighting above on future jobs.
         self.trust_store.record_requester(&self_id, verified, now);
 
-        let result = result.ok_or(CoordinatorError::NoResult)?;
+        let result = match result {
+            Some(r) => r,
+            None => {
+                self.refund_escrow(&escrow);
+                return Err(CoordinatorError::NoResult);
+            }
+        };
+
+        // Settle the paid job: release escrow per the quorum verdict (winner
+        // base+bonus + participation commissions to agreeing runners + platform
+        // fee, bounded by the escrowed B; the contract refunds any slack), then
+        // append the JobRecord to the record anchor (§7). FREE jobs / no rail:
+        // a genuine no-op — reputation scoring above already ran for both.
+        self.settle_paid_job(
+            &cfg,
+            &escrow,
+            &winner_id,
+            &agreeing_non_winners,
+            &agreed,
+            &query_hash,
+            &self_id,
+        );
 
         Ok(QueryOutcome {
             job_id,
@@ -731,6 +824,94 @@ impl Coordinator {
         }
         debug!("emitted failure receipts for job {job_id}");
     }
+
+    /// Refund the per-job escrow to the requester (best-effort) on a failure
+    /// path. A no-op when no escrow was opened / no rail is wired.
+    fn refund_escrow(&self, escrow: &Option<p2p_settlement::EscrowHandle>) {
+        if let (Some(s), Some(h)) = (&self.settlement, escrow) {
+            if let Err(e) = s.refund(h) {
+                debug!("escrow refund failed: {e}");
+            }
+        }
+    }
+
+    /// Resolve a worker's payout wallet via the injected resolver, or a
+    /// deterministic derivation (BLAKE3 of the node id) used by tests / when no
+    /// binding lookup is wired.
+    fn wallet_of(&self, node: &NodeId) -> WalletAddress {
+        match &self.wallet_resolver {
+            Some(r) => r(node),
+            None => WalletAddress::new(0, *blake3::hash(node.as_str().as_bytes()).as_bytes()),
+        }
+    }
+
+    /// Release the escrow per the quorum verdict and anchor the job record. A
+    /// no-op unless a settlement rail is wired AND an escrow was opened (i.e. a
+    /// PAID job on an economics-enabled node). Bounds the payout split by `B`.
+    #[allow(clippy::too_many_arguments)]
+    fn settle_paid_job(
+        &self,
+        cfg: &GridConfig,
+        escrow: &Option<p2p_settlement::EscrowHandle>,
+        winner: &NodeId,
+        agreeing_non_winners: &[NodeId],
+        agreed_hash: &str,
+        query_hash: &QueryHash,
+        requester: &NodeId,
+    ) {
+        let (Some(settlement), Some(handle)) = (&self.settlement, escrow) else {
+            return;
+        };
+        let b = handle.max_bid;
+        let fee = mul_frac(b, cfg.economics.fees.platform_fee_pct);
+        let commission_each = mul_frac(b, cfg.economics.fees.participation_commission_frac);
+        let participants: Vec<Payout> = agreeing_non_winners
+            .iter()
+            .map(|n| Payout { to: self.wallet_of(n), amount: commission_each })
+            .collect();
+        let total_commission = commission_each.saturating_mul(participants.len() as Amount);
+        // Winner takes base + perf bonus = whatever of B remains after fee +
+        // commissions; never exceeds the escrow (the rail also enforces this).
+        let winner_amount = b.saturating_sub(fee).saturating_sub(total_commission);
+        let outcome = SettlementOutcome {
+            result_hash: *blake3::hash(agreed_hash.as_bytes()).as_bytes(),
+            winner: Payout { to: self.wallet_of(winner), amount: winner_amount },
+            participants,
+            platform_fee: fee,
+        };
+        if let Err(e) = settlement.settle(handle, &outcome) {
+            debug!("escrow settle failed: {e}");
+            return;
+        }
+        if let Some(anchor) = &self.record_anchor {
+            anchor.append(&JobRecord {
+                job_id: handle.job.0.clone(),
+                query_hash: query_hash.0.clone(),
+                requester_wallet: self.wallet_of(requester).to_raw_string(),
+                max_bid: b,
+                result_hash: agreed_hash.to_string(),
+                epoch: 0,
+                prev_root: [0u8; 32],
+            });
+        }
+    }
+}
+
+/// The escrowed max bid `B` (nanoton) for a paid job: the configured
+/// `[economics.pricing].max_bid` (whole TON). `0` ⇒ a 1-TON default so a paid job
+/// always locks a non-zero, bounded escrow.
+fn escrow_bid_nanoton(cfg: &GridConfig) -> Amount {
+    const TON: Amount = 1_000_000_000;
+    let whole = cfg.economics.pricing.max_bid.max(1) as Amount;
+    whole * TON
+}
+
+/// Multiply a nanoton `amount` by a `[0,1]` fraction, flooring to nanoton.
+fn mul_frac(amount: Amount, frac: f64) -> Amount {
+    if frac <= 0.0 {
+        return 0;
+    }
+    ((amount as f64) * frac).floor() as Amount
 }
 
 fn parse_level(s: &str) -> AttestationLevel {

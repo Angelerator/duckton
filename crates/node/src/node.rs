@@ -167,6 +167,33 @@ impl Node {
         self
     }
 
+    /// Attach the money rail + record anchor so PAID jobs open escrow, settle the
+    /// payout split per the quorum verdict, and anchor the job record. FREE jobs
+    /// (the default grid) are unaffected. Use the `ton` impls in production and
+    /// the deterministic `mock` impls in tests.
+    pub fn with_settlement(
+        mut self,
+        settlement: Arc<dyn p2p_settlement::Settlement>,
+        anchor: Arc<dyn p2p_settlement::RecordAnchor>,
+    ) -> Self {
+        self.coordinator = self
+            .coordinator
+            .with_settlement(settlement)
+            .with_record_anchor(anchor);
+        self.has_wallet = true;
+        self
+    }
+
+    /// Inject the `NodeId → payout wallet` resolver (the node↔wallet binding
+    /// lookup used to direct settlement payouts).
+    pub fn with_wallet_resolver(
+        mut self,
+        resolver: Arc<dyn Fn(&NodeId) -> p2p_settlement::WalletAddress + Send + Sync>,
+    ) -> Self {
+        self.coordinator = self.coordinator.with_wallet_resolver(resolver);
+        self
+    }
+
     /// The resolved configuration backing this node.
     pub fn config(&self) -> &GridConfig {
         &self.config
