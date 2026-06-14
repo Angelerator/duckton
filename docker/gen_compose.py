@@ -26,7 +26,11 @@ def main():
     p.add_argument("--mem", default="110m", help="per-container memory limit")
     p.add_argument("--cpus", default="0.08", help="per-container CPU limit")
     p.add_argument("--pids", type=int, default=64, help="per-container pids limit")
-    p.add_argument("--share-mem", default="48MB", help="p2p_share donated memory")
+    # Donated budget (admission accounting). MUST exceed the per-job memory lease
+    # (default 64 MiB) or every offer is rejected "at capacity"; 256MB leaves room
+    # for max_jobs concurrent leases.
+    p.add_argument("--share-mem", default="512MB", help="p2p_share donated memory budget")
+    p.add_argument("--max-jobs", type=int, default=4, help="per-node concurrent job slots")
     p.add_argument("--image", default="p2p-node:latest")
     p.add_argument("--network", default="grid")
     p.add_argument("--out", default="docker/compose.generated.yml")
@@ -48,6 +52,7 @@ def main():
         lines.append(f"    environment:")
         lines.append(f"      P2P_BIND_ADDR: 0.0.0.0:9494")
         lines.append(f"      P2P_SHARE_MEMORY: {args.share_mem}")
+        lines.append(f"      P2P_SHARE_MAXJOBS: \"{args.max_jobs}\"")
         if bootstrap:
             lines.append(f'      BOOTSTRAP: "{bootstrap}"')
         lines.append(f"    networks: [{args.network}]")

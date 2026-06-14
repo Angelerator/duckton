@@ -106,11 +106,15 @@ COPY docker/entrypoint.sh /node/entrypoint.sh
 RUN chmod +x /node/entrypoint.sh
 
 # Default QUIC bind (each container has its own netns → same port is fine).
+# Donated budget (admission accounting only) must exceed the per-job lease a
+# requester dispatches; 256MB admits the lean per-job leases with headroom for
+# max_jobs concurrent jobs.
 ENV P2P_BIND_ADDR=0.0.0.0:9494 \
     P2P_CONFIG_DIR=/node/state \
-    P2P_SHARE_MEMORY=64MB \
+    P2P_SHARE_MEMORY=256MB \
     P2P_SHARE_THREADS=1 \
-    P2P_SHARE_MAXJOBS=2
+    P2P_SHARE_MAXJOBS=2 \
+    P2P_SHARE_PERJOB_BYTES=67108864
 
 EXPOSE 9494/udp
 ENTRYPOINT ["/node/entrypoint.sh"]

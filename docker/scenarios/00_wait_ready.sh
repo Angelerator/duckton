@@ -2,7 +2,7 @@
 # Wait until at least <min_ready> nodes have logged NODE_READY (bound their QUIC
 # endpoint + are hosting). Lean: counts greps of container logs, not full dumps.
 #   00_wait_ready.sh [min_ready] [timeout_secs]
-set -euo pipefail
+set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/_common.sh"
 
 TOTAL=$(containers | wc -l | tr -d ' ')

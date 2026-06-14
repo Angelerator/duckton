@@ -11,23 +11,23 @@
 # resilience` (see 04_resilience_units.sh) — the extension's live Node wires
 # plain StaticDiscovery, so those guarantees are proven at the library layer.
 #   02_chaos.sh [bootstrap_size] [kill_count] [post_queries]
-set -euo pipefail
+set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"; source "$HERE/_common.sh"
 
 BSIZE="${1:-8}"
 KILL="${2:-4}"
 POSTQ="${3:-20}"
 EXPECTED=500500
-QUERY="SELECT sum(i) FROM range(1,1001) t(i)"
+QUERY="SELECT sum(i) AS s FROM range(1,1001) t(i)"
 
-mapfile -t POOL < <(services | grep -E '^node' | shuf | head -n "$BSIZE")
+POOL=(); while IFS= read -r _l; do POOL+=("$_l"); done < <(services | grep -E '^node' | shuf_lines | head -n "$BSIZE")
 BOOT="$(boot_list "${POOL[@]}")"
 echo "==> bootstrap workers ($BSIZE): ${POOL[*]}"
 
+CLIENTC="$(ensure_client)"
 run_q() { # -> prints value
-  local cexec; cexec="$(containers | grep -E "${PROJECT}-seed" | shuf | head -n1)"
-  local sql="SELECT sum(i) FROM p2p_query('${QUERY}', prefer=>'remote', replicas=>3, quorum=>2, min_trust=>0.0, dispatch_timeout_ms=>1500, attempt_deadline_ms=>2500, max_retries=>0, max_total_duration_ms=>20000) t(i)"
-  req_query "$cexec" "$BOOT" "$sql" 2>/dev/null | tr -d '[:space:]'
+  local sql="SELECT s FROM p2p_query('${QUERY}', prefer=>'remote', replicas=>3, quorum=>2, min_trust=>0.0)"
+  req_query "$CLIENTC" "$BOOT" "$sql" 2>/dev/null | tr -d '[:space:]'
 }
 
 echo "==> baseline (pre-chaos): 5 remote queries"

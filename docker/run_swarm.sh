@@ -12,7 +12,7 @@ PROJECT="${PROJECT:-p2pgrid}"
 
 NODES="${1:-100}"
 SEEDS="${2:-3}"
-MEM="${3:-110m}"
+MEM="${3:-160m}"
 CPUS="${4:-0.08}"
 
 COMPOSE="$HERE/compose.generated.yml"
