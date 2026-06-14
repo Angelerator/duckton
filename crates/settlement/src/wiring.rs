@@ -136,9 +136,12 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
     .with_requester(wallet)
     .with_treasury(treasury)
     // ~0.05 TON deploy headroom so the per-job escrow can pay its own settle-time
-    // compute + forward fees (the locked B is unaffected). Mirrors the Acton
+    // action (forward) fees (the locked B is unaffected). Mirrors the Acton
     // deploy script's `escrowAmount + buffer` funding.
-    .with_deploy_gas_buffer(50_000_000);
+    .with_deploy_gas_buffer(50_000_000)
+    // ~0.05 TON attached to the settle/refund message so the escrow's compute
+    // phase has gas (a 0-value internal message aborts before compute on TON).
+    .with_settle_gas(50_000_000);
     let window = (econ.slashing.challenge_window_secs.min(u32::MAX as u64) as u32).max(600);
     settlement = settlement.with_escrow_window(window);
 

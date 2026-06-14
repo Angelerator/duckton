@@ -47,9 +47,12 @@ const GLOBAL_PARAMS_FRIENDLY: &str = "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkk
 /// cost is tx gas + the deploy gas buffer left in the dead escrow.
 const ESCROW_BID: Amount = 50_000_000; // 0.05 TON locked B
 const WINNER_AMOUNT: Amount = 30_000_000; // 0.03 TON to winner; 0.02 TON refunds
-/// Deploy headroom so the escrow can pay its own settle-time compute + forward
-/// fees (the locked B is paid out in full; this small buffer covers gas).
-const DEPLOY_GAS_BUFFER: Amount = 50_000_000; // 0.05 TON
+/// Deploy headroom so the escrow holds ≥ B (plus action forward fees) to pay out
+/// the split (the locked B is returned to us in full; this covers fees).
+const DEPLOY_GAS_BUFFER: Amount = 30_000_000; // 0.03 TON
+/// Gas attached to the settle message so the escrow's compute phase can run (a
+/// 0-value internal message aborts before compute on TON).
+const SETTLE_GAS: Amount = 30_000_000; // 0.03 TON
 
 struct Env {
     rpc: String,
@@ -187,21 +190,40 @@ fn read_escrow_state(env: &Env, raw_addr: &str) -> Option<(bool, u32)> {
     Some((settled, pv))
 }
 
-/// Print + return the latest transaction's (compute_exit, action_result, aborted)
-/// for `raw_addr` via the Toncenter v3 API. Used to VERIFY each tx exit code.
+/// Fetch + print the latest transaction's (compute_exit, action_result, aborted)
+/// for `raw_addr` via the Toncenter v3 API, polling for indexing lag. Returns
+/// `None` only if the v3 API is genuinely unreachable after retries (callers
+/// treat that as a hard failure — every tx exit code MUST be verified).
 fn latest_tx_exit(env: &Env, friendly_or_raw: &str, label: &str) -> Option<(i64, i64, bool)> {
     let v3 = env.rpc.replace("/api/v2", "/api/v3");
-    let raw = curl(env, &[format!("{v3}/transactions?account={friendly_or_raw}&limit=1&sort=desc")]);
-    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    let tx = v["transactions"].as_array()?.first()?;
-    let hash = tx["hash"].as_str().unwrap_or("?");
-    let compute = tx["description"]["compute_ph"]["exit_code"].as_i64().unwrap_or(0);
-    let action = tx["description"]["action"]["result_code"].as_i64().unwrap_or(0);
-    let aborted = tx["description"]["aborted"].as_bool().unwrap_or(false);
-    println!(
-        "  [{label}] tx hash={hash}\n            compute_exit={compute} action_result={action} aborted={aborted}\n            https://testnet.tonviewer.com/transaction/{hash}"
-    );
-    Some((compute, action, aborted))
+    for _ in 0..6 {
+        let raw = curl(env, &[format!("{v3}/transactions?account={friendly_or_raw}&limit=1&sort=desc")]);
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) {
+            if let Some(tx) = v["transactions"].as_array().and_then(|a| a.first()) {
+                let hash = tx["hash"].as_str().unwrap_or("?");
+                let compute = tx["description"]["compute_ph"]["exit_code"].as_i64().unwrap_or(0);
+                let action = tx["description"]["action"]["result_code"].as_i64().unwrap_or(0);
+                let aborted = tx["description"]["aborted"].as_bool().unwrap_or(false);
+                println!(
+                    "  [{label}] tx hash={hash}\n            compute_exit={compute} action_result={action} aborted={aborted}\n            https://testnet.tonviewer.com/transaction/{hash}"
+                );
+                return Some((compute, action, aborted));
+            }
+        }
+        sleep(Duration::from_secs(5));
+    }
+    None
+}
+
+/// Mandatory exit-code verification: every broadcast tx's compute + action phase
+/// MUST be exit 0 and not aborted (the user insists results are always checked,
+/// with zero intentional failed txs).
+fn assert_tx_ok(env: &Env, raw_addr: &str, label: &str) {
+    let (compute, action, aborted) =
+        latest_tx_exit(env, raw_addr, label).expect("v3 tx exit code must be readable (verify every tx)");
+    assert!(!aborted, "[{label}] tx must not be aborted");
+    assert_eq!(compute, 0, "[{label}] compute exit_code must be 0");
+    assert_eq!(action, 0, "[{label}] action result_code must be 0");
 }
 
 fn load_escrow_code() -> p2p_settlement::cell::Cell {
@@ -257,7 +279,8 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
     .with_requester(wallet)
     .with_treasury(wallet)
     .with_escrow_window(3600)
-    .with_deploy_gas_buffer(DEPLOY_GAS_BUFFER);
+    .with_deploy_gas_buffer(DEPLOY_GAS_BUFFER)
+    .with_settle_gas(SETTLE_GAS);
 
     let job = p2p_proto::JobId(format!("rust-live-{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -283,12 +306,8 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
     assert!(wait_for_state(&env, &escrow_raw, "active", "open"), "escrow must become active (deployed)");
     sleep(Duration::from_secs(4));
 
-    // Verify the deploy tx exit code on the escrow account.
-    if let Some((compute, action, aborted)) = latest_tx_exit(&env, &escrow_raw, "escrow-deploy") {
-        assert!(!aborted, "deploy tx must not be aborted");
-        assert_eq!(compute, 0, "deploy compute exit_code must be 0");
-        assert!(action == 0, "deploy action result must be 0");
-    }
+    // Verify the deploy tx exit code on the escrow account (mandatory).
+    assert_tx_ok(&env, &escrow_raw, "escrow-deploy");
 
     // Confirm the on-chain terms binding == what we synced/locked.
     let onchain_pv = get_int(&env, &escrow_raw, "get_params_version").expect("get_params_version");
@@ -308,18 +327,21 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
         platform_fee: 0,
     };
     let before_settle = read_seqno(&env, &wallet_raw);
-    println!("SETTLE: releasing escrow (winner {} nanoton) seqno={before_settle}", WINNER_AMOUNT);
+    println!(
+        "SETTLE: releasing escrow (winner {} nanoton + {} refund; {} settle-gas) seqno={before_settle}",
+        WINNER_AMOUNT,
+        ESCROW_BID - WINNER_AMOUNT,
+        SETTLE_GAS
+    );
     settlement.settle(&handle, &outcome).expect("settle broadcasts EscrowSettle");
     let after_settle = wait_for_seqno(&env, &wallet_raw, before_settle + 1, "settle");
     assert_eq!(after_settle, before_settle + 1, "wallet seqno must increment by 1 (settle external accepted)");
     sleep(Duration::from_secs(6));
 
-    // Verify the settle tx exit code on the escrow account.
-    if let Some((compute, action, aborted)) = latest_tx_exit(&env, &escrow_raw, "escrow-settle") {
-        assert!(!aborted, "settle tx must not be aborted");
-        assert_eq!(compute, 0, "settle compute exit_code must be 0 (sender==arbiter, hash matches, bounded)");
-        assert_eq!(action, 0, "settle action result must be 0 (payout/refund messages sent)");
-    }
+    // Verify the settle tx exit code on the escrow account (mandatory): sender ==
+    // arbiter, hash matches the HTLC lock, payout bounded by B, action sends the
+    // winner + refund messages.
+    assert_tx_ok(&env, &escrow_raw, "escrow-settle");
 
     // Confirm the escrow flipped to settled and still reports the bound version.
     if let Some((settled, pv)) = read_escrow_state(&env, &escrow_raw) {

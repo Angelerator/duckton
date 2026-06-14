@@ -680,6 +680,15 @@ pub struct TonSettlement<R: TonRpc> {
     /// not accounted in the payout. `0` (default) preserves the exact-`B` deploy
     /// (used by the offline ABI tests); the live rail sets a small buffer.
     deploy_gas_buffer: Amount,
+    /// Value (nanoton) attached to the `EscrowSettle` / `EscrowRefund` message so
+    /// the escrow's COMPUTE phase has gas. On TON the compute-phase gas is funded
+    /// by the incoming message value, so a 0-value internal message aborts BEFORE
+    /// compute and never runs the settle logic (the escrow stays unsettled). The
+    /// bounded `B` split is still paid from the escrow's own deploy-funded balance;
+    /// this only funds the settle compute + a little headroom. `0` (default)
+    /// preserves the offline tests' zero-value send; the live rail sets a small
+    /// amount.
+    settle_gas: Amount,
 }
 
 impl<R: TonRpc> TonSettlement<R> {
@@ -694,6 +703,7 @@ impl<R: TonRpc> TonSettlement<R> {
             treasury: None,
             escrow_window_secs: 3600,
             deploy_gas_buffer: 0,
+            settle_gas: 0,
         }
     }
 
@@ -709,6 +719,7 @@ impl<R: TonRpc> TonSettlement<R> {
             treasury: None,
             escrow_window_secs: 3600,
             deploy_gas_buffer: 0,
+            settle_gas: 0,
         }
     }
 
@@ -739,6 +750,15 @@ impl<R: TonRpc> TonSettlement<R> {
     /// stored `escrowAmount` / handle `max_bid` remain exactly `B`.
     pub fn with_deploy_gas_buffer(mut self, nanoton: Amount) -> Self {
         self.deploy_gas_buffer = nanoton;
+        self
+    }
+
+    /// Set the gas (nanoton) attached to the `EscrowSettle` / `EscrowRefund`
+    /// message so the escrow's compute phase can run (see
+    /// [`TonSettlement::settle_gas`]). Required on a live rail; a 0-value settle
+    /// message aborts before compute and never settles.
+    pub fn with_settle_gas(mut self, nanoton: Amount) -> Self {
+        self.settle_gas = nanoton;
         self
     }
 
@@ -825,12 +845,15 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
             outcome.platform_fee,
             &outcome.participants,
         );
-        self.rpc.send_internal(&h.address, 0, &body).map(|_| ())
+        // Attach `settle_gas` so the escrow's compute phase can run (a 0-value
+        // internal message aborts before compute). The bounded `B` split is paid
+        // from the escrow's own balance, not from this gas.
+        self.rpc.send_internal(&h.address, self.settle_gas, &body).map(|_| ())
     }
 
     fn refund(&self, h: &EscrowHandle) -> Result<(), SettleError> {
         let body = build_escrow_refund(0);
-        self.rpc.send_internal(&h.address, 0, &body).map(|_| ())
+        self.rpc.send_internal(&h.address, self.settle_gas, &body).map(|_| ())
     }
 
     fn is_onchain(&self) -> bool {
