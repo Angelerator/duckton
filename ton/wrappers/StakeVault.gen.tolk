@@ -125,6 +125,23 @@ fun StakeVault.sendStakeSlash(
     return net.send(from, genericMsg);
 }
 
+fun StakeVault.sendProvideWalletAddress(
+    self,
+    from: address,
+    queryId: uint64,
+    ownerAddress: address,
+    includeAddress: bool,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: ProvideWalletAddress { queryId, ownerAddress, includeAddress },
+    });
+    return net.send(from, genericMsg);
+}
+
 fun StakeVault.sendReceiptTopUp(
     self,
     from: address,
@@ -165,6 +182,10 @@ fun StakeVault.getBindingHash(self): int {
 
 fun StakeVault.getReceiptWalletAddress(self, owner: address): address {
     return net.runGetMethod(self.address, "get_receipt_wallet_address", [owner]);
+}
+
+fun StakeVault.getWalletAddress(self, owner: address): address {
+    return net.runGetMethod(self.address, "get_wallet_address", [owner]);
 }
 
 fun StakeVault.getJettonData(self): ReceiptJettonData {

@@ -17,7 +17,8 @@ const OP_STAKE_WITHDRAW = 0x534b_4b03
 const OP_STAKE_KEEPER = 0x534b_4b04
 const OP_STAKE_SLASH = 0x534b_4b05
 const OP_RECEIPT_BURN = 0x534b_4b06
-const OP_RECEIPT_MINT = 0x534b_4b07
+// Mint uses the STANDARD TEP-74 internal_transfer op (0x178d4519), not a custom
+// one, so indexers recognize it; see `JettonInternalTransfer` below.
 
 // ---------------------------------------------------------------------------
 // Stake-receipt jetton wallet (per-holder, TEP-74 shaped, transfer-LOCKED)
@@ -38,13 +39,46 @@ fun ReceiptWalletStorage.save(self) {
     contract.setData(self.toCell());
 }
 
-// Mint — master-only. The receipt is non-transferable, so it is never minted via
-// a sibling internal-transfer; the master credits the wallet directly. (We keep
-// the standard TEP-74 transfer opcode below purely so a real transfer attempt
-// hits the lock.)
-struct (0x534b_4b07) ReceiptMint {
+// Mint — master-only, via the STANDARD TEP-74 `internal_transfer` opcode so
+// indexers/wallets recognize the credit as a real jetton mint (TEP-74 §"Jetton
+// wallet"). The receipt is non-transferable, so the ONLY legitimate sender is the
+// master vault: there are never sibling-wallet transfers (the outgoing transfer
+// op is locked below). Standard body layout = query_id, amount, from,
+// response_address, forward_ton_amount, forward_payload.
+struct (0x178d_4519) JettonInternalTransfer {
     queryId: uint64
     amount: coins
+    from: address
+    responseAddress: address
+    forwardTonAmount: coins
+    forwardPayload: RemainingBitsAndRefs
+}
+
+// TEP-74 `transfer_notification` — emitted to the owner on mint when a forward
+// amount is attached, so wallet apps surface the incoming receipt. Recognition /
+// UX only; it does NOT unlock transfers.
+struct (0x7362_d09c) JettonTransferNotification {
+    queryId: uint64
+    amount: coins
+    sender: address
+    forwardPayload: RemainingBitsAndRefs
+}
+
+// TEP-89 (Jetton Wallet Discovery): a contract asks the master for the jetton
+// wallet of `ownerAddress`; the master replies with `TakeWalletAddress`. Indexers
+// and explorers rely on this to link holder wallets to this master.
+struct (0x2c76_b973) ProvideWalletAddress {
+    queryId: uint64
+    ownerAddress: address
+    includeAddress: bool
+}
+
+// TEP-89 reply. `ownerAddress` is a Maybe ^MsgAddress (a `cell?`): present iff the
+// request set `includeAddress`.
+struct (0xd173_5400) TakeWalletAddress {
+    queryId: uint64
+    walletAddress: address
+    ownerAddress: cell?
 }
 
 // TEP-74 outgoing transfer — always rejected for the stake receipt (anti-exit).

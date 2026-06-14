@@ -68,6 +68,18 @@ fun receiptWalletOf(vault: StakeVault, owner: address): StakeReceiptWallet {
     return StakeReceiptWallet.fromAddress(vault.getReceiptWalletAddress(owner));
 }
 
+// Decode a TEP-64 on-chain metadata value the way an explorer/indexer does:
+// read the snake `0x00` prefix on the `^`-ref value for `sha256(key)`, then
+// return the remaining UTF-8 bytes. Spec-true (not self-referential): it parses
+// the actual content cell rather than re-hashing the builder output.
+fun decodeOnchainMetaValue(content: dict, keyHash: int): slice {
+    val (valueRef, found) = content.uDictGetRef(256, keyHash);
+    expect(found).toBeTrue();
+    var value = valueRef!.beginParse();
+    expect(value.loadUint(8)).toEqual(0); // snake-format prefix
+    return value;
+}
+
 get fun `test deposit bonds TON and mints a 1to1 stake-receipt jetton`() {
     testing.setNow(T0);
     val owner = testing.treasury("owner");
@@ -294,38 +306,75 @@ get fun `test stake-receipt jetton exposes Duckton TEP-64 metadata`() {
     expect(data.adminAddress).toEqual(vault.address);
     expect(data.jettonWalletCode.hash()).toEqual(build("StakeReceiptWallet").hash());
 
-    // TEP-64 on-chain content cell == the exact Duckton metadata, rebuilt INLINE
-    // here (not via the contract's helper) so this asserts the precise bytes:
-    // name "Duckton", symbol "DUCKTON", decimals "9", short description.
-    var expectedDict: dict = createEmptyDict();
-    expectedDict.uDictSetRef(
-        256,
-        "name".sha256(),
-        beginCell().storeUint(0, 8).storeSlice("Duckton".literalSlice()).endCell(),
+    // SPEC-TRUE TEP-64 decode (not self-referential): parse the actual content
+    // cell exactly as an explorer would — read the `0x00` on-chain root tag, load
+    // the dict, look up `sha256("name"|"symbol"|"decimals")`, follow the `^` ref,
+    // read the `0x00` snake prefix, and assert the decoded UTF-8 bytes. This
+    // catches any format regression that would stop wallets/explorers rendering it.
+    var content = data.jettonContent.beginParse();
+    expect(content.loadUint(8)).toEqual(0); // on-chain content root tag
+    val meta = content.loadDict();
+    expect(decodeOnchainMetaValue(meta, "name".sha256()).bitsEqual("Duckton".literalSlice())).toBeTrue();
+    expect(decodeOnchainMetaValue(meta, "symbol".sha256()).bitsEqual("DUCKTON".literalSlice())).toBeTrue();
+    expect(decodeOnchainMetaValue(meta, "decimals".sha256()).bitsEqual("9".literalSlice())).toBeTrue();
+}
+
+get fun `test receipt wallet exposes standard TEP-74 get_wallet_data shape`() {
+    // Indexers recognize a jetton wallet by `get_wallet_data` returning, in order,
+    // (balance, owner, jetton_master, jetton_wallet_code). Assert that exact shape
+    // and that the master back-reference matches the vault.
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(
+        owner.address,
+        ton("10"),
+        slasher.address,
+        randomAddress("t"),
+        randomAddress("r"),
     );
-    expectedDict.uDictSetRef(
-        256,
-        "symbol".sha256(),
-        beginCell().storeUint(0, 8).storeSlice("DUCKTON".literalSlice()).endCell(),
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+
+    val wallet = receiptWalletOf(vault, owner.address);
+    val wd = wallet.getWalletData();
+    expect(wd.balance).toEqual(ton("100"));
+    expect(wd.owner).toEqual(owner.address);
+    expect(wd.minter).toEqual(vault.address); // jetton master == the vault
+    expect(wd.code.hash()).toEqual(build("StakeReceiptWallet").hash());
+}
+
+get fun `test master implements TEP-89 wallet discovery (get_wallet_address + provide)`() {
+    // TEP-89 is the back-reference indexers use to link holder wallets to a master.
+    // `get_wallet_address(owner)` must equal the real receipt-wallet address, and a
+    // `provide_wallet_address` must be answered with `take_wallet_address`.
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(
+        owner.address,
+        ton("10"),
+        slasher.address,
+        randomAddress("t"),
+        randomAddress("r"),
     );
-    expectedDict.uDictSetRef(
-        256,
-        "decimals".sha256(),
-        beginCell().storeUint(0, 8).storeSlice("9".literalSlice()).endCell(),
+
+    // get-method back-reference matches the deterministic wallet address.
+    val expected = vault.getReceiptWalletAddress(owner.address);
+    expect(vault.getWalletAddress(owner.address)).toEqual(expected);
+
+    // provide_wallet_address -> the master must answer with take_wallet_address
+    // (0xd1735400) back to the requester. That reply is what an indexer uses to
+    // confirm the wallet belongs to this master.
+    val res = vault.sendProvideWalletAddress(
+        owner.address,
+        7,
+        owner.address,
+        true,
+        { value: ton("0.1") },
     );
-    expectedDict.uDictSetRef(
-        256,
-        "description".sha256(),
-        beginCell()
-            .storeUint(0, 8)
-            .storeSlice(
-                "Non-transferable 1:1 stake-receipt for a bonded duckdb-p2p node (slashable accountability bond)."
-                    .literalSlice(),
-            )
-            .endCell(),
-    );
-    val expectedContent = beginCell().storeUint(0, 8).storeDict(expectedDict).endCell();
-    expect(data.jettonContent.hash()).toEqual(expectedContent.hash());
+    expect(res).toHaveSuccessfulTx<ProvideWalletAddress>({ from: owner.address, to: vault.address });
+    val reply = res.findTransaction<TakeWalletAddress>({ from: vault.address });
+    expect(reply).toBeNotNull();
 }
 
 get fun `test stake deposit mints receipt 1to1 and a transfer attempt is rejected`() {

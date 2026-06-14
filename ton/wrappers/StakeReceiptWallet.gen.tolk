@@ -45,18 +45,29 @@ fun StakeReceiptWallet.deploy(self, from: address, config: SendParams = {}): Sen
     return net.send(from, genericMsg);
 }
 
-fun StakeReceiptWallet.sendReceiptMint(
+fun StakeReceiptWallet.sendJettonInternalTransfer(
     self,
     from: address,
     queryId: uint64,
     amount: coins,
+    from_: address,
+    responseAddress: address,
+    forwardTonAmount: coins,
+    forwardPayload: RemainingBitsAndRefs,
     config: SendParams = {},
 ): SendResultList {
     val genericMsg = createMessage({
         bounce: config.bounce,
         value: config.value,
         dest: self.address,
-        body: ReceiptMint { queryId, amount },
+        body: JettonInternalTransfer {
+            queryId,
+            amount,
+            from: from_,
+            responseAddress,
+            forwardTonAmount,
+            forwardPayload,
+        },
     });
     return net.send(from, genericMsg);
 }

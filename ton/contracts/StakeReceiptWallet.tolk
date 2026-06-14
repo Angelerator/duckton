@@ -15,7 +15,7 @@ contract StakeReceiptWallet {
 }
 
 type AllowedMessageToReceiptWallet =
-    | ReceiptMint // mint, sent by the master vault
+    | JettonInternalTransfer // standard TEP-74 credit (mint), sent by the master vault
     | JettonTransfer // ALWAYS rejected (non-transferable)
     | ReceiptBurn // master-driven burn
     | ReceiptTopUp
@@ -29,13 +29,34 @@ fun onInternalMessage(in: InMessage) {
     val msg = lazy AllowedMessageToReceiptWallet.fromSlice(in.body);
 
     match (msg) {
-        // Mint path: the master credits this wallet. Because the receipt is
-        // non-transferable, the only legitimate minter is the master vault.
-        ReceiptMint => {
+        // Mint path: the master credits this wallet via the STANDARD TEP-74
+        // internal_transfer op so indexers recognize the credit as a jetton mint.
+        // Because the receipt is non-transferable, the ONLY legitimate sender is
+        // the master vault (no sibling-wallet transfers ever happen — the transfer
+        // op is locked below), so we still gate this on the master.
+        JettonInternalTransfer => {
             var storage = lazy ReceiptWalletStorage.load();
             assert (in.senderAddress == storage.master) throw ERROR_NOT_FROM_MASTER;
             storage.balance += msg.amount;
             storage.save();
+
+            // Standard behaviour: notify the owner when a forward amount is
+            // attached, so wallet apps surface the incoming receipt. Does NOT
+            // unlock transfers — purely a recognition/UX signal.
+            if (msg.forwardTonAmount > 0) {
+                val note = createMessage({
+                    bounce: BounceMode.NoBounce,
+                    dest: storage.owner,
+                    value: msg.forwardTonAmount,
+                    body: JettonTransferNotification {
+                        queryId: msg.queryId,
+                        amount: msg.amount,
+                        sender: storage.master,
+                        forwardPayload: msg.forwardPayload,
+                    },
+                });
+                note.send(SEND_MODE_PAY_FEES_SEPARATELY);
+            }
         }
 
         // Transfer path: hard-locked. This is the core anti-exit guarantee.

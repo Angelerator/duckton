@@ -21,6 +21,7 @@ type AllowedMessageToVault =
     | StakeWithdraw
     | StakeKeeperWithdraw
     | StakeSlash
+    | ProvideWalletAddress // TEP-89 jetton-wallet discovery
     | ReceiptTopUp
 
 fun onBouncedMessage(_in: InMessageBounced) {}
@@ -146,6 +147,33 @@ fun onInternalMessage(in: InMessage) {
             applySlashSplit(cfg.slash.load(), msg.amount, msg.challenger);
         }
 
+        // TEP-89: reply with this node's receipt jetton-wallet address for the
+        // requested owner so indexers/explorers/wallets can discover and link
+        // holder wallets to this master (the vault).
+        ProvideWalletAddress => {
+            val storage = lazy VaultStorage.load();
+            val cfg = storage.config.load();
+            val walletAddr = calcReceiptWalletAddress(
+                msg.ownerAddress,
+                contract.getAddress(),
+                cfg.receiptWalletCode,
+            );
+            val ownerRef = msg.includeAddress
+                ? beginCell().storeAddress(msg.ownerAddress).endCell()
+                : null;
+            val reply = createMessage({
+                bounce: BounceMode.NoBounce,
+                dest: in.senderAddress,
+                value: 0,
+                body: TakeWalletAddress {
+                    queryId: msg.queryId,
+                    walletAddress: walletAddr,
+                    ownerAddress: ownerRef,
+                },
+            });
+            reply.send(SEND_MODE_CARRY_ALL_REMAINING_MESSAGE_VALUE | SEND_MODE_IGNORE_ERRORS);
+        }
+
         ReceiptTopUp => {
             // accept TON top-ups for storage rent
         }
@@ -162,13 +190,21 @@ fun onInternalMessage(in: InMessage) {
 
 fun mintReceipt(owner: address, master: address, walletCode: cell, amount: coins, queryId: int) {
     val dest = calcDeployedReceiptWallet(owner, master, walletCode);
+    // Credit via the STANDARD TEP-74 internal_transfer so indexers recognize the
+    // mint. `from`/`responseAddress` are the master; `forwardTonAmount` is 0 (no
+    // owner notification — keeps the deposit gas budget unchanged), and the
+    // forward payload is empty.
     val m = createMessage({
         bounce: BounceMode.NoBounce,
         dest: dest,
         value: MIN_TONS_FOR_STORAGE,
-        body: ReceiptMint {
+        body: JettonInternalTransfer {
             queryId: queryId,
             amount: amount,
+            from: master,
+            responseAddress: master,
+            forwardTonAmount: 0,
+            forwardPayload: beginCell().endCell().beginParse(),
         },
     });
     m.send(SEND_MODE_PAY_FEES_SEPARATELY);
@@ -248,6 +284,18 @@ get fun get_binding_hash(): int {
 }
 
 get fun get_receipt_wallet_address(owner: address): address {
+    val storage = lazy VaultStorage.load();
+    val cfg = storage.config.load();
+    return calcReceiptWalletAddress(owner, contract.getAddress(), cfg.receiptWalletCode);
+}
+
+// TEP-89 standard discovery get-method. Indexers/explorers/wallets call exactly
+// `get_wallet_address(owner)` on a jetton master and require it to return the
+// owner's jetton-wallet address; the wallet's `get_wallet_data` master must point
+// back here. Without this method the back-reference check fails and holder wallets
+// are NOT indexed as jettons — which is why the receipt didn't show up. (Same
+// computation as `get_receipt_wallet_address`, under the standard name.)
+get fun get_wallet_address(owner: address): address {
     val storage = lazy VaultStorage.load();
     val cfg = storage.config.load();
     return calcReceiptWalletAddress(owner, contract.getAddress(), cfg.receiptWalletCode);
