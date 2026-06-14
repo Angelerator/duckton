@@ -18,17 +18,37 @@ full live scenario. **You only need to supply a funded testnet wallet + a
 Toncenter testnet API key.** Nothing here touches a network until you run the
 script with those inputs.
 
-> **Honesty note.** Nothing in this repository has been run against a live
-> network. The full scenario set was validated end-to-end in Acton's **local
-> emulator** against the real compiled contracts — GlobalParams admin
-> update/non-admin rejection/blocklist, stake deposit, 1:1 transfer-locked
-> receipt + Duckton TEP-64 metadata, escrow settle, single- and multi-leaf
-> anchor inclusion, and dispute all pass (**25** emulator tests, including a
-> dedicated `tests/e2e_flow.test.tolk` that mirrors the whole turnkey flow across
-> all four contracts in one session). The harness is `bash -n`-clean, fails fast
-> without a mnemonic/API key (no broadcast), and the `ton-live` Rust test compiles
-> and is a no-op without testnet env. The live testnet run requires your wallet +
-> RPC.
+## Verified live testnet deployments
+
+All four core contracts have been **deployed and exercised on the live TON
+testnet** (workchain 0). Explorer: `https://testnet.tonviewer.com/<address>`.
+
+| Contract | Testnet address | Live checks |
+| --- | --- | --- |
+| **GlobalParams** | [`kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna`](https://testnet.tonviewer.com/kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna) | `get_params_version` → `1`; resilience fields present |
+| **StakeVault** (Duckton master) | [`kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp`](https://testnet.tonviewer.com/kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp) | indexer renders **Duckton / DUCKTON / 9**; total_supply 0.2; mintable |
+| **Duckton holder** (receipt wallet) | [`kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r`](https://testnet.tonviewer.com/kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r) | balance **0.2 Duckton**, minted 1:1, transfer-locked |
+| **RecordAnchor** | [`kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3`](https://testnet.tonviewer.com/kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3) | single + 8-leaf inclusion proofs verified; tamper rejected; bonded dispute open+resolve |
+| **JobEscrow** (per-job, Rust paid-flow) | [`0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23`](https://testnet.tonviewer.com/0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23) | open-escrow-per-job → settle; `params_version`=1 + quorum hash bound and verified on-chain |
+| Deployer / owner wallet | [`kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422`](https://testnet.tonviewer.com/kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422) | holds the Duckton receipt; funds the live runs |
+
+Reproduce the two focused live demos any time (gas-light, idempotent — each
+deploys a fresh instance):
+
+```bash
+cd ton
+acton script scripts/show_duckton.tolk --net testnet   # deploy vault + mint a visible Duckton
+acton script scripts/show_anchor.tolk  --net testnet    # anchor roots + inclusion proofs + dispute
+```
+
+> **Coverage.** Beyond the live runs above, the full scenario set is also
+> validated in Acton's **local emulator** against the real compiled contracts —
+> GlobalParams admin update/non-admin rejection/blocklist + monotonic version,
+> stake deposit, 1:1 transfer-locked receipt + Duckton TEP-64 metadata, escrow
+> settle, single- and multi-leaf anchor inclusion, and dispute (**68** emulator
+> tests, including `tests/e2e_flow.test.tolk` mirroring the whole flow across all
+> four contracts in one session). The harness is `bash -n`-clean and the
+> `ton-live` Rust paid-flow test is a no-op without testnet env.
 
 ---
 
