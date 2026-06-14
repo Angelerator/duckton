@@ -2866,11 +2866,15 @@ dependencies = [
 name = "p2p-extension"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "duckdb",
  "duckdb-loadable-macros",
  "p2p-config",
+ "p2p-node",
  "p2p-proto",
  "p2p-trust",
+ "tokio",
+ "toml",
 ]
 
 [[package]]

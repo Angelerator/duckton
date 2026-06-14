@@ -26,18 +26,21 @@
 //! the per-call [`QueryOverrides`] (named `p2p_query` params) remain the way to
 //! tweak any of the above — you only touch them when you *want* to.
 
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use p2p_config::{ConfigError, DataClassCfg, GridConfig, PreferMode, QueryOverrides};
+use p2p_proto::{Attestation, NodeId};
 use p2p_settlement::StakeRegistry;
-use p2p_transport::{NodeIdentity, QuicTransport, TransportError};
+use p2p_transport::{NodeIdentity, QuicTransport, Transport, TransportError};
 use p2p_trust::InMemoryTrustStore;
 
+use crate::admission::AdmissionController;
 use crate::coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 use crate::discovery::{Candidate, StaticDiscovery};
 use crate::engine::QueryEngine;
 use crate::planner::{DefaultPlanner, LocalExecutor, LocalOrRemotePlanner};
+use crate::worker::{Worker, WorkerParams};
 
 /// Errors from building or querying a [`Node`].
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +73,10 @@ pub enum NodeError {
 pub struct Node {
     coordinator: Coordinator,
     config: Arc<GridConfig>,
+    /// The query engine, retained so the node can also act as a host/worker
+    /// ([`Node::spawn_host`]) using the same in-process engine that backs its
+    /// free local-execution path.
+    engine: Arc<dyn QueryEngine>,
     /// Whether any grid targets (bootstrap seeds) are configured. When false the
     /// node has nowhere to dispatch, so `auto` queries run local-first for free.
     has_grid_targets: bool,
@@ -117,6 +124,9 @@ impl Node {
         // Always wire the free in-process local-execution path + planner so the
         // node can run a query locally with no grid involvement.
         let engine_version = engine.version();
+        // Retain a handle to the engine so the node can also host (worker) with
+        // the same engine; `LocalExecutor` takes its own clone for local exec.
+        let engine_for_host = Arc::clone(&engine);
         let local = LocalExecutor::new(engine, config.budget.memory_bytes, &config.planner);
         let planner: Arc<dyn LocalOrRemotePlanner> =
             Arc::new(DefaultPlanner::new(config.planner.clone()));
@@ -143,6 +153,7 @@ impl Node {
         Ok(Self {
             coordinator,
             config,
+            engine: engine_for_host,
             has_grid_targets,
             has_wallet: false,
         })
@@ -164,6 +175,38 @@ impl Node {
     /// The underlying coordinator (for advanced/grid-specific flows).
     pub fn coordinator(&self) -> &Coordinator {
         &self.coordinator
+    }
+
+    /// This node's stable identity (its requester/worker node id).
+    pub fn node_id(&self) -> &NodeId {
+        self.coordinator.local_node_id()
+    }
+
+    /// The local QUIC socket address this node is bound to (host listen addr).
+    pub fn local_addr(&self) -> Result<SocketAddr, TransportError> {
+        self.coordinator.transport().local_addr()
+    }
+
+    /// Become a **host/worker**: spawn the worker accept loop on this node's
+    /// live QUIC transport so it answers Offers/Dispatches from the grid using
+    /// the same in-process engine. Returns the task handle — drop/abort it (or
+    /// close the transport) to stop hosting.
+    ///
+    /// This is the engine behind the SQL `p2p_share` surface: a node that called
+    /// it donates resources and executes queries for others. The advertised
+    /// budget/attestation come from the resolved [`GridConfig`].
+    pub fn spawn_host(&self) -> tokio::task::JoinHandle<()> {
+        let transport = self.coordinator.transport();
+        let admission = AdmissionController::new(&self.config.budget);
+        let params = WorkerParams::from_config(&self.config);
+        let worker = Worker::new(
+            transport,
+            Arc::clone(&self.engine),
+            admission,
+            Attestation::stub_l0(),
+            params,
+        );
+        worker.spawn()
     }
 
     /// Run a query with the simplest possible contract.

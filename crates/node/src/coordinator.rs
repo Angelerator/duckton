@@ -172,6 +172,12 @@ impl Coordinator {
         self.transport.identity()
     }
 
+    /// The shared QUIC transport backing this coordinator (used to also stand up
+    /// a co-located [`crate::worker::Worker`] on the same endpoint/identity).
+    pub fn transport(&self) -> Arc<QuicTransport> {
+        Arc::clone(&self.transport)
+    }
+
     /// This node's identity as a requester (used to key its requester reputation
     /// / age for the trust-weighting mechanism). Exposed for tests/tooling.
     pub fn local_node_id(&self) -> &NodeId {

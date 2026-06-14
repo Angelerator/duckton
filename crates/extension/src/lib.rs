@@ -17,13 +17,20 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use duckdb::core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId};
+use duckdb::types::ValueRef;
 use duckdb::vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab};
 use duckdb::{duckdb_entrypoint_c_api, Connection, Result};
 
-use p2p_config::{BlockKind, BlocklistStore, ConfigStore, SettingRow};
+use p2p_config::{
+    BlockKind, BlocklistStore, ConfigStore, PaymentPref, PreferMode, QueryOverrides, SettingRow,
+    VerifyModeCfg,
+};
+use p2p_node::{EngineError, ExecLease, Node, QueryEngine};
+use p2p_proto::{ResultSet, Value as PValue};
 
 /// Rows materialized at bind time; emitted in one chunk.
 #[repr(C)]
@@ -792,6 +799,514 @@ impl VTab for BlocklistVTab {
     }
 }
 
+// ===========================================================================
+// Distributed grid surface (architecture §12.0): p2p_query / p2p_share /
+// p2p_join, bridged from SQL onto the async `p2p-node` coordinator/worker.
+//
+// The DuckDB C extension API is **synchronous**; the node is **tokio/async**.
+// We stand up ONE managed multi-thread runtime for the whole extension and
+// `block_on` node calls from inside the (synchronous) table-function callbacks.
+// The node is built lazily on first use from the SQL/runtime config layer
+// (`ConfigStore::effective`) and cached; `p2p_join` / `p2p_share` rebuild it so
+// new seeds/budget take effect on the live node.
+//
+// The node needs a `QueryEngine` for its free local-execution path. We CANNOT
+// reuse `p2p-node`'s `DuckDbEngine` here: that engine is gated behind the node's
+// `duckdb-engine` feature which *bundles* a second DuckDB, conflicting with this
+// crate's `loadable-extension` bindings. Instead `HostEngine` runs SQL through
+// the **host** DuckDB's own C API (a fresh `:memory:` connection opened via the
+// extension API), so no second engine is linked.
+// ===========================================================================
+
+/// DuckDB's standard vector size — the max rows emitted per output chunk.
+const VECTOR_SIZE: usize = 2048;
+
+/// The shared tokio runtime backing every node call (lazily created, lives for
+/// the process). Quinn's QUIC endpoint driver tasks run on its worker threads.
+fn runtime() -> &'static tokio::runtime::Runtime {
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("build tokio runtime for the p2p extension")
+    })
+}
+
+/// The lazily-built, cached requester/host node.
+fn node_cell() -> &'static Mutex<Option<Arc<Node>>> {
+    static NODE: OnceLock<Mutex<Option<Arc<Node>>>> = OnceLock::new();
+    NODE.get_or_init(|| Mutex::new(None))
+}
+
+/// Handle to the running host (worker) accept loop, if `p2p_share` was called.
+fn host_cell() -> &'static Mutex<Option<tokio::task::JoinHandle<()>>> {
+    static HOST: OnceLock<Mutex<Option<tokio::task::JoinHandle<()>>>> = OnceLock::new();
+    HOST.get_or_init(|| Mutex::new(None))
+}
+
+/// Build a fresh node from the current effective config (defaults → file → env →
+/// SQL/runtime layer). Runs inside the runtime so the QUIC endpoint can bind.
+fn build_node() -> std::result::Result<Arc<Node>, String> {
+    let cfg = ConfigStore::open().effective().map_err(|e| e.to_string())?;
+    let engine: Arc<dyn QueryEngine> = Arc::new(HostEngine::new());
+    let node = runtime()
+        .block_on(async move { Node::with_config(cfg, engine) })
+        .map_err(|e| e.to_string())?;
+    Ok(Arc::new(node))
+}
+
+/// Get the cached node, building it on first use.
+fn get_node() -> std::result::Result<Arc<Node>, String> {
+    let mut guard = node_cell().lock().unwrap();
+    if let Some(n) = guard.as_ref() {
+        return Ok(Arc::clone(n));
+    }
+    let n = build_node()?;
+    *guard = Some(Arc::clone(&n));
+    Ok(n)
+}
+
+/// Rebuild the node from (freshly persisted) config and replace the cache, so a
+/// `p2p_join` / `p2p_share` takes effect on the live node for later queries.
+fn rebuild_node() -> std::result::Result<Arc<Node>, String> {
+    let n = build_node()?;
+    *node_cell().lock().unwrap() = Some(Arc::clone(&n));
+    Ok(n)
+}
+
+/// A `QueryEngine` that executes SQL on the **host** DuckDB via its C API.
+///
+/// Each call opens a fresh in-process `:memory:` database (through the extension
+/// API the host installed at LOAD), applies a budget + minimal lockdown, runs
+/// the query and materializes a portable [`ResultSet`]. This is the free
+/// local-execution engine behind `p2p_query`'s local path (and the host engine
+/// for `p2p_share`). It runs on a blocking thread so the async runtime is not
+/// stalled.
+struct HostEngine {
+    version: String,
+}
+
+impl HostEngine {
+    fn new() -> Self {
+        let version = Connection::open_in_memory()
+            .ok()
+            .and_then(|c| {
+                c.query_row("SELECT library_version FROM pragma_version()", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .ok()
+            })
+            .map(|v| format!("duckdb-host-{v}"))
+            .unwrap_or_else(|| "duckdb-host".to_string());
+        Self { version }
+    }
+
+    fn run(sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
+        let conn = Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
+        let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
+        // Budget + defense-in-depth extension hardening (no auto-install/-load of
+        // extensions, no unsigned extensions, no network egress). Mirrors the
+        // node's locked-down local engine; local fixtures/remote reads are not
+        // opened on this free path.
+        conn.execute_batch(&format!(
+            "SET memory_limit='{mb}MB'; SET threads={}; \
+             SET autoinstall_known_extensions=false; \
+             SET autoload_known_extensions=false; \
+             SET allow_unsigned_extensions=false;",
+            lease.threads.max(1)
+        ))
+        .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
+
+        let mut stmt = conn.prepare(sql).map_err(|e| EngineError::Exec(format!("prepare: {e}")))?;
+        let mut rows = stmt.query([]).map_err(|e| EngineError::Exec(format!("query: {e}")))?;
+        let columns: Vec<String> = rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
+        let ncols = columns.len();
+        let mut out: Vec<Vec<PValue>> = Vec::new();
+        while let Some(row) = rows.next().map_err(|e| EngineError::Exec(format!("fetch: {e}")))? {
+            let mut r = Vec::with_capacity(ncols);
+            for i in 0..ncols {
+                let v = row.get_ref(i).map_err(|e| EngineError::Exec(format!("get col {i}: {e}")))?;
+                r.push(value_from_ref(v));
+            }
+            out.push(r);
+        }
+        Ok(ResultSet::new(columns, out))
+    }
+}
+
+#[async_trait::async_trait]
+impl QueryEngine for HostEngine {
+    async fn execute(&self, sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
+        let sql = sql.to_string();
+        tokio::task::spawn_blocking(move || HostEngine::run(&sql, lease))
+            .await
+            .map_err(|e| EngineError::Exec(format!("join: {e}")))?
+    }
+
+    fn version(&self) -> String {
+        self.version.clone()
+    }
+}
+
+/// Map a host DuckDB value reference into the portable [`PValue`] model.
+fn value_from_ref(v: ValueRef<'_>) -> PValue {
+    match v {
+        ValueRef::Null => PValue::Null,
+        ValueRef::Boolean(b) => PValue::Bool(b),
+        ValueRef::TinyInt(i) => PValue::Int(i as i64),
+        ValueRef::SmallInt(i) => PValue::Int(i as i64),
+        ValueRef::Int(i) => PValue::Int(i as i64),
+        ValueRef::BigInt(i) => PValue::Int(i),
+        ValueRef::HugeInt(i) => i64::try_from(i).map(PValue::Int).unwrap_or_else(|_| PValue::Text(i.to_string())),
+        ValueRef::UTinyInt(i) => PValue::Int(i as i64),
+        ValueRef::USmallInt(i) => PValue::Int(i as i64),
+        ValueRef::UInt(i) => PValue::Int(i as i64),
+        ValueRef::UBigInt(i) => i64::try_from(i).map(PValue::Int).unwrap_or_else(|_| PValue::Text(i.to_string())),
+        ValueRef::Float(f) => PValue::Float(f as f64),
+        ValueRef::Double(f) => PValue::Float(f),
+        ValueRef::Text(bytes) => PValue::Text(String::from_utf8_lossy(bytes).to_string()),
+        ValueRef::Blob(bytes) => PValue::Blob(bytes.to_vec()),
+        other => PValue::Text(format!("{other:?}")),
+    }
+}
+
+/// Render a portable value as text for the (VARCHAR) result columns. Returns
+/// `None` for SQL NULL (the caller sets the row null instead).
+fn value_to_string(v: &PValue) -> Option<String> {
+    match v {
+        PValue::Null => None,
+        PValue::Bool(b) => Some(b.to_string()),
+        PValue::Int(i) => Some(i.to_string()),
+        PValue::Float(f) => Some(f.to_string()),
+        PValue::Text(s) => Some(s.clone()),
+        PValue::Blob(b) => Some(String::from_utf8_lossy(b).to_string()),
+    }
+}
+
+/// Parse a human memory size (`'4GB'`, `'512MB'`, `'1048576'`) into bytes.
+fn parse_memory(s: &str) -> Option<u64> {
+    let s = s.trim().to_ascii_lowercase();
+    let (num, mult): (&str, u64) = if let Some(n) = s.strip_suffix("gb").or_else(|| s.strip_suffix('g')) {
+        (n, 1 << 30)
+    } else if let Some(n) = s.strip_suffix("mb").or_else(|| s.strip_suffix('m')) {
+        (n, 1 << 20)
+    } else if let Some(n) = s.strip_suffix("kb").or_else(|| s.strip_suffix('k')) {
+        (n, 1 << 10)
+    } else {
+        (s.as_str(), 1)
+    };
+    num.trim().parse::<f64>().ok().map(|x| (x * mult as f64) as u64)
+}
+
+/// Collect the per-call `p2p_query` overrides from the supplied named args.
+fn query_overrides(bind: &BindInfo) -> QueryOverrides {
+    let mut ov = QueryOverrides::default();
+    if let Some(v) = bind.get_named_parameter("replicas") {
+        ov.replicas = Some(v.to_int64().max(0) as usize);
+    }
+    if let Some(v) = bind.get_named_parameter("quorum") {
+        ov.quorum = Some(v.to_int64().max(0) as usize);
+    }
+    if let Some(v) = bind.get_named_parameter("min_trust") {
+        ov.min_trust = Some(v.to_double());
+    }
+    if let Some(v) = bind
+        .get_named_parameter("min_attest")
+        .or_else(|| bind.get_named_parameter("min_attestation"))
+    {
+        ov.min_attestation = Some(v.to_string().trim().to_uppercase());
+    }
+    if let Some(v) = bind.get_named_parameter("verify") {
+        ov.verify = match v.to_string().trim().to_ascii_lowercase().as_str() {
+            "fast" => Some(VerifyModeCfg::Fast),
+            "quorum" => Some(VerifyModeCfg::Quorum),
+            _ => None,
+        };
+    }
+    if let Some(v) = bind.get_named_parameter("prefer") {
+        ov.prefer = match v.to_string().trim().to_ascii_lowercase().as_str() {
+            "local" => Some(PreferMode::Local),
+            "remote" => Some(PreferMode::Remote),
+            "auto" => Some(PreferMode::Auto),
+            _ => None,
+        };
+    }
+    if let Some(v) = bind.get_named_parameter("payment") {
+        ov.payment = match v.to_string().trim().to_ascii_lowercase().as_str() {
+            "free" => Some(PaymentPref::Free),
+            "paid" => Some(PaymentPref::Paid),
+            "auto" => Some(PaymentPref::Auto),
+            _ => None,
+        };
+    }
+    ov
+}
+
+/// `FROM p2p_query('SELECT ...', [replicas/quorum/verify/prefer/payment/
+/// min_trust/min_attest])` — run a query on the grid (or, on the free local
+/// path, in-process), returning the result rows. Columns are emitted as VARCHAR.
+struct QueryVTab;
+
+#[repr(C)]
+struct QueryBind {
+    columns: Vec<String>,
+    rows: Vec<Vec<PValue>>,
+}
+
+#[repr(C)]
+struct QueryInit {
+    cursor: AtomicUsize,
+}
+
+impl VTab for QueryVTab {
+    type InitData = QueryInit;
+    type BindData = QueryBind;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        let sql = bind.get_parameter(0).to_string();
+        let overrides = query_overrides(bind);
+        let node = get_node().map_err(boxed)?;
+        let outcome = runtime()
+            .block_on(async { node.query(&sql, overrides).await })
+            .map_err(boxed)?;
+        let rs = outcome.result;
+        // A result must declare at least one column; synthesize one if the query
+        // produced none (it still emits zero rows).
+        let columns = if rs.columns.is_empty() {
+            vec!["result".to_string()]
+        } else {
+            rs.columns
+        };
+        for c in &columns {
+            bind.add_result_column(c, LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        }
+        Ok(QueryBind { columns, rows: rs.rows })
+    }
+
+    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        Ok(QueryInit {
+            cursor: AtomicUsize::new(0),
+        })
+    }
+
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        let init = func.get_init_data();
+        let bind = func.get_bind_data();
+        let start = init.cursor.load(Ordering::Relaxed);
+        let total = bind.rows.len();
+        if start >= total {
+            output.set_len(0);
+            return Ok(());
+        }
+        let n = (total - start).min(VECTOR_SIZE);
+        for col in 0..bind.columns.len() {
+            let mut vector = output.flat_vector(col);
+            for i in 0..n {
+                match bind.rows[start + i].get(col) {
+                    Some(PValue::Null) | None => vector.set_null(i),
+                    Some(other) => match value_to_string(other) {
+                        Some(s) => vector.insert(i, CString::new(s)?),
+                        None => vector.set_null(i),
+                    },
+                }
+            }
+        }
+        output.set_len(n);
+        init.cursor.store(start + n, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        let v = |id| LogicalTypeHandle::from(id);
+        Some(vec![
+            ("replicas".to_string(), v(LogicalTypeId::Bigint)),
+            ("quorum".to_string(), v(LogicalTypeId::Bigint)),
+            ("min_trust".to_string(), v(LogicalTypeId::Double)),
+            ("min_attest".to_string(), v(LogicalTypeId::Varchar)),
+            ("min_attestation".to_string(), v(LogicalTypeId::Varchar)),
+            ("verify".to_string(), v(LogicalTypeId::Varchar)),
+            ("prefer".to_string(), v(LogicalTypeId::Varchar)),
+            ("payment".to_string(), v(LogicalTypeId::Varchar)),
+        ])
+    }
+}
+
+/// Read a `LIST(VARCHAR)` named parameter into a `Vec<String>` (drops NULLs).
+fn list_param(bind: &BindInfo, name: &str) -> Option<Vec<String>> {
+    let val = bind.get_named_parameter(name)?;
+    let items = val.to_list()?;
+    Some(
+        items
+            .iter()
+            .filter(|v| !v.is_null())
+            .map(|v| v.to_string())
+            .collect(),
+    )
+}
+
+/// `CALL p2p_share(memory => '4GB', threads => 2, max_jobs => 3,
+/// data_classes => ['public'])` — become a host: persist the donated budget,
+/// (re)build the live node and spawn its worker accept loop so it serves the
+/// grid.
+struct ShareVTab;
+impl VTab for ShareVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let store = ConfigStore::open();
+
+        // Persist the donated budget into the runtime layer.
+        let mut pairs: Vec<(String, toml::Value)> = Vec::new();
+        if let Some(v) = bind.get_named_parameter("memory") {
+            let raw = v.to_string();
+            let bytes = parse_memory(&raw)
+                .ok_or_else(|| boxed(format!("p2p_share: could not parse memory '{raw}'")))?;
+            pairs.push(("budget.memory_bytes".into(), toml::Value::Integer(bytes as i64)));
+        }
+        if let Some(v) = bind.get_named_parameter("threads") {
+            pairs.push(("budget.threads".into(), toml::Value::Integer(v.to_int64().max(1))));
+        }
+        if let Some(v) = bind.get_named_parameter("max_jobs") {
+            pairs.push(("budget.max_jobs".into(), toml::Value::Integer(v.to_int64().max(1))));
+        }
+        if let Some(classes) = list_param(bind, "data_classes") {
+            // Validate against the known data classes before persisting.
+            for c in &classes {
+                if !matches!(c.to_ascii_lowercase().as_str(), "public" | "internal" | "sensitive") {
+                    return Err(boxed(format!(
+                        "p2p_share: unknown data class '{c}' (public|internal|sensitive)"
+                    )));
+                }
+            }
+            let arr = classes
+                .iter()
+                .map(|c| toml::Value::String(c.to_ascii_lowercase()))
+                .collect();
+            pairs.push(("budget.data_classes".into(), toml::Value::Array(arr)));
+        }
+        if !pairs.is_empty() {
+            store.set(&pairs).map_err(boxed)?;
+        }
+
+        // (Re)build the node from the new config and start hosting.
+        let node = rebuild_node().map_err(boxed)?;
+        let handle = {
+            let _g = runtime().enter();
+            node.spawn_host()
+        };
+        let mut host = host_cell().lock().unwrap();
+        if let Some(old) = host.take() {
+            old.abort();
+        }
+        *host = Some(handle);
+
+        let cfg = node.config();
+        let addr = node
+            .local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "<unbound>".into());
+        let rows = vec![
+            ["share".into(), "status".into(), "hosting".into()],
+            ["share".into(), "node_id".into(), node.node_id().as_str().to_string()],
+            ["share".into(), "listen_addr".into(), addr],
+            ["share".into(), "memory_bytes".into(), cfg.budget.memory_bytes.to_string()],
+            ["share".into(), "threads".into(), cfg.budget.threads.to_string()],
+            ["share".into(), "max_jobs".into(), cfg.budget.max_jobs.to_string()],
+            [
+                "share".into(),
+                "data_classes".into(),
+                cfg.budget
+                    .data_classes
+                    .iter()
+                    .map(|c| format!("{c:?}").to_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ],
+        ];
+        Ok(Rows3 { rows })
+    }
+
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        let list_varchar = LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Some(vec![
+            ("memory".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("threads".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint)),
+            ("max_jobs".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint)),
+            ("data_classes".to_string(), list_varchar),
+        ])
+    }
+}
+
+/// `CALL p2p_join(bootstrap => ['quic://seed:9494', ...])` — join a swarm:
+/// persist the bootstrap seeds and (re)build the live node so discovery fans out
+/// to them for subsequent `p2p_query` calls.
+struct JoinVTab;
+impl VTab for JoinVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let seeds = list_param(bind, "bootstrap").unwrap_or_default();
+        if seeds.is_empty() {
+            return Err(boxed(
+                "p2p_join: provide one or more seeds, e.g. \
+                 p2p_join(bootstrap => ['quic://seed1:9494'])",
+            ));
+        }
+        let arr = seeds.iter().cloned().map(toml::Value::String).collect();
+        ConfigStore::open()
+            .set(&[("discovery.bootstrap".into(), toml::Value::Array(arr))])
+            .map_err(boxed)?;
+
+        // Rebuild so the new seeds drive discovery on the live node.
+        let node = rebuild_node().map_err(boxed)?;
+        let cfg = node.config();
+        let mut rows = vec![
+            ["join".into(), "status".into(), "joined".into()],
+            ["join".into(), "node_id".into(), node.node_id().as_str().to_string()],
+            [
+                "join".into(),
+                "candidate_sample_size".into(),
+                cfg.discovery.candidate_sample_size.to_string(),
+            ],
+        ];
+        for s in &cfg.discovery.bootstrap {
+            rows.push(["join".into(), "bootstrap".into(), s.clone()]);
+        }
+        Ok(Rows3 { rows })
+    }
+
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        let list_varchar = LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        Some(vec![("bootstrap".to_string(), list_varchar)])
+    }
+}
+
 #[duckdb_entrypoint_c_api(ext_name = "duckdb_p2p", min_duckdb_version = "v1.0.0")]
 pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // Read-only metadata + inspection.
@@ -823,5 +1338,11 @@ pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<BlockVTab>("p2p_block")?;
     con.register_table_function::<UnblockVTab>("p2p_unblock")?;
     con.register_table_function::<BlocklistVTab>("p2p_blocklist")?;
+
+    // Distributed grid surface: run queries on the grid / locally, become a
+    // host, join a swarm. These drive the live async `p2p-node`.
+    con.register_table_function::<QueryVTab>("p2p_query")?;
+    con.register_table_function::<ShareVTab>("p2p_share")?;
+    con.register_table_function::<JoinVTab>("p2p_join")?;
     Ok(())
 }

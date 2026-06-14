@@ -5,8 +5,9 @@
 //! PATH, so `cargo test` stays green in minimal environments — but when the CLI
 //! is present (as in this dev environment) it genuinely exercises LOAD.
 
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn have(cmd: &str, arg: &str) -> bool {
     Command::new(cmd)
@@ -139,6 +140,216 @@ fn extension_loads_into_duckdb_and_runs_table_functions() {
     assert!(
         stdout2.contains("quic://seed-a:9494"),
         "p2p_peers() did not reflect P2P_CONFIG; got: {stdout2}"
+    );
+}
+
+/// The #1 audit ask: the distributed grid surface is reachable from a real
+/// `LOAD`. `FROM p2p_query('SELECT 42 AS x')` drives the live `p2p-node`
+/// coordinator down its **free local-execution** path (in-process locked-down
+/// DuckDB) and streams the rows back through SQL. Hermetic config dir ⇒ no seeds
+/// ⇒ local-first.
+#[test]
+fn extension_p2p_query_local_execution_end_to_end() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_query_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    let ext = out_ext.display().to_string();
+    let cfg_dir = tmp_dir.join("cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+
+    let run = |sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", &cfg_dir)
+            .output()
+            .expect("run duckdb p2p_query");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // Single scalar: rows come back through SQL from the grid's local path.
+    let (ok, stdout, stderr) = run("FROM p2p_query('SELECT 42 AS x');");
+    assert!(ok, "p2p_query failed: {stderr}");
+    assert_eq!(stdout, "42", "p2p_query did not return the row; got: {stdout}");
+
+    // A multi-row query materializes every row (exercises chunked emission).
+    let (ok, stdout, stderr) =
+        run("SELECT count(*) FROM p2p_query('SELECT * FROM range(5000)');");
+    assert!(ok, "p2p_query range failed: {stderr}");
+    assert_eq!(stdout, "5000", "p2p_query lost rows; got: {stdout}");
+
+    // Grid path: pinning `prefer => 'remote'` with no reachable hosts surfaces
+    // the friendly NoCandidates error (proving dispatch is wired, not faked).
+    let (ok, _o, stderr) = run("FROM p2p_query('SELECT 1', prefer => 'remote');");
+    assert!(!ok, "remote with no hosts should fail");
+    assert!(
+        stderr.to_lowercase().contains("no hosts available"),
+        "expected NoCandidates message; got: {stderr}"
+    );
+}
+
+/// The host/swarm surface is callable from SQL and drives the live node:
+/// `p2p_join` persists seeds + rebuilds discovery; `p2p_share` persists the
+/// donated budget and spawns the worker accept loop (the node binds a real
+/// listen address). Hermetic config dir.
+#[test]
+fn extension_p2p_share_and_join_callable() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_grid_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    let ext = out_ext.display().to_string();
+
+    let run = |cfg_dir: &PathBuf, sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", cfg_dir)
+            .output()
+            .expect("run duckdb grid");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // p2p_join persists the seed and reports it back from the live node.
+    let dj = tmp_dir.join("join");
+    let _ = std::fs::remove_dir_all(&dj);
+    let (ok, stdout, stderr) =
+        run(&dj, "SELECT value FROM p2p_join(bootstrap => ['quic://127.0.0.1:9494']) WHERE key='bootstrap';");
+    assert!(ok, "p2p_join failed: {stderr}");
+    assert_eq!(stdout, "quic://127.0.0.1:9494", "join did not reflect seed; got: {stdout}");
+    // It persisted to the runtime layer.
+    let runtime = std::fs::read_to_string(dj.join("runtime.toml")).unwrap_or_default();
+    assert!(runtime.contains("9494"), "seed must persist to runtime.toml; got: {runtime}");
+
+    // p2p_share makes the node a host: it binds a real listen address and
+    // reports the donated budget.
+    let ds = tmp_dir.join("share");
+    let _ = std::fs::remove_dir_all(&ds);
+    let (ok, stdout, stderr) = run(
+        &ds,
+        "SELECT value FROM p2p_share(memory => '2GB', threads => 2, max_jobs => 3, \
+         data_classes => ['public']) WHERE key='memory_bytes';",
+    );
+    assert!(ok, "p2p_share failed: {stderr}");
+    assert_eq!(stdout, (2u64 << 30).to_string(), "share budget not applied; got: {stdout}");
+    let (ok, stdout, _e) = run(&ds, "SELECT value FROM p2p_share() WHERE key='status';");
+    assert!(ok);
+    assert_eq!(stdout, "hosting", "node should be hosting after p2p_share");
+}
+
+/// Full distributed grid over SQL across **two real processes**: one `duckdb`
+/// process becomes a host (`p2p_share`, bound to a fixed loopback port) and
+/// stays alive; a second process `p2p_join`s it and runs
+/// `FROM p2p_query(..., prefer => 'remote')`, which dispatches the query to the
+/// host over QUIC, runs it there, and streams the verified result back — all
+/// driven from SQL. Proves the grid path, not just local execution.
+#[test]
+fn extension_two_node_grid_query_over_sql() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_two_node_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    let ext = out_ext.display().to_string();
+
+    let host_dir = tmp_dir.join("host");
+    let req_dir = tmp_dir.join("req");
+    let _ = std::fs::remove_dir_all(&host_dir);
+    let _ = std::fs::remove_dir_all(&req_dir);
+    let port = 28494; // fixed loopback port so the requester knows where to dial
+
+    // Spawn the host: LOAD + p2p_share, then keep its stdin open so the process
+    // (and its worker accept loop) stays alive while we query it.
+    let mut host = Command::new("duckdb")
+        .arg("-unsigned")
+        .env("P2P_BIND_ADDR", format!("127.0.0.1:{port}"))
+        .env("P2P_CONFIG_DIR", &host_dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn host duckdb");
+    let mut host_stdin = host.stdin.take().expect("host stdin");
+    writeln!(
+        host_stdin,
+        "LOAD '{ext}'; CALL p2p_share(memory => '1GB', threads => 1, max_jobs => 2);"
+    )
+    .expect("write host SQL");
+    host_stdin.flush().ok();
+
+    // Give the host a moment to bind its endpoint and start serving, then query
+    // it from a separate requester process (a few attempts to absorb startup).
+    let req_sql = format!(
+        "LOAD '{ext}'; CALL p2p_join(bootstrap => ['quic://127.0.0.1:{port}']); \
+         SELECT x FROM p2p_query('SELECT 42 AS x', prefer => 'remote', replicas => 1, \
+         quorum => 1, min_trust => 0.0);"
+    );
+    let mut got = String::new();
+    let mut last_err = String::new();
+    for attempt in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(if attempt == 0 { 1500 } else { 800 }));
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &req_sql])
+            .env("P2P_CONFIG_DIR", &req_dir)
+            .output()
+            .expect("run requester");
+        let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        last_err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if out.status.success() && stdout.contains("42") {
+            got = stdout;
+            break;
+        }
+    }
+
+    // Tear the host down regardless of outcome.
+    drop(host_stdin);
+    let _ = host.kill();
+    let _ = host.wait();
+
+    assert!(
+        got.contains("42"),
+        "two-node grid query over SQL did not return the remote result; last stderr: {last_err}"
     );
 }
 
