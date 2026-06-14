@@ -15,7 +15,7 @@
 //! Resolution is pure (no network), so it is unit-tested in the default build;
 //! the actual HTTP hop lives behind the `ton-live` feature.
 
-use p2p_config::EconomicsConfig;
+use p2p_config::{EconomicsConfig, SchedulerConfig};
 
 use crate::ton::GlobalParams;
 use crate::types::{Amount, SettleError, WalletAddress};
@@ -87,11 +87,21 @@ pub fn resolve_ton_wiring(econ: &EconomicsConfig) -> Result<TonWiring, SettleErr
 
 impl GlobalParams {
     /// Derive the on-chain economic params from `[economics]` (the single source
-    /// of truth). Whole-TON stake amounts become nanoton; percentage/fraction
-    /// knobs become basis points. New escrow/stake instances are parameterized
-    /// from this, identically to what the admin pushes on-chain via
-    /// `update_params`.
+    /// of truth) using **default** resilience gating. Prefer
+    /// [`GlobalParams::from_config_parts`] when the node's `[scheduler]` is
+    /// available so the resilience fairness fields reflect the real config.
     pub fn from_economics(econ: &EconomicsConfig) -> Self {
+        Self::from_config_parts(econ, &SchedulerConfig::default())
+    }
+
+    /// Derive the full on-chain param set from `[economics]` + `[scheduler]`
+    /// (the single source of truth). Whole-TON stake amounts become nanoton;
+    /// percentage/fraction knobs become basis points; the resilience fairness
+    /// gating (failed-commitment slash, attempt deadline, progress interval +
+    /// stall multiplier) is sourced from `[scheduler]` and
+    /// `[economics.slashing]`. New escrow/stake instances are parameterized from
+    /// this, identically to what the admin pushes on-chain via `update_params`.
+    pub fn from_config_parts(econ: &EconomicsConfig, sched: &SchedulerConfig) -> Self {
         let bps = |x: f64| (x * 10_000.0).round().clamp(0.0, 65_535.0) as u16;
         let ton = |whole: u64| (whole as Amount) * NANOTON_PER_TON;
         let s = &econ.slashing;
@@ -127,6 +137,12 @@ impl GlobalParams {
             w_quality_bps: bps(r.w_quality),
             w_stake_bps: bps(r.w_stake),
             w_price_bps: bps(r.w_price),
+            // Resilience / fairness gating: the failed-commitment slash is an
+            // economics value; the deadline/stall knobs come from [scheduler].
+            slash_failed_commitment_bps: bps(s.slash_failed_commitment_pct),
+            attempt_deadline_ms: sched.attempt_deadline_ms.min(u32::MAX as u64) as u32,
+            progress_interval_ms: sched.progress_interval_ms.max(1).min(u32::MAX as u64) as u32,
+            progress_stall_mult: sched.progress_stall_multiplier.max(1).min(u8::MAX as u32) as u8,
         }
     }
 }
@@ -208,5 +224,28 @@ mod tests {
         assert_eq!(p.platform_fee_bps, 200); // 0.02 -> 200 bps
         assert_eq!(p.split_challenger_bps, 4000);
         assert_eq!(p.min_stake_internal, 100 * NANOTON_PER_TON);
+        // Resilience fields default-derived (from SchedulerConfig::default()).
+        assert_eq!(p.slash_failed_commitment_bps, 1000); // 0.1 -> 1000 bps
+        assert_eq!(p.attempt_deadline_ms, 60_000);
+        assert_eq!(p.progress_interval_ms, 2_000);
+        assert_eq!(p.progress_stall_mult, 5);
+    }
+
+    #[test]
+    fn from_config_parts_sources_resilience_gating_from_scheduler() {
+        use p2p_config::SchedulerConfig;
+        let mut e = EconomicsConfig::default();
+        e.slashing.slash_failed_commitment_pct = 0.25;
+        let mut sched = SchedulerConfig::default();
+        sched.attempt_deadline_ms = 90_000;
+        sched.progress_interval_ms = 3_000;
+        sched.progress_stall_multiplier = 4;
+        let p = GlobalParams::from_config_parts(&e, &sched);
+        p.validate().expect("derived params valid");
+        // The on-chain fairness gating reflects the node's [scheduler] config.
+        assert_eq!(p.slash_failed_commitment_bps, 2500);
+        assert_eq!(p.attempt_deadline_ms, 90_000);
+        assert_eq!(p.progress_interval_ms, 3_000);
+        assert_eq!(p.progress_stall_mult, 4);
     }
 }

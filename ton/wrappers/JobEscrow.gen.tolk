@@ -117,3 +117,7 @@ fun JobEscrow.getRequester(self): address {
 fun JobEscrow.getExpectedHash(self): int {
     return net.runGetMethod(self.address, "get_expected_hash");
 }
+
+fun JobEscrow.getParamsVersion(self): int {
+    return net.runGetMethod(self.address, "get_params_version");
+}

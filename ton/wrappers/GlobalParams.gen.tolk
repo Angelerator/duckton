@@ -114,6 +114,34 @@ fun GlobalParams.getParams(self): GlobalParamsView {
     return net.runGetMethod(self.address, "get_params");
 }
 
+fun GlobalParams.getParamsVersion(self): int {
+    return net.runGetMethod(self.address, "get_params_version");
+}
+
+fun GlobalParams.getPlatformFeeBps(self): int {
+    return net.runGetMethod(self.address, "get_platform_fee_bps");
+}
+
+fun GlobalParams.getParticipationCommissionBps(self): int {
+    return net.runGetMethod(self.address, "get_participation_commission_bps");
+}
+
+fun GlobalParams.getSlashFailedCommitmentBps(self): int {
+    return net.runGetMethod(self.address, "get_slash_failed_commitment_bps");
+}
+
+fun GlobalParams.getAttemptDeadlineMs(self): int {
+    return net.runGetMethod(self.address, "get_attempt_deadline_ms");
+}
+
+fun GlobalParams.getProgressIntervalMs(self): int {
+    return net.runGetMethod(self.address, "get_progress_interval_ms");
+}
+
+fun GlobalParams.getProgressStallMult(self): int {
+    return net.runGetMethod(self.address, "get_progress_stall_mult");
+}
+
 fun GlobalParams.getAdmin(self): address {
     return net.runGetMethod(self.address, "get_admin");
 }

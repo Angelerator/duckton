@@ -38,13 +38,18 @@ fun onInternalMessage(in: InMessage) {
 
             storage.feeRecipient = msg.feeRecipient;
             storage.params = msg.params;
+            // Monotonic bump on EVERY successful update so jobs can pin the
+            // exact params set in force. The admin never controls this counter.
+            storage.paramsVersion += 1;
             storage.save();
 
-            // Emit a "params updated" event for off-chain indexers.
+            // Emit a "params updated" event for off-chain indexers, carrying the
+            // new version so they can track which params set is now live.
             val ev = createExternalLogMessage({
                 dest: ExtOutLogBucket { topic: EVENT_PARAMS_UPDATED },
                 body: ParamsUpdated {
                     queryId: msg.queryId,
+                    version: storage.paramsVersion,
                     platformFeeBps: newParams.platformFeeBps,
                     minStake: newParams.minStake,
                 },
@@ -85,7 +90,43 @@ get fun get_params(): GlobalParamsView {
         admin: storage.admin,
         feeRecipient: storage.feeRecipient,
         params: storage.params,
+        paramsVersion: storage.paramsVersion,
     };
+}
+
+// Monotonic params version/seqno — the single authoritative value a job binds
+// to so all parties agree which params it ran under. Read cheaply via RPC
+// (the off-chain coordinator pins this into each job record / escrow).
+get fun get_params_version(): int {
+    val storage = lazy GlobalParamsStorage.load();
+    return storage.paramsVersion;
+}
+
+// Scalar policy getters (single-int read path for the off-chain `run_get_int`
+// RPC seam): the ecosystem-wide values paid jobs read as authoritative,
+// overriding local defaults. Each loads the child `EcoParams` cell.
+get fun get_platform_fee_bps(): int {
+    return GlobalParamsStorage.load().params.load().platformFeeBps;
+}
+
+get fun get_participation_commission_bps(): int {
+    return GlobalParamsStorage.load().params.load().participationCommissionBps;
+}
+
+get fun get_slash_failed_commitment_bps(): int {
+    return GlobalParamsStorage.load().params.load().slashFailedCommitmentBps;
+}
+
+get fun get_attempt_deadline_ms(): int {
+    return GlobalParamsStorage.load().params.load().attemptDeadlineMs;
+}
+
+get fun get_progress_interval_ms(): int {
+    return GlobalParamsStorage.load().params.load().progressIntervalMs;
+}
+
+get fun get_progress_stall_mult(): int {
+    return GlobalParamsStorage.load().params.load().progressStallMult;
 }
 
 get fun get_admin(): address {

@@ -248,6 +248,12 @@ pub struct JobRecord {
     pub result_hash: String,
     pub epoch: u64,
     pub prev_root: Hash32,
+    /// The on-chain `GlobalParams` version/seqno in force when the job ran. Bound
+    /// into the anchored record (folded into its Merkle leaf) so settlement and
+    /// dispute resolution reference the EXACT ecosystem params that governed the
+    /// job — all parties (host, requester, coordinator) agree. `0` = unbound
+    /// (free/legacy jobs, or no `GlobalParams` wired); fully additive.
+    pub params_version: u32,
 }
 
 impl JobRecord {
@@ -265,6 +271,10 @@ impl JobRecord {
         field(self.result_hash.as_bytes(), &mut out);
         out.extend_from_slice(&self.epoch.to_le_bytes());
         out.extend_from_slice(&self.prev_root);
+        // Bind the on-chain params version into the leaf (appended last so a
+        // `params_version == 0` record matches the legacy encoding only in value,
+        // not length — disputes commit to the exact params set in force).
+        out.extend_from_slice(&self.params_version.to_le_bytes());
         out
     }
 
@@ -298,6 +308,41 @@ pub enum SlashError {
     ExceedsStake { amount: Amount, slashable: Amount },
     #[error("stake backend error: {0}")]
     Backend(String),
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::JobRecord;
+
+    fn record(params_version: u32) -> JobRecord {
+        JobRecord {
+            job_id: "job-1".into(),
+            query_hash: "qh".into(),
+            requester_wallet: "0:00".into(),
+            max_bid: 1_000,
+            result_hash: "rh".into(),
+            epoch: 3,
+            prev_root: [0u8; 32],
+            params_version,
+        }
+    }
+
+    #[test]
+    fn params_version_is_bound_into_the_record_leaf() {
+        // Two records identical except for the bound params version must hash to
+        // DIFFERENT leaves — so the anchored record commits to the exact params
+        // set in force and a dispute can't be replayed under different policy.
+        let a = record(1);
+        let b = record(2);
+        assert_ne!(a.canonical_bytes(), b.canonical_bytes());
+        assert_ne!(a.leaf(), b.leaf());
+        // Deterministic for a fixed version.
+        assert_eq!(record(1).leaf(), record(1).leaf());
+        // The version is the trailing 4 bytes (LE) of the canonical encoding.
+        let bytes = record(0x0102_0304).canonical_bytes();
+        let tail = &bytes[bytes.len() - 4..];
+        assert_eq!(tail, &0x0102_0304u32.to_le_bytes());
+    }
 }
 
 #[cfg(test)]

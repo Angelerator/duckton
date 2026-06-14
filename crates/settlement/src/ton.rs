@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use p2p_config::DataClassCfg;
+use p2p_config::{DataClassCfg, EconomicsConfig, SchedulerConfig};
 use p2p_proto::{JobId, NodeId};
 
 use crate::cell::{
@@ -254,9 +254,22 @@ pub struct GlobalParams {
     pub n_max: u8,
     pub quorum: u8,
     pub checksum_min: u8,
-    pub w_quality_bps: u16,
+    pub     w_quality_bps: u16,
     pub w_stake_bps: u16,
     pub w_price_bps: u16,
+    /// --- Resilience / fairness gating (ARCHITECTURE §8/§11) ---------------
+    /// Failed-commitment slash (bps of bonded stake): the fine for accepting a
+    /// PAID job and not delivering a valid result by the deadline while it was
+    /// feasible (§8.3). On-chain so disputes reference one agreed value.
+    pub slash_failed_commitment_bps: u16,
+    /// Requester per-attempt deadline (ms): the boundary between an
+    /// inconclusive attempt (job-fault, no penalty) and a broken commitment.
+    pub attempt_deadline_ms: u32,
+    /// Expected progress/heartbeat interval (ms) the host streams at.
+    pub progress_interval_ms: u32,
+    /// Stall-timeout multiplier (× `progress_interval_ms`) before an attempt is
+    /// declared stalled.
+    pub progress_stall_mult: u8,
 }
 
 impl GlobalParams {
@@ -294,6 +307,17 @@ impl GlobalParams {
         }
         if self.quorum < 1 || self.quorum > self.n_default {
             return Err("require 1 <= quorum <= n_default".into());
+        }
+        // Resilience gating mirrors `validateEcoParams`: the failed-commitment
+        // slash is a stake fraction, and the stall timeout must be well-defined.
+        if self.slash_failed_commitment_bps > 10_000 {
+            return Err("slash_failed_commitment_bps must be <= 10000".into());
+        }
+        if self.progress_interval_ms < 1 {
+            return Err("progress_interval_ms must be >= 1".into());
+        }
+        if self.progress_stall_mult < 1 {
+            return Err("progress_stall_mult must be >= 1".into());
         }
         Ok(())
     }
@@ -366,12 +390,111 @@ fn eco_params_encoded(p: &GlobalParams) -> (Vec<u8>, Cell) {
     u16f!(p.w_quality_bps);
     u16f!(p.w_stake_bps);
     u16f!(p.w_price_bps);
+    // Resilience / fairness gating (appended last, mirroring the Tolk struct).
+    u16f!(p.slash_failed_commitment_bps);
+    u32f!(p.attempt_deadline_ms);
+    u32f!(p.progress_interval_ms);
+    bytef!(p.progress_stall_mult);
     (bytes, cb.build())
 }
 
 /// Build the `UpdateAdmin` body (admin rotation → multisig).
 pub fn build_update_admin(query_id: u64, new_admin: &WalletAddress) -> MessageBody {
     MessageBody::new(OP_UPDATE_ADMIN).u64(query_id).addr(new_admin).finish()
+}
+
+/// The authoritative ecosystem-wide policy read back from the on-chain
+/// `GlobalParams` contract (BLOCKCHAIN_ECONOMICS §12). It is the **single source
+/// of truth** for paid jobs: the monotonic `version` is what a job binds to, and
+/// the values override local config defaults so all parties price/penalize a
+/// paid job by the same on-chain policy.
+///
+/// Only the subset that paid jobs and dispute resolution actually consume is
+/// read here (over the single-int `run_get_int` RPC seam) — the full param set
+/// is the contract's `get_params` cell (parsed by the `ton-live` harness).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OnchainPolicy {
+    /// Monotonic params version/seqno (`get_params_version`) — the value bound
+    /// into each job record / escrow so settlement references exact params.
+    pub version: u32,
+    pub platform_fee_bps: u16,
+    pub participation_commission_bps: u16,
+    pub slash_failed_commitment_bps: u16,
+    pub attempt_deadline_ms: u32,
+    pub progress_interval_ms: u32,
+    pub progress_stall_mult: u8,
+}
+
+impl OnchainPolicy {
+    /// Overlay this on-chain policy onto the local config layers as the
+    /// AUTHORITATIVE layer for paid jobs (on-chain policy wins over local
+    /// defaults). Economic fractions land in `[economics]`; the resilience
+    /// fairness gating lands in `[scheduler]`. Node-local-only knobs (host
+    /// `job_timeout_ms`, retry budgets, liveness) are deliberately untouched.
+    pub fn apply_to(&self, econ: &mut EconomicsConfig, sched: &mut SchedulerConfig) {
+        let frac = |bps: u16| bps as f64 / 10_000.0;
+        econ.fees.platform_fee_pct = frac(self.platform_fee_bps);
+        econ.fees.participation_commission_frac = frac(self.participation_commission_bps);
+        econ.slashing.slash_failed_commitment_pct = frac(self.slash_failed_commitment_bps);
+        sched.attempt_deadline_ms = self.attempt_deadline_ms as u64;
+        sched.progress_interval_ms = self.progress_interval_ms as u64;
+        sched.progress_stall_multiplier = self.progress_stall_mult.max(1) as u32;
+    }
+}
+
+/// Read-only client for the on-chain `GlobalParams` contract. Resolves the
+/// authoritative ecosystem policy (version + the values paid jobs read) over the
+/// existing [`TonRpc`] get-method seam, so on-chain policy can be synced into the
+/// config layering (or polled periodically) without any write path.
+pub struct GlobalParamsClient<R: TonRpc> {
+    rpc: R,
+    address: WalletAddress,
+}
+
+impl<R: TonRpc> GlobalParamsClient<R> {
+    /// Bind to the (stable, hard-pinnable) deployed `GlobalParams` address.
+    pub fn new(rpc: R, address: WalletAddress) -> Self {
+        Self { rpc, address }
+    }
+
+    /// The monotonic params version/seqno (`get_params_version`). This is the
+    /// value the coordinator pins into each paid job's record / escrow so all
+    /// parties agree which params the job ran under.
+    pub fn params_version(&self) -> Result<u32, SettleError> {
+        let v = self.rpc.run_get_int(&self.address, "get_params_version")?;
+        Ok(v.max(0) as u32)
+    }
+
+    /// Read the authoritative ecosystem policy (version + the values paid jobs
+    /// consume) via the contract's scalar get-methods.
+    pub fn read_policy(&self) -> Result<OnchainPolicy, SettleError> {
+        let int = |m: &str| self.rpc.run_get_int(&self.address, m);
+        let u16c = |v: i128| v.clamp(0, u16::MAX as i128) as u16;
+        let u32c = |v: i128| v.clamp(0, u32::MAX as i128) as u32;
+        let u8c = |v: i128| v.clamp(0, u8::MAX as i128) as u8;
+        Ok(OnchainPolicy {
+            version: u32c(int("get_params_version")?),
+            platform_fee_bps: u16c(int("get_platform_fee_bps")?),
+            participation_commission_bps: u16c(int("get_participation_commission_bps")?),
+            slash_failed_commitment_bps: u16c(int("get_slash_failed_commitment_bps")?),
+            attempt_deadline_ms: u32c(int("get_attempt_deadline_ms")?),
+            progress_interval_ms: u32c(int("get_progress_interval_ms")?),
+            progress_stall_mult: u8c(int("get_progress_stall_mult")?),
+        })
+    }
+
+    /// Read the on-chain policy and overlay it onto the config layers as the
+    /// authoritative layer (returns the policy that was applied). Call this at
+    /// startup or on a periodic sync so paid jobs follow on-chain policy.
+    pub fn sync_into(
+        &self,
+        econ: &mut EconomicsConfig,
+        sched: &mut SchedulerConfig,
+    ) -> Result<OnchainPolicy, SettleError> {
+        let policy = self.read_policy()?;
+        policy.apply_to(econ, sched);
+        Ok(policy)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -423,12 +546,20 @@ pub struct EscrowInit {
 }
 
 /// Build the per-job `EscrowTerms` child cell (mirrors `escrow_types.tolk`:
-/// `treasury: address, expectedHash: uint256`). `expected_hash` is the HTLC lock
-/// — settle must later present exactly this agreed quorum result hash. This is
-/// the `terms` cell fed to [`TonSettlement::with_escrow_code`] / address
-/// derivation, so the per-job escrow address commits to the lock up front.
-pub fn build_escrow_terms(treasury: &WalletAddress, expected_hash: &[u8; 32]) -> Cell {
-    CellBuilder::new().store_address(treasury).store_u256(expected_hash).build()
+/// `treasury: address, expectedHash: uint256, paramsVersion: uint32`).
+/// `expected_hash` is the HTLC lock — settle must later present exactly this
+/// agreed quorum result hash. `params_version` is the on-chain `GlobalParams`
+/// version in force when the job opened, bound into the terms (hence into the
+/// escrow's deterministic address) so the host, requester and coordinator all
+/// agree which ecosystem params governed the job. This is the `terms` cell fed
+/// to [`TonSettlement::with_escrow_code`] / address derivation, so the per-job
+/// escrow address commits to both the lock and the params version up front.
+pub fn build_escrow_terms(treasury: &WalletAddress, expected_hash: &[u8; 32], params_version: u32) -> Cell {
+    CellBuilder::new()
+        .store_address(treasury)
+        .store_u256(expected_hash)
+        .store_uint(params_version as u128, 32)
+        .build()
 }
 
 /// Decode a contract **code** cell from a base64 BoC — e.g. the `code_boc64`
@@ -928,6 +1059,10 @@ mod tests {
             w_quality_bps: 6000,
             w_stake_bps: 1500,
             w_price_bps: 2500,
+            slash_failed_commitment_bps: 1000,
+            attempt_deadline_ms: 60_000,
+            progress_interval_ms: 2_000,
+            progress_stall_mult: 5,
         }
     }
 
@@ -938,7 +1073,8 @@ mod tests {
         assert_eq!(b.opcode, OP_UPDATE_PARAMS);
         assert_eq!(&b.bytes[0..4], &OP_UPDATE_PARAMS.to_be_bytes());
         // opcode(4)+queryId(8)+addr(36)+11*u16(22)+4*coins(64)+2*u32(8)+5*u8(5)+3*u16(6)
-        assert_eq!(b.bytes.len(), 4 + 8 + 36 + 22 + 64 + 8 + 5 + 6);
+        // + resilience: u16(2)+u32(4)+u32(4)+u8(1) = 11 more bytes.
+        assert_eq!(b.bytes.len(), 4 + 8 + 36 + 22 + 64 + 8 + 5 + 6 + (2 + 4 + 4 + 1));
         sample_params().validate().unwrap();
     }
 
@@ -1059,14 +1195,15 @@ mod tests {
 
     #[test]
     fn escrow_terms_cell_layout() {
-        // EscrowTerms = treasury(addr 267) + expectedHash(uint256). The expected
-        // hash round-trips and the address parses back out.
+        // EscrowTerms = treasury(addr 267) + expectedHash(uint256) +
+        // paramsVersion(uint32). All three round-trip in field order.
         let treasury = WalletAddress::new(0, [0x7eu8; 32]);
         let expected = [0xABu8; 32];
-        let terms = build_escrow_terms(&treasury, &expected);
+        let terms = build_escrow_terms(&treasury, &expected, 7);
         let mut p = terms.parser();
         assert_eq!(p.load_address(), Some(treasury));
         assert_eq!(p.load_bits(256).unwrap(), expected.to_vec());
+        assert_eq!(p.load_uint(32).unwrap(), 7);
     }
 
     /// Recording fake transport for unit tests (no network).
@@ -1095,6 +1232,56 @@ mod tests {
             platform_fee: 2,
         };
         assert!(s.settle(&h, &outcome).is_ok());
+    }
+
+    /// RPC fake that answers `run_get_int` from a fixed method→value table, so
+    /// the `GlobalParamsClient` read path is exercised with no network.
+    struct GetMethodRpc {
+        values: HashMap<String, i128>,
+    }
+    impl TonRpc for GetMethodRpc {
+        fn send_internal(&self, _to: &WalletAddress, _amount: Amount, _body: &MessageBody) -> Result<String, SettleError> {
+            Ok("ok".into())
+        }
+        fn run_get_int(&self, _addr: &WalletAddress, method: &str) -> Result<i128, SettleError> {
+            self.values
+                .get(method)
+                .copied()
+                .ok_or_else(|| SettleError::Backend(format!("no value for {method}")))
+        }
+    }
+
+    #[test]
+    fn global_params_client_reads_version_and_policy() {
+        let mut values = HashMap::new();
+        values.insert("get_params_version".to_string(), 7i128);
+        values.insert("get_platform_fee_bps".to_string(), 250);
+        values.insert("get_participation_commission_bps".to_string(), 150);
+        values.insert("get_slash_failed_commitment_bps".to_string(), 2000);
+        values.insert("get_attempt_deadline_ms".to_string(), 90_000);
+        values.insert("get_progress_interval_ms".to_string(), 3_000);
+        values.insert("get_progress_stall_mult".to_string(), 4);
+        let client = GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xAB; 32]));
+
+        assert_eq!(client.params_version().unwrap(), 7);
+        let p = client.read_policy().unwrap();
+        assert_eq!(p.version, 7);
+        assert_eq!(p.platform_fee_bps, 250);
+        assert_eq!(p.slash_failed_commitment_bps, 2000);
+        assert_eq!(p.attempt_deadline_ms, 90_000);
+        assert_eq!(p.progress_stall_mult, 4);
+
+        // Overlay onto config as the authoritative layer for paid jobs.
+        let mut econ = p2p_config::EconomicsConfig::default();
+        let mut sched = p2p_config::SchedulerConfig::default();
+        let applied = client.sync_into(&mut econ, &mut sched).unwrap();
+        assert_eq!(applied.version, 7);
+        assert!((econ.fees.platform_fee_pct - 0.025).abs() < 1e-9);
+        assert!((econ.fees.participation_commission_frac - 0.015).abs() < 1e-9);
+        assert!((econ.slashing.slash_failed_commitment_pct - 0.2).abs() < 1e-9);
+        assert_eq!(sched.attempt_deadline_ms, 90_000);
+        assert_eq!(sched.progress_interval_ms, 3_000);
+        assert_eq!(sched.progress_stall_multiplier, 4);
     }
 
     #[test]
@@ -1241,6 +1428,7 @@ mod tests {
             result_hash: "r".into(),
             epoch: 1,
             prev_root: [0u8; 32],
+            params_version: 0,
         });
         anchor.submit_root(1, 500).unwrap();
 

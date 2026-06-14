@@ -48,6 +48,11 @@ fun main() {
         wQualityBps: (env<int>("GP_W_QUALITY_BPS") ?? 6000) as uint16,
         wStakeBps: (env<int>("GP_W_STAKE_BPS") ?? 1500) as uint16,
         wPriceBps: (env<int>("GP_W_PRICE_BPS") ?? 2500) as uint16,
+        // Resilience / fairness gating (ARCHITECTURE §8/§11).
+        slashFailedCommitmentBps: (env<int>("GP_SLASH_FAILED_COMMITMENT_BPS") ?? 1000) as uint16,
+        attemptDeadlineMs: (env<int>("GP_ATTEMPT_DEADLINE_MS") ?? 60000) as uint32,
+        progressIntervalMs: (env<int>("GP_PROGRESS_INTERVAL_MS") ?? 2000) as uint32,
+        progressStallMult: (env<int>("GP_PROGRESS_STALL_MULT") ?? 5) as uint8,
     };
 
     val storage: GlobalParamsStorage = {
@@ -55,6 +60,8 @@ fun main() {
         feeRecipient: feeRecipient,
         params: params.toCell(),
         blocklist: createEmptyMap(),
+        // Fresh deploy starts at version 1; every `update_params` bumps it.
+        paramsVersion: 1,
     };
 
     val gp = GlobalParams.fromStorage(storage);

@@ -202,6 +202,7 @@ mod tests {
             result_hash: format!("r{i}"),
             epoch: 7,
             prev_root: [9u8; 32],
+            params_version: 0,
         };
 
         for count in [4usize, 5, 6, 7, 8] {

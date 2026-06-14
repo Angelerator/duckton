@@ -312,6 +312,7 @@ async fn paid_job_settles_split_and_anchors_record() {
             result_hash: "other".into(),
             epoch: 1,
             prev_root: [0u8; 32],
+            params_version: 0,
         });
     }
     anchor.append(&JobRecord {
@@ -322,6 +323,7 @@ async fn paid_job_settles_split_and_anchors_record() {
         result_hash: agreed.clone(),
         epoch: 1,
         prev_root: [0u8; 32],
+        params_version: 0,
     });
     let root = anchor.epoch_root();
     let proof = anchor.prove_inclusion(&outcome.job_id).expect("anchored record proves inclusion");

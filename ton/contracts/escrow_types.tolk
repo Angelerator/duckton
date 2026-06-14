@@ -16,6 +16,11 @@ const OP_ESCROW_TOPUP = 0x4553_4300
 struct EscrowTerms {
     treasury: address     // platform-fee recipient
     expectedHash: uint256 // HTLC lock: settle must present this quorum result hash
+    // GlobalParams version/seqno in force when this job was opened. Bound into
+    // the escrow's terms (hence its deterministic address) so the host,
+    // requester and coordinator all agree which ecosystem params governed the
+    // job at settlement / dispute time. Appended last → additive layout.
+    paramsVersion: uint32
 }
 
 struct EscrowStorage {
@@ -59,4 +64,5 @@ struct EscrowState {
     escrowAmount: coins
     deadline: uint32
     settled: bool
+    paramsVersion: uint32
 }

@@ -118,7 +118,15 @@ get fun get_escrow_state(): EscrowState {
         escrowAmount: storage.escrowAmount,
         deadline: storage.deadline,
         settled: storage.settled,
+        paramsVersion: storage.terms.load().paramsVersion,
     };
+}
+
+// The GlobalParams version this job was opened under (bound into terms), so
+// settlement / dispute resolution references the exact params in force.
+get fun get_params_version(): int {
+    val storage = lazy EscrowStorage.load();
+    return storage.terms.load().paramsVersion;
 }
 
 get fun get_requester(): address {

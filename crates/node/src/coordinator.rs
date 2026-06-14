@@ -200,6 +200,12 @@ pub struct Coordinator {
     /// Latest streamed progress per job (resilience §11) — exposed for a status
     /// surface and used to reset the stall timer during commit collection.
     progress: Arc<ProgressTracker>,
+    /// On-chain `GlobalParams` version/seqno in force, bound into each settled
+    /// paid job's anchored record so all parties agree which ecosystem params
+    /// governed the job (BLOCKCHAIN_ECONOMICS §12). `0` (default) = unbound (no
+    /// `GlobalParams` synced); set via [`Coordinator::with_params_version`] from
+    /// the `GlobalParamsClient` read path.
+    params_version: u32,
 }
 
 /// One worker that committed a result hash and whose decision stream is open.
@@ -235,7 +241,19 @@ impl Coordinator {
             blocklist: None,
             liveness: None,
             progress: Arc::new(ProgressTracker::new()),
+            params_version: 0,
         }
+    }
+
+    /// Bind the on-chain `GlobalParams` version/seqno (BLOCKCHAIN_ECONOMICS §12)
+    /// that paid jobs run under. Read from the chain via
+    /// [`p2p_settlement::GlobalParamsClient`] (startup or periodic sync) and
+    /// stamped into every settled paid job's anchored record, so settlement and
+    /// dispute resolution reference the exact params in force. `0` (default) =
+    /// unbound; free jobs never anchor a record regardless.
+    pub fn with_params_version(mut self, version: u32) -> Self {
+        self.params_version = version;
+        self
     }
 
     /// Wire a liveness view (phi-accrual + SWIM, architecture §8): convicted
@@ -1218,6 +1236,8 @@ impl Coordinator {
                 result_hash: agreed_hash.to_string(),
                 epoch: 0,
                 prev_root: [0u8; 32],
+                // Pin the exact on-chain params version this job ran under.
+                params_version: self.params_version,
             });
         }
     }

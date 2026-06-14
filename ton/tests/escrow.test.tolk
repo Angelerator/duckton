@@ -17,7 +17,7 @@ fun deployEscrow(
     treasury: address,
     amount: coins,
 ): JobEscrow {
-    val terms: EscrowTerms = { treasury: treasury, expectedHash: RESULT_HASH };
+    val terms: EscrowTerms = { treasury: treasury, expectedHash: RESULT_HASH, paramsVersion: 1 };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,

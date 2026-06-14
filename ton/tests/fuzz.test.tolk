@@ -71,7 +71,7 @@ fun deployVaultSplit(
 }
 
 fun deployEscrow(requester: address, arbiter: address, treasury: address, amount: coins): JobEscrow {
-    val terms: EscrowTerms = { treasury: treasury, expectedHash: RESULT_HASH };
+    val terms: EscrowTerms = { treasury: treasury, expectedHash: RESULT_HASH, paramsVersion: 1 };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,
@@ -112,6 +112,10 @@ fun validParams(): EcoParams {
         wQualityBps: 6000,
         wStakeBps: 1500,
         wPriceBps: 2500,
+        slashFailedCommitmentBps: 1000,
+        attemptDeadlineMs: 60000,
+        progressIntervalMs: 2000,
+        progressStallMult: 5,
     };
 }
 
@@ -121,6 +125,7 @@ fun deployGlobalParams(admin: address): GlobalParams {
         feeRecipient: admin,
         params: validParams().toCell(),
         blocklist: createEmptyMap(),
+        paramsVersion: 1,
     };
     val gp = GlobalParams.fromStorage(storage);
     expect(gp.deploy(admin, { value: ton("1") })).toHaveSuccessfulDeploy({ to: gp.address });

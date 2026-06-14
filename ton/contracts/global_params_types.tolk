@@ -54,6 +54,27 @@ struct EcoParams {
     wQualityBps: uint16
     wStakeBps: uint16
     wPriceBps: uint16
+    // --- Resilience / fairness gating (ARCHITECTURE §8/§11) ----------------
+    // These are the ecosystem-wide resilience knobs that affect DISPUTE
+    // FAIRNESS, so all parties must agree on the values a job ran under (they
+    // are additive — appended after the original economic params to keep the
+    // cell layout backward-compatible).
+    //
+    // Fine (bps of bonded stake) for a broken commitment to PAID work: a
+    // provider that accepted/bid then failed to deliver a valid result by the
+    // deadline while the job was demonstrably feasible (§8.3).
+    slashFailedCommitmentBps: uint16
+    // Requester per-attempt deadline (ms): an attempt going silent past this is
+    // treated as inconclusive (job-fault, NO provider penalty). The boundary
+    // between "inconclusive" and "broken commitment" — hence on-chain.
+    attemptDeadlineMs: uint32
+    // Expected progress/heartbeat interval (ms) the host streams at; with
+    // progressStallMult it derives the stall timeout that gates a failed
+    // commitment.
+    progressIntervalMs: uint32
+    // Stall-timeout multiplier: an attempt is declared stalled (re-dispatched)
+    // after progressIntervalMs * progressStallMult with no heartbeat.
+    progressStallMult: uint8
 }
 
 struct GlobalParamsStorage {
@@ -66,6 +87,11 @@ struct GlobalParamsStorage {
     // each still decides independently (it is an additional source, not a
     // central authority that forces refusal).
     blocklist: map<uint256, uint1>
+    // Monotonic parameters version/seqno. Bumped by the contract on EVERY
+    // successful `update_params` (the admin never sets it directly), so a job
+    // can pin the EXACT params set it ran under for settlement / dispute
+    // resolution. Appended last → additive, address-stable layout change.
+    paramsVersion: uint32
 }
 
 fun GlobalParamsStorage.load(): GlobalParamsStorage {
@@ -98,9 +124,11 @@ struct (0x47504103) SetBlocklisted {
     blocked: bool
 }
 
-// Emitted as an external-out log on every successful update.
+// Emitted as an external-out log on every successful update. Carries the new
+// monotonic `version` so off-chain indexers can track which params set is live.
 struct ParamsUpdated {
     queryId: uint64
+    version: uint32
     platformFeeBps: uint16
     minStake: coins
 }
@@ -110,6 +138,7 @@ struct GlobalParamsView {
     admin: address
     feeRecipient: address
     params: Cell<EcoParams>
+    paramsVersion: uint32
 }
 
 // On-chain bounds validation, mirroring the §12 cross-field invariants enforced
@@ -126,9 +155,16 @@ fun validateEcoParams(p: EcoParams) {
     assert (p.wQualityBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
     assert (p.wStakeBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
     assert (p.wPriceBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    // Failed-commitment slash is a stake fraction, so it too is in [0, 10000].
+    assert (p.slashFailedCommitmentBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // κ (participation commission) must be small: <= 10% (§4.2).
     assert (p.participationCommissionBps <= 1000) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+
+    // Resilience gating must be coherent: a positive progress interval and a
+    // non-zero stall multiplier, else the stall timeout would be ill-defined.
+    assert (p.progressIntervalMs >= 1) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.progressStallMult >= 1) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // Slash split must sum to exactly 100%.
     val splitSum = p.splitChallengerBps + p.splitRedundancyBps + p.splitBurnBps + p.splitTreasuryBps;

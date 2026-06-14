@@ -313,6 +313,7 @@ mod tests {
                 result_hash: "r".into(),
                 epoch: 1,
                 prev_root: [0u8; 32],
+                params_version: 0,
             });
         }
         let root = a.epoch_root();

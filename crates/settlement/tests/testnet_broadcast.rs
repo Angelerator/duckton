@@ -177,6 +177,10 @@ fn parse_eco_params(cell: &Cell) -> GlobalParams {
         w_quality_bps: 0,
         w_stake_bps: 0,
         w_price_bps: 0,
+        slash_failed_commitment_bps: 0,
+        attempt_deadline_ms: 0,
+        progress_interval_ms: 0,
+        progress_stall_mult: 0,
     };
     g.platform_fee_bps = u16f(&mut p);
     g.surcharge_bps = u16f(&mut p);
@@ -203,6 +207,10 @@ fn parse_eco_params(cell: &Cell) -> GlobalParams {
     g.w_quality_bps = u16f(&mut p);
     g.w_stake_bps = u16f(&mut p);
     g.w_price_bps = u16f(&mut p);
+    g.slash_failed_commitment_bps = u16f(&mut p);
+    g.attempt_deadline_ms = p.load_uint(32).unwrap() as u32;
+    g.progress_interval_ms = p.load_uint(32).unwrap() as u32;
+    g.progress_stall_mult = p.load_uint(8).unwrap() as u8;
     g
 }
 

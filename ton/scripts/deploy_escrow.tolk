@@ -43,8 +43,11 @@ fun main() {
     // HTLC lock: settle must later present exactly this hash (the agreed quorum
     // result hash — e.g. the hash of the DuckDB query result the harness runs).
     val expectedHash = env<int>("ESCROW_EXPECTED_HASH") ?? 0;
+    // GlobalParams version in force when this job was opened (pins which
+    // ecosystem params govern settlement / disputes). `0` = unbound.
+    val paramsVersion = (env<int>("ESCROW_PARAMS_VERSION") ?? 0) as uint32;
 
-    val terms: EscrowTerms = { treasury: treasury, expectedHash: expectedHash };
+    val terms: EscrowTerms = { treasury: treasury, expectedHash: expectedHash, paramsVersion: paramsVersion };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,

@@ -35,6 +35,10 @@ fun validParams(): EcoParams {
         wQualityBps: 6000,
         wStakeBps: 1500,
         wPriceBps: 2500,
+        slashFailedCommitmentBps: 1000,
+        attemptDeadlineMs: 60000,
+        progressIntervalMs: 2000,
+        progressStallMult: 5,
     };
 }
 
@@ -44,6 +48,7 @@ fun deployGlobalParams(admin: address, feeRecipient: address): GlobalParams {
         feeRecipient: feeRecipient,
         params: validParams().toCell(),
         blocklist: createEmptyMap(),
+        paramsVersion: 1,
     };
     val gp = GlobalParams.fromStorage(storage);
     val res = gp.deploy(admin, { value: ton("1") });
@@ -197,6 +202,10 @@ fun boundaryValidParams(): EcoParams {
         wQualityBps: 10000,
         wStakeBps: 10000,
         wPriceBps: 10000,
+        slashFailedCommitmentBps: 10000, // == bps cap
+        attemptDeadlineMs: 0,
+        progressIntervalMs: 1,            // == min
+        progressStallMult: 1,             // == min
     };
 }
 
@@ -246,8 +255,66 @@ get fun `test every economic-parameter invariant is enforced on-chain`() {
     p = validParams(); p.quorum = 0; expectParamsRejected(gp, admin.address, 29, p);
     p = validParams(); p.quorum = 6; expectParamsRejected(gp, admin.address, 30, p);
 
+    // Resilience gating invariants (the on-chain fairness params).
+    p = validParams(); p.slashFailedCommitmentBps = 10001; expectParamsRejected(gp, admin.address, 31, p);
+    p = validParams(); p.progressIntervalMs = 0; expectParamsRejected(gp, admin.address, 32, p);
+    p = validParams(); p.progressStallMult = 0; expectParamsRejected(gp, admin.address, 33, p);
+
     // Original params survive every rejected update.
     expect(gp.getParams().params.load().platformFeeBps).toEqual(200);
+}
+
+get fun `test params version bumps monotonically on every successful update`() {
+    val admin = testing.treasury("admin");
+    val gp = deployGlobalParams(admin.address, randomAddress("fee"));
+
+    // Deployed at version 1 (see deployGlobalParams).
+    expect(gp.getParamsVersion()).toEqual(1);
+    expect(gp.getParams().paramsVersion).toEqual(1);
+
+    // Each accepted update_params bumps the monotonic seqno by exactly 1.
+    val r1 = gp.sendUpdateParams(admin.address, 50, randomAddress("fee"), validParams(), { value: ton("0.5") });
+    expect(r1).toHaveSuccessfulTx<UpdateParams>({ from: admin.address, to: gp.address });
+    expect(gp.getParamsVersion()).toEqual(2);
+
+    val r2 = gp.sendUpdateParams(admin.address, 51, randomAddress("fee"), validParams(), { value: ton("0.5") });
+    expect(r2).toHaveSuccessfulTx<UpdateParams>({ from: admin.address, to: gp.address });
+    expect(gp.getParamsVersion()).toEqual(3);
+
+    // A REJECTED update (non-admin) does NOT bump the version.
+    val attacker = testing.treasury("attacker");
+    val denied = gp.sendUpdateParams(attacker.address, 52, randomAddress("fee"), validParams(), { value: ton("0.5") });
+    expect(denied).toHaveFailedTx({ from: attacker.address, to: gp.address, exitCode: ErrCode.NOT_ADMIN });
+    expect(gp.getParamsVersion()).toEqual(3);
+
+    // A REJECTED update (out-of-bounds) does NOT bump the version either.
+    var bad = validParams(); bad.progressStallMult = 0;
+    val r3 = gp.sendUpdateParams(admin.address, 53, randomAddress("fee"), bad, { value: ton("0.5") });
+    expect(r3).toHaveFailedTx({ from: admin.address, to: gp.address, exitCode: ErrCode.PARAMS_OUT_OF_BOUNDS });
+    expect(gp.getParamsVersion()).toEqual(3);
+}
+
+get fun `test resilience + new policy scalar getters read back the stored params`() {
+    val admin = testing.treasury("admin");
+    val gp = deployGlobalParams(admin.address, randomAddress("fee"));
+
+    // The single-int policy getters (the off-chain RPC read path) return the
+    // ecosystem-wide values a paid job reads as authoritative.
+    expect(gp.getPlatformFeeBps()).toEqual(200);
+    expect(gp.getParticipationCommissionBps()).toEqual(200);
+    expect(gp.getSlashFailedCommitmentBps()).toEqual(1000);
+    expect(gp.getAttemptDeadlineMs()).toEqual(60000);
+    expect(gp.getProgressIntervalMs()).toEqual(2000);
+    expect(gp.getProgressStallMult()).toEqual(5);
+
+    // After an admin edit they reflect the new values.
+    var p = validParams();
+    p.slashFailedCommitmentBps = 2500;
+    p.attemptDeadlineMs = 45000;
+    val res = gp.sendUpdateParams(admin.address, 60, randomAddress("fee"), p, { value: ton("0.5") });
+    expect(res).toHaveSuccessfulTx<UpdateParams>({ from: admin.address, to: gp.address });
+    expect(gp.getSlashFailedCommitmentBps()).toEqual(2500);
+    expect(gp.getAttemptDeadlineMs()).toEqual(45000);
 }
 
 get fun `test params sitting exactly on every boundary are accepted`() {

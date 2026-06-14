@@ -599,7 +599,8 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
     // Surface the §12 params (in their on-chain representation) being pushed.
     let bps = |x: f64| ((x * 10_000.0).round() as i64).to_string();
     let s = &e.slashing;
-    let status = admin_params_submit_status(e, &gp);
+    let sch = &cfg.scheduler;
+    let status = admin_params_submit_status(e, sch, &gp);
     Ok(vec![
         ["admin_params".into(), "action".into(), "update_params".into()],
         ["admin_params".into(), "network".into(), e.network.as_str().into()],
@@ -613,6 +614,11 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
             bps(e.fees.participation_commission_frac),
         ],
         ["admin_params".into(), "slash_challenger_bps".into(), bps(s.slash_to_challenger)],
+        [
+            "admin_params".into(),
+            "slash_failed_commitment_bps".into(),
+            bps(s.slash_failed_commitment_pct),
+        ],
         ["admin_params".into(), "min_stake_ton".into(), e.stake.min_stake.to_string()],
         ["admin_params".into(), "stake_cap_ton".into(), e.stake.stake_cap.to_string()],
         ["admin_params".into(), "unbonding_secs".into(), e.stake.unbonding_secs.to_string()],
@@ -620,6 +626,15 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
             "admin_params".into(),
             "challenge_window_secs".into(),
             s.challenge_window_secs.to_string(),
+        ],
+        // Resilience / fairness gating now promoted on-chain (sourced from
+        // [scheduler]) so disputes reference one agreed value.
+        ["admin_params".into(), "attempt_deadline_ms".into(), sch.attempt_deadline_ms.to_string()],
+        ["admin_params".into(), "progress_interval_ms".into(), sch.progress_interval_ms.to_string()],
+        [
+            "admin_params".into(),
+            "progress_stall_mult".into(),
+            sch.progress_stall_multiplier.to_string(),
         ],
         [
             "admin_params".into(),
@@ -633,10 +648,14 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
 /// The `status` row for `p2p_admin_params`: self-broadcasts the admin
 /// `update_params` (wallet-v5r1 signed) under `--features ton-live`, else stays
 /// "prepared". Mutates `GlobalParams` storage in place (address unchanged).
-fn admin_params_submit_status(_e: &p2p_config::EconomicsConfig, _gp: &str) -> String {
+fn admin_params_submit_status(
+    _e: &p2p_config::EconomicsConfig,
+    _sched: &p2p_config::SchedulerConfig,
+    _gp: &str,
+) -> String {
     #[cfg(feature = "ton-live")]
     {
-        return match broadcast_admin_params(_e, _gp) {
+        return match broadcast_admin_params(_e, _sched, _gp) {
             Ok(h) => format!("broadcast — toncenter accepted (tx {h})"),
             Err(err) => format!("broadcast failed: {err}"),
         };
@@ -648,9 +667,14 @@ fn admin_params_submit_status(_e: &p2p_config::EconomicsConfig, _gp: &str) -> St
 }
 
 /// Self-broadcast the admin `update_params` to the on-chain `GlobalParams`
-/// (ton-live). The §12 params are derived from `[economics]` and re-validated.
+/// (ton-live). The §12 params are derived from `[economics]` + `[scheduler]`
+/// (single source of truth) and re-validated.
 #[cfg(feature = "ton-live")]
-fn broadcast_admin_params(e: &p2p_config::EconomicsConfig, gp: &str) -> Result<String, Box<dyn Error>> {
+fn broadcast_admin_params(
+    e: &p2p_config::EconomicsConfig,
+    sched: &p2p_config::SchedulerConfig,
+    gp: &str,
+) -> Result<String, Box<dyn Error>> {
     use p2p_settlement::{GlobalParams, TonRpc, WalletAddress};
     let wiring = p2p_settlement::resolve_ton_wiring(e).map_err(boxed)?;
     let path = e
@@ -676,7 +700,7 @@ fn broadcast_admin_params(e: &p2p_config::EconomicsConfig, gp: &str) -> Result<S
         .ok_or_else(|| boxed("no fee_recipient configured for update_params"))?;
     let fee_addr =
         WalletAddress::from_any_str(fee).map_err(|_| boxed("malformed fee_recipient address"))?;
-    let params = GlobalParams::from_economics(e);
+    let params = GlobalParams::from_config_parts(e, sched);
     params.validate().map_err(boxed)?;
     let body = p2p_settlement::build_update_params(now_secs(), &fee_addr, &params);
     rpc.send_internal(&gp_addr, 0, &body).map_err(boxed)
