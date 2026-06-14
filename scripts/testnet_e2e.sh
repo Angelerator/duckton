@@ -10,12 +10,14 @@
 #   1. run a REAL DuckDB query through the loaded extension and hash the result
 #      (this hash becomes the escrow's HTLC lock + the anchored epoch leaf)
 #   2. verify the ton_proof two-way wallet<->node binding (pure-Rust crypto)
-#   3. deploy the three contracts (StakeVault, RecordAnchor, JobEscrow)
+#   3. deploy the FOUR contracts (StakeVault, RecordAnchor, JobEscrow, GlobalParams)
 #   4. `acton verify` the published bytecode against source
 #   5. record the deployed addresses into a generated config file
-#   6. run the live scenario: stake deposit -> wallet-bind anchor -> open escrow
-#      -> settle (winner + platform fee + participation commissions) -> anchor
-#      epoch root + inclusion proof -> optional bonded dispute
+#   6. run the live scenario: GlobalParams admin update / non-admin rejection /
+#      governance blocklist -> stake deposit -> 1:1 transfer-locked receipt +
+#      Duckton TEP-64 metadata -> wallet-bind anchor -> open escrow -> settle
+#      (winner + platform fee + participation commissions) -> anchor epoch root +
+#      single- and multi-leaf inclusion proofs -> optional bonded dispute
 #   7. print a PASS/FAIL summary with testnet.tonviewer.com explorer links
 #   8. (optional) run the `ton-live`-gated Rust integration test against the RPC
 #
@@ -292,6 +294,16 @@ ESCROW_ADDR="$( ESCROW_AMOUNT="$ESCROW_AMOUNT" ESCROW_DEADLINE="$ESCROW_DEADLINE
 [[ -n "$ESCROW_ADDR" ]] || die "failed to parse JobEscrow address (see $LOG_DIR/deploy_escrow.log)"
 ok "JobEscrow: $ESCROW_ADDR"
 
+# 4d. GlobalParams — the platform-wide economic-parameter contract (§12). The
+#     admin is the deployer wallet (so the live scenario can update params in
+#     place); its address is STABLE across updates. §12 defaults are applied
+#     unless overridden via GP_* env vars.
+log "deploying GlobalParams ..."
+GLOBAL_PARAMS_ADDR="$( GP_FEE_RECIPIENT="$WALLET_ADDR" \
+  deploy_addr GlobalParams scripts/deploy_global_params.tolk "$LOG_DIR/deploy_global_params.log" )"
+[[ -n "$GLOBAL_PARAMS_ADDR" ]] || die "failed to parse GlobalParams address (see $LOG_DIR/deploy_global_params.log)"
+ok "GlobalParams: $GLOBAL_PARAMS_ADDR"
+
 # ----------------------------------------------------------------------------
 # 5. Record the deployed addresses into generated config
 # ----------------------------------------------------------------------------
@@ -306,6 +318,7 @@ export TON_TESTNET_WALLET="$WALLET_ADDR"
 export TON_TESTNET_VAULT_ADDR="$VAULT_ADDR"
 export TON_TESTNET_ANCHOR_ADDR="$ANCHOR_ADDR"
 export TON_TESTNET_ESCROW_ADDR="$ESCROW_ADDR"
+export TON_TESTNET_GLOBAL_PARAMS_ADDR="$GLOBAL_PARAMS_ADDR"
 export TON_TESTNET_RESULT_HASH="$RESULT_HASH"
 export TON_TESTNET_BINDING_HASH="$BINDING_HASH"
 ENV
@@ -332,7 +345,7 @@ fee_recipient   = "$WALLET_ADDR"
 stake_vault   = "$VAULT_ADDR"
 job_escrow    = "$ESCROW_ADDR"
 record_anchor = "$ANCHOR_ADDR"
-# global_params = "kQ..."   # deploy with: acton script scripts/deploy_global_params.tolk --net $NET
+global_params = "$GLOBAL_PARAMS_ADDR"
 TOML
 ok "wrote $GEN_TOML"
 
@@ -355,6 +368,7 @@ else
   verify_one StakeVault "$VAULT_ADDR"
   verify_one RecordAnchor "$ANCHOR_ADDR"
   verify_one JobEscrow "$ESCROW_ADDR"
+  verify_one GlobalParams "$GLOBAL_PARAMS_ADDR"
 fi
 
 # ----------------------------------------------------------------------------
@@ -365,6 +379,7 @@ E2E_LOG="$LOG_DIR/e2e.log"
 set +e
 ( cd "$TON_DIR" && \
   VAULT_ADDR="$VAULT_ADDR" ESCROW_ADDR="$ESCROW_ADDR" ANCHOR_ADDR="$ANCHOR_ADDR" \
+  GLOBAL_PARAMS_ADDR="$GLOBAL_PARAMS_ADDR" \
   STAKE_DEPOSIT_AMOUNT="$STAKE_DEPOSIT_AMOUNT" \
   SETTLE_WINNER="$WALLET_ADDR" SETTLE_WINNER_AMOUNT="$SETTLE_WINNER_AMOUNT" \
   SETTLE_FEE="$SETTLE_FEE" SETTLE_PARTICIPANT="$WALLET_ADDR" \
@@ -404,6 +419,21 @@ ANCHORED="$(grep -oE '::CHECK::anchor_submit::epoch=[0-9]+' "$E2E_LOG" | tail -1
 
 INCL="$(grep -oE '::CHECK::inclusion::verified=(true|false)' "$E2E_LOG" | tail -1 || true)"
 [[ "$INCL" == *"=true" ]] && checkmark "inclusion proof verified on-chain" 1 || checkmark "inclusion proof" 0
+
+# Newer scenarios emit an explicit ::CHECK::<name>::PASS|FAIL token: GlobalParams
+# (admin update / non-admin rejection / governance blocklist), the Duckton TEP-64
+# metadata on the freshly redeployed StakeVault, and the multi-leaf Merkle
+# inclusion anchored + verified on-chain.
+check_passfail() {  # check_passfail <marker_name> <summary_label>
+  local marker="$1" label="$2" line
+  line="$(grep -oE "::CHECK::${marker}::(PASS|FAIL)" "$E2E_LOG" | tail -1 || true)"
+  if [[ "$line" == *"::PASS" ]]; then checkmark "$label" 1; else checkmark "$label" 0; fi
+}
+check_passfail globalparams_update    "GlobalParams admin update_params (persisted, address stable)"
+check_passfail globalparams_nonadmin  "GlobalParams non-admin update_params rejected"
+check_passfail globalparams_blocklist "GlobalParams governance blocklist round-trip"
+check_passfail duckton_metadata       "Duckton TEP-64 metadata (name/symbol/decimals)"
+check_passfail multileaf_inclusion    "multi-leaf Merkle inclusion verified on-chain"
 
 if [[ "$E2E_RUN_DISPUTE" == "1" ]]; then
   DISP="$(grep -oE '::CHECK::dispute::id=[0-9]+::status=[0-9]+' "$E2E_LOG" | tail -1 || true)"
@@ -460,6 +490,8 @@ printf '%s\n' "RecordAnchor: $ANCHOR_ADDR"
 printf '%s\n' "                $EXPLORER_BASE/$ANCHOR_ADDR"
 printf '%s\n' "JobEscrow:    $ESCROW_ADDR"
 printf '%s\n' "                $EXPLORER_BASE/$ESCROW_ADDR"
+printf '%s\n' "GlobalParams: $GLOBAL_PARAMS_ADDR"
+printf '%s\n' "                $EXPLORER_BASE/$GLOBAL_PARAMS_ADDR"
 printf '%s\n' "Result hash:  $RESULT_HASH"
 printf '%s\n' "Config:       $GEN_ENV"
 printf '%s\n' "              $GEN_TOML"

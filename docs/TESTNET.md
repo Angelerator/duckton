@@ -2,11 +2,15 @@
 
 This is a **turnkey** runbook for taking the on-chain economic/settlement layer
 of the P2P DuckDB-over-QUIC grid live on the **TON testnet**. The contracts
-(`StakeVault`, `StakeReceiptWallet`, `JobEscrow`, `RecordAnchor`) live in
-[`ton/`](../ton) (Tolk, built/tested with Acton 1.1.0); the off-chain settlement
-logic (message ABI, `ton_proof` binding, Merkle proofs) lives in
+(`StakeVault`, `StakeReceiptWallet`, `JobEscrow`, `RecordAnchor`, `GlobalParams`)
+live in [`ton/`](../ton) (Tolk, built/tested with Acton 1.1.0); the off-chain
+settlement logic (message ABI, `ton_proof` binding, Merkle proofs) lives in
 [`crates/settlement`](../crates/settlement). See
 [`docs/BLOCKCHAIN_ECONOMICS.md`](BLOCKCHAIN_ECONOMICS.md) for the full design.
+
+A fresh run **redeploys all four deployable contracts** — `StakeVault` (+ its
+`StakeReceiptWallet` jetton master), `RecordAnchor`, `JobEscrow` and the
+platform-wide `GlobalParams` — and exercises the full scenario set against them.
 
 Everything is driven by **one** script — [`scripts/testnet_e2e.sh`](../scripts/testnet_e2e.sh) —
 which deploys, verifies, points config at the deployed addresses, and runs the
@@ -15,11 +19,16 @@ Toncenter testnet API key.** Nothing here touches a network until you run the
 script with those inputs.
 
 > **Honesty note.** Nothing in this repository has been run against a live
-> network. The scenario was validated end-to-end in Acton's **local emulator**
-> against the real compiled contracts (deposit → settle → anchor → inclusion →
-> dispute all pass), the harness is `bash -n`-clean, and the `ton-live` Rust test
-> compiles and is a no-op without testnet env. The live testnet run requires
-> your wallet + RPC.
+> network. The full scenario set was validated end-to-end in Acton's **local
+> emulator** against the real compiled contracts — GlobalParams admin
+> update/non-admin rejection/blocklist, stake deposit, 1:1 transfer-locked
+> receipt + Duckton TEP-64 metadata, escrow settle, single- and multi-leaf
+> anchor inclusion, and dispute all pass (**25** emulator tests, including a
+> dedicated `tests/e2e_flow.test.tolk` that mirrors the whole turnkey flow across
+> all four contracts in one session). The harness is `bash -n`-clean, fails fast
+> without a mnemonic/API key (no broadcast), and the `ton-live` Rust test compiles
+> and is a no-op without testnet env. The live testnet run requires your wallet +
+> RPC.
 
 ---
 
@@ -33,23 +42,35 @@ script with those inputs.
    result — this hash becomes the escrow's HTLC lock and the anchored epoch leaf;
 3. verifies the **`ton_proof` two-way wallet↔node binding** (pure-Rust Ed25519 +
    sha256, both directions) and computes an on-chain binding hash;
-4. **deploys** the three contracts: `StakeVault` (+ its receipt-jetton master),
+4. **deploys** the four contracts: `StakeVault` (+ its receipt-jetton master),
    `RecordAnchor`, `JobEscrow` (opened with the locked bid `B`, HTLC-locked on the
-   query result hash);
+   query result hash), and `GlobalParams` (platform-wide economic config, admin =
+   your wallet);
 5. runs **`acton verify`** on each (source ↔ published bytecode);
 6. **records** the deployed addresses into a generated config file;
 7. runs the **live scenario** in one broadcast session:
-   stake deposit → wallet-bind anchored on-chain → escrow settle (winner +
-   platform fee + participation commissions, remainder refunded) → anchor epoch
-   root → on-chain Merkle inclusion proof → *optional* bonded dispute;
+   GlobalParams admin `update_params` (persisted, address stable) → governance
+   blocklist set/clear round-trip → stake deposit → 1:1 transfer-locked
+   stake-receipt jetton + Duckton TEP-64 metadata assertion → escrow settle
+   (winner + platform fee + participation commissions, remainder refunded) →
+   anchor epoch root → on-chain single- **and** multi-leaf (8-leaf) Merkle
+   inclusion proofs → *optional* bonded dispute → GlobalParams non-admin
+   `update_params` rejection (against a throwaway admin); finally a live-RPC
+   wallet-bind confirmation read from `StakeVault.get_binding_hash`;
 8. prints a **PASS/FAIL summary with `testnet.tonviewer.com` links**;
 9. *(optional)* runs the **`ton-live`-gated Rust test** against the live RPC.
 
-It is **re-runnable**: the wallet import is idempotent, `StakeVault`/`RecordAnchor`
-have deterministic addresses (re-deploy is a harmless top-up), the anchor epoch
-is read from chain and advanced by one each run, and each run opens a **fresh**
-escrow (its address varies with the per-run deadline) so settle always targets an
-unsettled escrow.
+Each new scenario emits a parseable `::CHECK::<name>::PASS|FAIL` marker the
+harness folds into the summary.
+
+It is **re-runnable**: the wallet import is idempotent, `StakeVault`/`RecordAnchor`/
+`GlobalParams` have deterministic addresses (re-deploy is a harmless top-up),
+`GlobalParams` is mutated **in place** at that stable address (the admin update
+toggles the platform-fee bps so the write is provable on every re-run), the anchor
+epoch is read from chain and advanced each run (it now advances by **two** — one
+single-leaf, one multi-leaf root), and each run opens a **fresh** escrow (its
+address varies with the per-run deadline) so settle always targets an unsettled
+escrow.
 
 ---
 
@@ -201,6 +222,8 @@ RecordAnchor: kQ...anchor
                 https://testnet.tonviewer.com/kQ...anchor
 JobEscrow:    kQ...escrow
                 https://testnet.tonviewer.com/kQ...escrow
+GlobalParams: kQ...gparams
+                https://testnet.tonviewer.com/kQ...gparams
 Result hash:  0x<64-hex>
 Config:       ton/deployments/testnet.env
               ton/deployments/economics.testnet.toml
@@ -208,11 +231,19 @@ Config:       ton/deployments/testnet.env
 Checks:
   PASS  ton_proof binding crypto
   PASS  stake deposit (staked=100000000)
+  PASS  stake-receipt jetton minted 1:1 + transfer-locked (minted=100000000)
+  PASS  stake-receipt jetton transfer rejected (anti-exit)
+  PASS  Duckton TEP-64 metadata (name/symbol/decimals)
   PASS  escrow settle (HTLC release)
   PASS  anchor epoch root (epoch=1)
   PASS  inclusion proof verified on-chain
+  PASS  multi-leaf Merkle inclusion verified on-chain
+  PASS  GlobalParams admin update_params (persisted, address stable)
+  PASS  GlobalParams governance blocklist round-trip
+  PASS  GlobalParams non-admin update_params rejected
   PASS  wallet-bind anchored on-chain
   PASS  verify StakeVault
+  PASS  verify GlobalParams
   ...
  ALL CHECKS PASSED
 ```
@@ -231,7 +262,8 @@ The harness writes two files into `OUT_DIR` (default `ton/deployments/`):
 
   ```bash
   set -a; . ton/deployments/testnet.env; set +a
-  # exports TON_TESTNET_{VAULT,ANCHOR,ESCROW}_ADDR, TON_TESTNET_RPC, TON_TESTNET_RESULT_HASH, ...
+  # exports TON_TESTNET_{VAULT,ANCHOR,ESCROW,GLOBAL_PARAMS}_ADDR, TON_TESTNET_RPC,
+  # TON_TESTNET_RESULT_HASH, ...
   ```
 
 - **`economics.testnet.toml`** — a node `[economics]` snippet pointed at testnet
@@ -245,18 +277,18 @@ The harness writes two files into `OUT_DIR` (default `ton/deployments/`):
   network         = "testnet"
   default_payment = "paid"
   fee_recipient   = "kQ...your-wallet"
+
+  [economics.testnet.contracts]
+  stake_vault   = "kQ...vault"
+  job_escrow    = "kQ...escrow"
+  record_anchor = "kQ...anchor"
+  global_params = "kQ...gparams"
   ```
 
-> **Gap (needs a follow-up edit to `crates/config`).** `crates/config`'s
-> `[economics]` section currently has **no per-contract address field**, so the
-> deployed `StakeVault`/`JobEscrow`/`RecordAnchor` addresses cannot yet be set in
-> the node TOML directly. The harness surfaces them via `testnet.env`
-> (`TON_TESTNET_*_ADDR`) and the generated TOML includes a **proposed**
-> `[economics.contracts]` block (commented out). Wiring that block into
-> `crates/config` (a new `EconomicsConfig.contracts` struct + plumbing into the
-> `ton` settlement constructors) is the one remaining change needed for the node
-> to drive these contracts directly from config. It was intentionally left out
-> here because `crates/config` is owned by a concurrent worker.
+> The generated TOML records **all four** deployed addresses under
+> `[economics.<net>.contracts]` (including the platform-wide `GlobalParams`). The
+> machine-readable `testnet.env` also exports them as `TON_TESTNET_*_ADDR` for
+> re-runs and the `ton-live` Rust test.
 
 ---
 
@@ -299,7 +331,12 @@ Open the printed `https://testnet.tonviewer.com/<address>` links and confirm:
   platform fee to the treasury, the participation commission, and the refund of
   the unspent escrow slack to the requester.
 - **RecordAnchor** — `get_anchor_state` shows the advanced epoch and the anchored
-  root; the inclusion proof get-method returns `true`.
+  root; `verify_inclusion` returns `true` for both the single-leaf and the
+  multi-leaf (8-leaf) interior-leaf proofs.
+- **GlobalParams** — `get_params` shows the admin-updated platform-fee bps and
+  `get_admin` is your wallet (address unchanged across the update); `get_blocklisted`
+  round-trips `true`→`false`; the non-admin update against the throwaway instance
+  bounced (`exit code 260 NOT_ADMIN`).
 
 You can also retrace any transaction locally with Acton:
 
@@ -320,25 +357,27 @@ export SDKROOT="$(xcrun --show-sdk-path)"
 acton build
 
 # deploy (each prints "Deployed <Contract> to <addr>")
-STAKE_BINDING_HASH=0x<hash> acton script scripts/deploy_stake.tolk  --net testnet
-ANCHOR_BOND_MIN=100000000   acton script scripts/deploy_anchor.tolk --net testnet
+STAKE_BINDING_HASH=0x<hash> acton script scripts/deploy_stake.tolk         --net testnet
+ANCHOR_BOND_MIN=100000000   acton script scripts/deploy_anchor.tolk        --net testnet
 ESCROW_AMOUNT=300000000 ESCROW_DEADLINE=$(( $(date +%s)+3600 )) \
-  ESCROW_EXPECTED_HASH=0x<hash> acton script scripts/deploy_escrow.tolk --net testnet
+  ESCROW_EXPECTED_HASH=0x<hash> acton script scripts/deploy_escrow.tolk    --net testnet
+GP_FEE_RECIPIENT=<addr>     acton script scripts/deploy_global_params.tolk --net testnet
 
 # verify
 acton verify StakeVault   --address <addr> --net testnet
 acton verify RecordAnchor --address <addr> --net testnet
 acton verify JobEscrow    --address <addr> --net testnet
+acton verify GlobalParams --address <addr> --net testnet
 
-# the live scenario over already-deployed addresses
-VAULT_ADDR=<addr> ESCROW_ADDR=<addr> ANCHOR_ADDR=<addr> \
+# the live scenario over already-deployed addresses (needs all four)
+VAULT_ADDR=<addr> ESCROW_ADDR=<addr> ANCHOR_ADDR=<addr> GLOBAL_PARAMS_ADDR=<addr> \
   SETTLE_RESULT_HASH=0x<hash> ANCHOR_ROOT=0x<hash> ANCHOR_LEAF=0x<hash> \
   acton script scripts/e2e_testnet.tolk --net testnet
 ```
 
 There are matching `[scripts]` aliases in `ton/Acton.toml`
 (`deploy-stake-testnet`, `deploy-anchor-testnet`, `deploy-escrow-testnet`,
-`e2e-testnet`).
+`deploy-global-params-testnet`, `e2e-testnet`).
 
 ---
 
@@ -360,6 +399,8 @@ There are matching `[scripts]` aliases in `ton/Acton.toml`
 | `exit code 224 (ALREADY_SETTLED)` | you re-settled the same escrow — re-run the harness (it opens a fresh escrow per run via a new deadline). |
 | `exit code 241 (EPOCH_REGRESSION)` / `240 (BAD_PREV_ROOT)` on anchor | the submitted epoch must be `currentEpoch + 1` chained to `lastRoot` — the harness reads chain state and advances automatically; by hand, read `get_anchor_state` first. |
 | `exit code 244 (DISPUTE_BOND_TOO_LOW)` | raise `DISPUTE_BOND` above the anchor's `disputeBondMin` (the harness deploys the anchor with a low `ANCHOR_BOND_MIN` so the optional dispute is cheap). |
+| `exit code 260 (NOT_ADMIN)` on GlobalParams | expected for the **non-admin rejection** check (the throwaway instance's admin is the vault, not your wallet); for a real `update_params`/`set_blocklisted`, send from the admin wallet that deployed `GlobalParams`. |
+| `exit code 261 (PARAMS_OUT_OF_BOUNDS)` on GlobalParams | a proposed `update_params` violates a §12 invariant (bps ranges, slash split = 100%, min-stake monotonicity, unbonding ≥ challenge window, selection ordering). |
 | `acton verify` fails or stalls | the verifier backend can be transient; the harness records it as a non-fatal check. Re-run `acton verify <C> --address <addr> --net testnet`. |
 | `wallet import failed` | check the word count (12/24) and `WALLET_VERSION`; remove a stale entry with `acton wallet remove -y deployer` and re-run. |
 | Rust live test "SKIP" lines | expected unless `TON_TESTNET_RPC` + `TON_TESTNET_*_ADDR` are set — source `ton/deployments/testnet.env` first. |
