@@ -13,6 +13,7 @@
 //!    canary auditing.
 
 pub mod admission;
+pub mod antiabuse;
 pub mod canary;
 pub mod compression;
 pub mod coordinator;
@@ -34,6 +35,7 @@ pub mod storage;
 pub mod worker;
 
 pub use admission::{AdmissionController, FreeResources, Lease};
+pub use antiabuse::{cost_gate_reason, Blocklist, RateLimiter};
 pub use canary::CanaryAuditor;
 pub use coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 pub use datasource::{

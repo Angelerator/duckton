@@ -12,7 +12,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use p2p_config::{LimitsConfig, ReputationWeights, TrustConfig};
-use p2p_proto::{AttestationLevel, NodeId, Receipt, Verdict};
+use p2p_proto::{AttestationLevel, NodeId, Receipt};
 
 /// Current unix-seconds timestamp.
 pub fn now_ts() -> u64 {
@@ -69,6 +69,24 @@ pub trait TrustStore: Send + Sync {
     fn penalty(&self, worker: &NodeId) -> f64;
     /// Number of distinct workers currently tracked.
     fn tracked_workers(&self) -> usize;
+
+    // --- Requester reputation / age (ARCHITECTURE "Abuse resistance") --------
+    // Requesters get a reputation + age too, so a job's effect on a provider's
+    // score can be weighted by the requester's standing ("newer sender → less
+    // effect"). Default impls are no-ops/zero so existing stores keep compiling.
+
+    /// Record that a requester completed a job (`correct` = the job produced a
+    /// usable, verified outcome). Builds the requester's age + reputation.
+    fn record_requester(&self, _requester: &NodeId, _correct: bool, _ts: u64) {}
+    /// Number of recorded observations for a requester (its "age").
+    fn requester_observation_count(&self, _requester: &NodeId) -> usize {
+        0
+    }
+    /// Recency-weighted success rate in `[0,1]` for a requester (or `None` if
+    /// the requester has no history).
+    fn requester_reputation(&self, _requester: &NodeId, _now: u64) -> Option<f64> {
+        None
+    }
 }
 
 struct WorkerState {
@@ -101,6 +119,9 @@ struct Inner {
     workers: HashMap<NodeId, WorkerState>,
     /// Insertion order for FIFO eviction when over `max_workers`.
     order: VecDeque<NodeId>,
+    /// Per-requester observation history (bounded, FIFO-evicted like workers).
+    requesters: HashMap<NodeId, VecDeque<Observation>>,
+    requester_order: VecDeque<NodeId>,
 }
 
 impl InMemoryTrustStore {
@@ -109,6 +130,8 @@ impl InMemoryTrustStore {
             inner: Mutex::new(Inner {
                 workers: HashMap::new(),
                 order: VecDeque::new(),
+                requesters: HashMap::new(),
+                requester_order: VecDeque::new(),
             }),
             half_life_secs: trust.reputation_half_life_secs as f64,
             max_obs_per_worker: limits.receipt_cache_per_worker.max(1),
@@ -145,7 +168,16 @@ impl InMemoryTrustStore {
 
 impl TrustStore for InMemoryTrustStore {
     fn record(&self, receipt: &Receipt) {
-        let correct = matches!(receipt.verdict, Verdict::Correct);
+        // Only `Correct` and provable PROVIDER-fault verdicts count against a
+        // provider's reputation. Requester/job-caused (`ResourceExceeded` /
+        // `Infeasible`) and non-attributable (`Inconclusive`) verdicts are
+        // neutral and recorded as nothing — so a heavy/infeasible/non-verifiable
+        // job can never be used to grief a provider (fault attribution,
+        // ARCHITECTURE "Abuse resistance").
+        if !receipt.verdict.affects_reputation() {
+            return;
+        }
+        let correct = receipt.verdict.is_correct();
         let cap = self.max_obs_per_worker;
         self.with_worker(&receipt.worker_id, |state| {
             state.observations.push_back(Observation {
@@ -215,6 +247,61 @@ impl TrustStore for InMemoryTrustStore {
 
     fn tracked_workers(&self) -> usize {
         self.inner.lock().unwrap().workers.len()
+    }
+
+    fn record_requester(&self, requester: &NodeId, correct: bool, ts: u64) {
+        let cap = self.max_obs_per_worker;
+        let max = self.max_workers;
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.requesters.contains_key(requester) {
+            while inner.requester_order.len() >= max {
+                if let Some(evict) = inner.requester_order.pop_front() {
+                    inner.requesters.remove(&evict);
+                } else {
+                    break;
+                }
+            }
+            inner.requesters.insert(requester.clone(), VecDeque::new());
+            inner.requester_order.push_back(requester.clone());
+        }
+        let hist = inner.requesters.get_mut(requester).expect("just inserted");
+        hist.push_back(Observation { ts, correct, weight: 1.0 });
+        while hist.len() > cap {
+            hist.pop_front();
+        }
+    }
+
+    fn requester_observation_count(&self, requester: &NodeId) -> usize {
+        self.inner
+            .lock()
+            .unwrap()
+            .requesters
+            .get(requester)
+            .map(|h| h.len())
+            .unwrap_or(0)
+    }
+
+    fn requester_reputation(&self, requester: &NodeId, now: u64) -> Option<f64> {
+        let inner = self.inner.lock().unwrap();
+        let hist = inner.requesters.get(requester)?;
+        if hist.is_empty() {
+            return None;
+        }
+        let mut num = 0.0;
+        let mut den = 0.0;
+        for o in hist {
+            let age = now.saturating_sub(o.ts) as f64;
+            let w = o.weight * self.decay_weight(age);
+            den += w;
+            if o.correct {
+                num += w;
+            }
+        }
+        if den == 0.0 {
+            None
+        } else {
+            Some(num / den)
+        }
     }
 }
 
@@ -318,7 +405,7 @@ pub fn exploration_bonus(observations: usize, rate: f64, saturation: usize) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2p_proto::{JobId, QueryHash};
+    use p2p_proto::{JobId, QueryHash, Verdict};
 
     fn store() -> InMemoryTrustStore {
         InMemoryTrustStore::new(&TrustConfig::default(), &LimitsConfig::default())

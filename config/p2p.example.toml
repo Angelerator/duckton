@@ -397,3 +397,77 @@ slash_to_treasury      = 0.1
 [economics.records]
 epoch_secs        = 60                      # how often the receipt Merkle root is anchored
 anchor_quorum_pct = 0.66                    # stake-weighted signers needed to accept a root
+
+# -----------------------------------------------------------------------------
+# Anti-abuse / robustness layer (architecture "Abuse resistance")
+# -----------------------------------------------------------------------------
+# Defends the grid against reputation-griefing and other abuse. Defaults preserve
+# today's behavior where a change would be observable: the scoring-altering pieces
+# (requester-trust weighting, pre-flight cost gating, free-mode rate limiting,
+# auto-blocking, gossip peer scoring) default OFF; only the always-safe pieces
+# (provable-fault attribution and non-determinism detection, which never ADD a
+# penalty) default ON. Deny-lists are managed via SQL: p2p_block / p2p_unblock /
+# p2p_blocklist (persisted to blocklist.toml).
+[antiabuse]
+enabled = true                             # master switch (false = disables every sub-mechanism)
+
+[antiabuse.fault_attribution]
+# Penalize a provider ONLY for provable PROVIDER fault (result disagrees with a
+# verified quorum, downtime, equivocation). Requester/job-caused failures
+# (infeasible / too expensive / resource-exceeded / malformed / missing data)
+# apply ZERO provider penalty. If >= job_consensus_fraction of the selected
+# providers fail the SAME way with no quorum, blame the JOB, not the providers.
+enabled               = true
+job_consensus_fraction = 0.67
+
+[antiabuse.requester_trust]
+# Trust-weighted score impact ("newer sender -> less effect"): a job's effect on
+# a provider's score is multiplied by w(requester) in (0,1] from the requester's
+# own reputation + age. New/unproven requester => w ≈ 0 (esp. for negatives);
+# established => w -> 1. Asymmetric (gates negatives hardest). Primary defense
+# against the heavy-query reputation-griefing attack. OFF by default (when off,
+# every requester has weight 1.0 — today's behavior).
+enabled               = false
+negative_floor_weight = 0.0                # floor weight for a brand-new requester's PENALTY
+positive_floor_weight = 0.5                # floor weight for its reputation CREDIT (asymmetric)
+age_saturation        = 50                 # requester observations at which weight saturates to 1.0
+
+[antiabuse.cost_gate]
+# Pre-flight cost gating at admission: the worker rejects an over-budget query up
+# front (a rejection is NOT an execution failure and never affects score). OFF by
+# default.
+enabled                = false
+max_cost_hint_rows     = 0                 # reject offers with cost_hint_rows above this (0 = no cap)
+max_working_set_factor = 1.0               # reject when est. peak working set > per-job mem * factor
+
+[antiabuse.nondeterminism]
+# Detect non-deterministic queries (random(), now()/current_*, unordered LIMIT)
+# that can't reach a stable quorum hash, mark the job non-verifiable, and apply
+# no provider penalty. ON by default (deterministic queries are unaffected).
+enabled = true
+
+[antiabuse.free_rate_limit]
+# Per-requester-identity rate limiting for FREE jobs (anti-spam). Paid jobs are
+# prioritized and bypass this limiter. Optional small PoW for free requesters.
+# OFF by default.
+enabled               = false
+max_free_per_window   = 30
+window_secs           = 60
+max_tracked_requesters = 10000             # bounded, LRU-evicted
+require_pow_bits      = 0                   # optional PoW difficulty for free requesters (0 = none)
+prioritize_paid       = true
+
+[antiabuse.blocklist]
+# Local deny-list policy. Entries are managed via SQL (p2p_block/p2p_unblock/
+# p2p_blocklist) and persisted to blocklist.toml. This governs the AUTOMATIC
+# triggers and which external sources are honored. Each node decides on its own —
+# no central authority.
+auto_block_enabled     = false             # auto-block a worker below the trust floor
+auto_block_trust_floor = 0.0               # trust floor for auto-blocking (0 = disabled)
+honor_gossip_signals   = false             # act on signed, gossiped abuse signals
+honor_global_params    = false             # consult the on-chain GlobalParams governance blocklist
+
+[antiabuse.gossip]
+# Eclipse / gossip hardening for the libp2p discovery overlay.
+peer_scoring      = false                  # gossipsub peer scoring (penalize misbehaving peers)
+diverse_bootstrap = true                   # prefer a diverse bootstrap/relay set (anti-eclipse)

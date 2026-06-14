@@ -18,6 +18,7 @@ contract GlobalParams {
 type AllowedMessageToGlobalParams =
     | UpdateParams
     | UpdateAdmin
+    | SetBlocklisted
 
 fun onBouncedMessage(_in: InMessageBounced) {}
 
@@ -59,6 +60,15 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
+        // Governance blocklist update (anti-abuse). Admin-gated, mutates storage
+        // in place. Sets the subject blocked (1) or clears it (0).
+        SetBlocklisted => {
+            var storage = lazy GlobalParamsStorage.load();
+            assert (in.senderAddress == storage.admin) throw ERROR_NOT_ADMIN;
+            storage.blocklist.set(msg.subject, (msg.blocked ? 1 : 0) as uint1);
+            storage.save();
+        }
+
         else => {
             assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
         }
@@ -86,4 +96,14 @@ get fun get_admin(): address {
 get fun get_fee_recipient(): address {
     val storage = lazy GlobalParamsStorage.load();
     return storage.feeRecipient;
+}
+
+// Whether a subject (256-bit account hash) is on the governance blocklist.
+get fun get_blocklisted(subject: int): bool {
+    val storage = lazy GlobalParamsStorage.load();
+    val found = storage.blocklist.get(subject as uint256);
+    if (!found.isFound) {
+        return false;
+    }
+    return found.loadValue() == 1;
 }

@@ -27,3 +27,7 @@ ton/deployments/
 # misc
 .DS_Store
 *.log
+
+# runtime state
+runtime.toml
+blocklist.toml

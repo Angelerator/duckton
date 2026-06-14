@@ -653,7 +653,7 @@ fn is_secret_key(key: &str) -> bool {
     )
 }
 
-fn default_config_dir() -> PathBuf {
+pub(crate) fn default_config_dir() -> PathBuf {
     if let Ok(d) = std::env::var("P2P_CONFIG_DIR") {
         return PathBuf::from(d);
     }

@@ -18,12 +18,13 @@ use p2p_settlement::StakeRegistry;
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
-    age_factor, attestation_gate, canonical, exploration_bonus, now_ts, sign_receipt,
-    soft_trust_score, ReceiptDraft, TrustInputs, TrustStore,
+    age_factor, attestation_gate, canonical, exploration_bonus, is_nondeterministic, now_ts,
+    requester_trust_weight, sign_receipt, soft_trust_score, ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
 use tracing::debug;
 
+use crate::antiabuse::Blocklist;
 use crate::canary::CanaryAuditor;
 use crate::discovery::{CandidateFilter, Discovery};
 use crate::engine::ExecLease;
@@ -90,6 +91,10 @@ pub struct Coordinator {
     /// economics-gated input to the trust score — reputation/quality scoring is
     /// independent and always runs (see `trust_store.record` below).
     stake_registry: Option<Arc<dyn StakeRegistry>>,
+    /// Optional local deny-list (ARCHITECTURE "Abuse resistance"). When set,
+    /// blocked candidates are excluded from selection and auto-block triggers
+    /// add to it. `None` (default) ⇒ no blocking, exactly today's behavior.
+    blocklist: Option<Arc<Blocklist>>,
 }
 
 /// One worker that committed a result hash and whose decision stream is open.
@@ -119,7 +124,16 @@ impl Coordinator {
             local: None,
             planner: None,
             stake_registry: None,
+            blocklist: None,
         }
+    }
+
+    /// Wire a local deny-list (ARCHITECTURE "Abuse resistance"): blocked
+    /// candidates are excluded from selection, and the auto-block trigger
+    /// (`[antiabuse.blocklist].auto_block_*`) adds to it. Off by default.
+    pub fn with_blocklist(mut self, blocklist: Arc<Blocklist>) -> Self {
+        self.blocklist = Some(blocklist);
+        self
     }
 
     /// Wire a stake registry into the economics `stake_factor` seam. Off by
@@ -151,6 +165,12 @@ impl Coordinator {
 
     fn identity(&self) -> &NodeIdentity {
         self.transport.identity()
+    }
+
+    /// This node's identity as a requester (used to key its requester reputation
+    /// / age for the trust-weighting mechanism). Exposed for tests/tooling.
+    pub fn local_node_id(&self) -> &NodeId {
+        self.transport.local_node_id()
     }
 
     /// Run a query with optional per-call overrides.
@@ -192,10 +212,20 @@ impl Coordinator {
             data_class,
             min_attestation: min_level,
         };
-        let candidates = self
+        let mut candidates = self
             .discovery
             .find_candidates(cfg.discovery.candidate_sample_size, filter)
             .await;
+        // Anti-abuse: exclude blocklisted candidates (ARCHITECTURE "Abuse
+        // resistance"). Each node independently refuses flagged actors.
+        if cfg.antiabuse.enabled {
+            if let Some(bl) = &self.blocklist {
+                candidates.retain(|c| match &c.node_id {
+                    Some(id) => !bl.is_blocked(id.as_str()),
+                    None => true,
+                });
+            }
+        }
         if candidates.is_empty() {
             return Err(CoordinatorError::NoCandidates);
         }
@@ -243,11 +273,28 @@ impl Coordinator {
 
         // 3. Filter by attestation gate + min trust, score, select top-k.
         let now = now_ts();
+        let ab = &cfg.antiabuse;
+        let auto_block = ab.enabled
+            && ab.blocklist.auto_block_enabled
+            && ab.blocklist.auto_block_trust_floor > 0.0;
         let mut scored: Vec<(NodeId, f64, u64)> = accepted
             .into_iter()
             .filter(|(_, bid)| attestation_gate(bid.attestation.level, min_level))
             .map(|(worker, bid)| {
                 let score = self.effective_trust(&worker, &cfg, now, paid);
+                // Auto-block a worker whose effective trust is below the floor
+                // (ARCHITECTURE "Abuse resistance"). It is then excluded here and
+                // for all future jobs.
+                if auto_block && score < ab.blocklist.auto_block_trust_floor {
+                    if let Some(bl) = &self.blocklist {
+                        bl.block(
+                            worker.as_str(),
+                            p2p_config::BlockKind::NodeId,
+                            "auto-block: trust below floor",
+                            "auto",
+                        );
+                    }
+                }
                 (worker, score, bid.eta_ms)
             })
             .filter(|(_, score, _)| *score >= cfg.trust.min_trust)
@@ -323,12 +370,28 @@ impl Coordinator {
             .as_ref()
             .and_then(|c| c.expected(&query_hash));
 
+        // Non-determinism handling (ARCHITECTURE "Abuse resistance"): a query
+        // that can't produce a stable canonical hash (random()/now()/unordered
+        // LIMIT/…) cannot reach a meaningful quorum. Mark it NON-VERIFIABLE,
+        // return the fastest result anyway, and apply NO provider penalty for the
+        // (expected) hash divergence. A canary always has an authoritative answer
+        // so it is never treated as non-verifiable.
+        let non_verifiable =
+            cfg.antiabuse.nondeterminism_active() && canary_expected.is_none() && is_nondeterministic(sql);
+
         let (agreed_hash, verified) = match (&canary_expected, verify_mode) {
             (Some(expected), _) => (Some(expected.clone()), true),
+            _ if non_verifiable => {
+                // Fastest result wins; flagged non-verified.
+                let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
+                (fastest, false)
+            }
             (None, VerifyMode::Quorum) => {
                 if !outcome.reached() {
-                    // Emit receipts for what we saw, then fail.
-                    self.emit_failure_receipts(&inflight, &job_id, &query_hash);
+                    // No quorum: with fault attribution active this is attributed
+                    // to the JOB (most/all providers disagreed), not the
+                    // providers — so the failure receipts are NEUTRAL.
+                    self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
                     return Err(CoordinatorError::QuorumFailed {
                         agreement: outcome.agreement,
                         quorum: outcome.quorum,
@@ -359,9 +422,28 @@ impl Coordinator {
         let winner_idx = match winner_idx {
             Some(i) => i,
             None => {
-                self.emit_failure_receipts(&inflight, &job_id, &query_hash);
+                self.emit_failure_receipts(&inflight, &job_id, &query_hash, &cfg);
                 return Err(CoordinatorError::NoResult);
             }
+        };
+
+        // Requester-trust weight (ARCHITECTURE "Abuse resistance"): a job's effect
+        // on a provider's score is scaled by w(requester) ∈ [0,1] from THIS node's
+        // own reputation+age as a requester. New/unproven requester ⇒ w≈0 for
+        // negative outcomes, so a brand-new actor's heavy/incorrect job barely
+        // moves a provider's score. When the mechanism is off, w = 1.0 (today).
+        let self_id = self.transport.local_node_id().clone();
+        let negative_weight = if cfg.antiabuse.requester_trust_active() {
+            let obs = self.trust_store.requester_observation_count(&self_id);
+            let rep = self.trust_store.requester_reputation(&self_id, now);
+            requester_trust_weight(
+                rep,
+                obs,
+                cfg.antiabuse.requester_trust.age_saturation,
+                cfg.antiabuse.requester_trust.negative_floor_weight,
+            )
+        } else {
+            1.0
         };
 
         // 7. Tell winner to proceed; cancel losers (RESET). Collect the result.
@@ -371,8 +453,12 @@ impl Coordinator {
         let winner_id = inflight[winner_idx].worker.clone();
 
         for (i, mut f) in inflight.into_iter().enumerate() {
-            // verdict relative to the authoritative hash
-            let verdict = if f.hash == agreed {
+            // Verdict relative to the authoritative hash, with fault attribution:
+            // a non-verifiable job is NEUTRAL (Inconclusive — no penalty); a hash
+            // mismatch against a verified quorum is provable provider fault.
+            let verdict = if non_verifiable {
+                Verdict::Inconclusive
+            } else if f.hash == agreed {
                 Verdict::Correct
             } else {
                 Verdict::Incorrect
@@ -409,17 +495,28 @@ impl Coordinator {
             }
 
             receipts.push(self.make_receipt(&job_id, &f.worker, &query_hash, &f.hash, verdict, f.latency_ms));
-            // update reputation + penalties
-            if matches!(verdict, Verdict::Incorrect) {
-                self.trust_store
-                    .penalize(&f.worker, self.base_config.trust.incorrect_penalty);
+            // Penalize ONLY provable provider fault, scaled by the requester's
+            // standing. A new/unproven requester (negative_weight ≈ 0) can barely
+            // move a provider's score — the griefing defense. The penalty floors
+            // at 0 (never goes negative).
+            if verdict.is_provider_fault() {
+                let penalty = (self.base_config.trust.incorrect_penalty * negative_weight).max(0.0);
+                if penalty > 0.0 {
+                    self.trust_store.penalize(&f.worker, penalty);
+                }
             }
         }
 
-        // record all receipts in the trust store
+        // record all receipts in the trust store (neutral verdicts are skipped
+        // inside `record`, so a non-verifiable / job-caused outcome leaves
+        // provider reputation untouched).
         for r in &receipts {
             self.trust_store.record(r);
         }
+
+        // The requester accrues its own age/reputation from completed jobs, which
+        // feeds the requester-trust weighting above on future jobs.
+        self.trust_store.record_requester(&self_id, verified, now);
 
         let result = result.ok_or(CoordinatorError::NoResult)?;
 
@@ -600,9 +697,25 @@ impl Coordinator {
         sign_receipt(draft, &IdentitySigner(self.identity()))
     }
 
-    fn emit_failure_receipts(&self, inflight: &[InFlight], job_id: &JobId, query_hash: &QueryHash) {
+    fn emit_failure_receipts(
+        &self,
+        inflight: &[InFlight],
+        job_id: &JobId,
+        query_hash: &QueryHash,
+        cfg: &GridConfig,
+    ) {
+        // A no-quorum failure means the selected providers did NOT agree. With
+        // fault attribution active we treat this as job/non-attributable
+        // (Inconclusive — neutral, no provider penalty) rather than blaming every
+        // provider, since a genuine minority cheater is caught on the success
+        // path. With it off, fall back to the historical Malformed verdict.
+        let verdict = if cfg.antiabuse.fault_attribution_active() {
+            Verdict::Inconclusive
+        } else {
+            Verdict::Malformed
+        };
         for f in inflight {
-            let r = self.make_receipt(job_id, &f.worker, query_hash, &f.hash, Verdict::Malformed, f.latency_ms);
+            let r = self.make_receipt(job_id, &f.worker, query_hash, &f.hash, verdict, f.latency_ms);
             self.trust_store.record(&r);
         }
         debug!("emitted failure receipts for job {job_id}");

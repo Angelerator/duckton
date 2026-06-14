@@ -1029,6 +1029,16 @@ so every contract / node reads one authoritative source:
   `guard_mainnet()` + a registered `global_params` address. The deployed address
   is configured per network under `[economics.<net>.contracts].global_params`.
 
+- **Governance blocklist (anti-abuse).** `GlobalParams` also carries an
+  admin-gated **governance blocklist** (`SetBlocklisted` op + `get_blocklisted`
+  getter; storage `blocklist: map<uint256, uint1>` keyed by the subject's
+  account hash) for **egregious provable** cases. It is purely additive and
+  optional: a node consults it only when `[antiabuse.blocklist].honor_global_params`
+  is set, and even then each node still decides independently (it is *one source*
+  of deny-list input, not a central authority that forces a refusal). The
+  primary deny-lists remain **local** (`p2p_block` / `p2p_unblock` /
+  `p2p_blocklist`, persisted off-chain). See ARCHITECTURE §20 "Abuse resistance".
+
 ---
 
 ## 13. Better ideas / opinionated recommendations
@@ -1093,6 +1103,15 @@ so every contract / node reads one authoritative source:
 - **Bid front-running / MEV:** commit–reveal sealed bids (§5.3).
 - **Reputation/Sybil farming:** stake-at-risk + per-job TON fee + wallet-link
   collusion discounting + random committees.
+- **Reputation-griefing (heavy/infeasible/non-verifiable queries to tank an
+  honest provider):** handled by the anti-abuse layer (ARCHITECTURE §20):
+  **fault attribution** (a provider is penalized only for provable provider
+  fault; resource-exceeded / infeasible / non-verifiable outcomes apply zero
+  penalty), **requester-trust weighting** (`w(requester) ∈ [0,1]` — a new/unproven
+  requester's negative outcome barely moves a provider's score; gated hardest for
+  negatives), **pre-flight cost gating** (heavy queries are *declined*, not
+  *failed*), and **slashing-record / trust-floor auto-block** plus local
+  deny-lists. A slash event is a natural auto-block trigger.
 - **Griefing via spurious challenges:** challenger must post a bond, forfeited if
   the challenge fails.
 

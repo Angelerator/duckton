@@ -82,6 +82,23 @@ fun GlobalParams.sendUpdateAdmin(
     return net.send(from, genericMsg);
 }
 
+fun GlobalParams.sendSetBlocklisted(
+    self,
+    from: address,
+    queryId: uint64,
+    subject: uint256,
+    blocked: bool,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: SetBlocklisted { queryId, subject, blocked },
+    });
+    return net.send(from, genericMsg);
+}
+
 /// Send message to the contract with a custom body cell
 fun GlobalParams.sendAny(self, from: address, body: cell, config: SendParams = {}): SendResultList {
     val genericMsg = createMessage({
@@ -103,4 +120,8 @@ fun GlobalParams.getAdmin(self): address {
 
 fun GlobalParams.getFeeRecipient(self): address {
     return net.runGetMethod(self.address, "get_fee_recipient");
+}
+
+fun GlobalParams.getBlocklisted(self, subject: int): bool {
+    return net.runGetMethod(self.address, "get_blocklisted", [subject]);
 }

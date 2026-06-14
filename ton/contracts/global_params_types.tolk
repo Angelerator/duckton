@@ -19,6 +19,7 @@ import "common"
 
 const OP_UPDATE_PARAMS = 0x47504101 // "GPA" 01
 const OP_UPDATE_ADMIN = 0x47504102  // "GPA" 02
+const OP_SET_BLOCKLISTED = 0x47504103 // "GPA" 03 — governance blocklist (anti-abuse)
 
 // Log topic for the emitted "params updated" event (external-out message), so
 // off-chain indexers can watch parameter changes without parsing internals.
@@ -59,6 +60,12 @@ struct GlobalParamsStorage {
     admin: address          // gate for update_params / update_admin (→ multisig later)
     feeRecipient: address   // platform fee destination (configurable, §8.2)
     params: Cell<EcoParams> // the bulk params child cell
+    // Governance blocklist (ARCHITECTURE "Abuse resistance"): admin-gated, for
+    // egregious PROVABLE cases. Keyed by the subject's 256-bit account hash;
+    // value 1 = blocked. Nodes may optionally consult this on-chain list, but
+    // each still decides independently (it is an additional source, not a
+    // central authority that forces refusal).
+    blocklist: map<uint256, uint1>
 }
 
 fun GlobalParamsStorage.load(): GlobalParamsStorage {
@@ -81,6 +88,14 @@ struct (0x47504101) UpdateParams {
 struct (0x47504102) UpdateAdmin {
     queryId: uint64
     newAdmin: address
+}
+
+// Admin-gated governance blocklist update (anti-abuse). `subject` is the 256-bit
+// account hash of the actor; `blocked = true` adds it, `false` clears it.
+struct (0x47504103) SetBlocklisted {
+    queryId: uint64
+    subject: uint256
+    blocked: bool
 }
 
 // Emitted as an external-out log on every successful update.

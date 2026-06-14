@@ -64,6 +64,9 @@ fn verdict_tag(v: Verdict) -> u8 {
         Verdict::Incorrect => 2,
         Verdict::Timeout => 3,
         Verdict::Malformed => 4,
+        Verdict::ResourceExceeded => 5,
+        Verdict::Infeasible => 6,
+        Verdict::Inconclusive => 7,
     }
 }
 

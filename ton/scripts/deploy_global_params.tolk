@@ -54,6 +54,7 @@ fun main() {
         admin: admin.address,
         feeRecipient: feeRecipient,
         params: params.toCell(),
+        blocklist: createEmptyMap(),
     };
 
     val gp = GlobalParams.fromStorage(storage);

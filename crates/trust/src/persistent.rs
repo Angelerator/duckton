@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use p2p_config::{LimitsConfig, TrustConfig};
-use p2p_proto::{NodeId, Receipt, Verdict};
+use p2p_proto::{NodeId, Receipt};
 use redb::{
     Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
 };
@@ -188,7 +188,13 @@ impl RedbTrustStore {
 
 impl TrustStore for RedbTrustStore {
     fn record(&self, receipt: &Receipt) {
-        let correct = matches!(receipt.verdict, Verdict::Correct);
+        // Only `Correct` + provable provider-fault verdicts touch reputation;
+        // requester/job-caused and non-attributable verdicts are neutral (see
+        // `Verdict::affects_reputation`, ARCHITECTURE "Abuse resistance").
+        if !receipt.verdict.affects_reputation() {
+            return;
+        }
+        let correct = receipt.verdict.is_correct();
         let ts = receipt.ts;
         let _ = self.mutate(&receipt.worker_id, |s| {
             s.obs.push(PersistObs {
@@ -266,7 +272,7 @@ impl TrustStore for RedbTrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use p2p_proto::{JobId, QueryHash};
+    use p2p_proto::{JobId, QueryHash, Verdict};
 
     fn cfgs() -> (TrustConfig, LimitsConfig) {
         (TrustConfig::default(), LimitsConfig::default())

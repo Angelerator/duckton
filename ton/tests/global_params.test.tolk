@@ -43,6 +43,7 @@ fun deployGlobalParams(admin: address, feeRecipient: address): GlobalParams {
         admin: admin,
         feeRecipient: feeRecipient,
         params: validParams().toCell(),
+        blocklist: createEmptyMap(),
     };
     val gp = GlobalParams.fromStorage(storage);
     val res = gp.deploy(admin, { value: ton("1") });
@@ -114,6 +115,32 @@ get fun `test out-of-bounds params are rejected on-chain`() {
 
     // Original params survive every rejected update.
     expect(gp.getParams().params.load().unbondingSecs).toEqual(604800);
+}
+
+get fun `test admin-gated governance blocklist (anti-abuse)`() {
+    val admin = testing.treasury("admin");
+    val attacker = testing.treasury("attacker");
+    val gp = deployGlobalParams(admin.address, randomAddress("fee"));
+
+    val subject = 0x1234_5678_9abc_def0_1234_5678_9abc_def0_1234_5678_9abc_def0_1234_5678_9abc_def0;
+
+    // Unknown subjects are not blocked.
+    expect(gp.getBlocklisted(subject)).toEqual(false);
+
+    // A non-admin cannot add to the governance blocklist.
+    val denied = gp.sendSetBlocklisted(attacker.address, 1, subject, true, { value: ton("0.1") });
+    expect(denied).toHaveFailedTx({ from: attacker.address, to: gp.address, exitCode: ERROR_NOT_ADMIN });
+    expect(gp.getBlocklisted(subject)).toEqual(false);
+
+    // The admin blocks the subject (mutates storage in place).
+    val ok = gp.sendSetBlocklisted(admin.address, 2, subject, true, { value: ton("0.1") });
+    expect(ok).toHaveSuccessfulTx<SetBlocklisted>({ from: admin.address, to: gp.address });
+    expect(gp.getBlocklisted(subject)).toEqual(true);
+
+    // The admin can clear it again.
+    val cleared = gp.sendSetBlocklisted(admin.address, 3, subject, false, { value: ton("0.1") });
+    expect(cleared).toHaveSuccessfulTx<SetBlocklisted>({ from: admin.address, to: gp.address });
+    expect(gp.getBlocklisted(subject)).toEqual(false);
 }
 
 get fun `test admin rotation hands control to a new admin (multisig handoff)`() {

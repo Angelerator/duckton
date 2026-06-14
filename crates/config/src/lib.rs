@@ -29,9 +29,16 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+mod antiabuse;
+mod blocklist;
 mod economics;
 mod overrides;
 mod store;
+pub use antiabuse::{
+    AntiAbuseConfig, BlocklistPolicyConfig, CostGateConfig, FaultAttributionConfig,
+    FreeRateLimitConfig, GossipHardeningConfig, NondeterminismConfig, RequesterTrustConfig,
+};
+pub use blocklist::{BlockEntry, BlockKind, BlocklistStore};
 pub use economics::{
     ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,
     PricingEconomics, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
@@ -77,6 +84,12 @@ pub struct GridConfig {
     /// `docs/BLOCKCHAIN_ECONOMICS.md`). When `economics.enabled = false` the node
     /// behaves exactly as today: free, no chain, but still scored.
     pub economics: EconomicsConfig,
+    /// Anti-abuse / robustness layer (fault attribution, requester-trust
+    /// weighting, pre-flight cost gating, deny-lists, non-determinism handling,
+    /// free-mode rate limiting, gossip hardening). Defaults preserve today's
+    /// behavior where a change would be observable. See `docs/ARCHITECTURE.md`
+    /// "Abuse resistance".
+    pub antiabuse: AntiAbuseConfig,
     pub limits: LimitsConfig,
     /// OS-level execution sandbox wrapped AROUND job execution (architecture
     /// §9.4): rlimit/cgroups/seccomp resource caps + network egress restricted
@@ -101,6 +114,7 @@ impl Default for GridConfig {
             storage: StorageConfig::default(),
             planner: PlannerConfig::default(),
             economics: EconomicsConfig::default(),
+            antiabuse: AntiAbuseConfig::default(),
             limits: LimitsConfig::default(),
             sandbox: SandboxConfig::default(),
         }
@@ -1444,6 +1458,68 @@ impl GridConfig {
                 "P2P_ECONOMICS_MAINNET_CONFIRMED" => {
                     self.economics.mainnet_confirmed = parse(k, v)?
                 }
+                // ---- anti-abuse / robustness layer (env layer) ----
+                "P2P_ANTIABUSE_ENABLED" => self.antiabuse.enabled = parse(k, v)?,
+                "P2P_ANTIABUSE_FAULT_ATTRIBUTION_ENABLED" => {
+                    self.antiabuse.fault_attribution.enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_JOB_CONSENSUS_FRACTION" => {
+                    self.antiabuse.fault_attribution.job_consensus_fraction = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_REQUESTER_TRUST_ENABLED" => {
+                    self.antiabuse.requester_trust.enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_REQUESTER_NEGATIVE_FLOOR" => {
+                    self.antiabuse.requester_trust.negative_floor_weight = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_REQUESTER_POSITIVE_FLOOR" => {
+                    self.antiabuse.requester_trust.positive_floor_weight = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_REQUESTER_AGE_SATURATION" => {
+                    self.antiabuse.requester_trust.age_saturation = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_COST_GATE_ENABLED" => {
+                    self.antiabuse.cost_gate.enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_COST_GATE_MAX_COST_HINT_ROWS" => {
+                    self.antiabuse.cost_gate.max_cost_hint_rows = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_COST_GATE_MAX_WORKING_SET_FACTOR" => {
+                    self.antiabuse.cost_gate.max_working_set_factor = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_NONDETERMINISM_ENABLED" => {
+                    self.antiabuse.nondeterminism.enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_FREE_RATE_LIMIT_ENABLED" => {
+                    self.antiabuse.free_rate_limit.enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_FREE_RATE_MAX_PER_WINDOW" => {
+                    self.antiabuse.free_rate_limit.max_free_per_window = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_FREE_RATE_WINDOW_SECS" => {
+                    self.antiabuse.free_rate_limit.window_secs = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_FREE_RATE_REQUIRE_POW_BITS" => {
+                    self.antiabuse.free_rate_limit.require_pow_bits = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_AUTO_BLOCK_ENABLED" => {
+                    self.antiabuse.blocklist.auto_block_enabled = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_AUTO_BLOCK_TRUST_FLOOR" => {
+                    self.antiabuse.blocklist.auto_block_trust_floor = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_HONOR_GOSSIP_SIGNALS" => {
+                    self.antiabuse.blocklist.honor_gossip_signals = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_HONOR_GLOBAL_PARAMS" => {
+                    self.antiabuse.blocklist.honor_global_params = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_GOSSIP_PEER_SCORING" => {
+                    self.antiabuse.gossip.peer_scoring = parse(k, v)?
+                }
+                "P2P_ANTIABUSE_GOSSIP_DIVERSE_BOOTSTRAP" => {
+                    self.antiabuse.gossip.diverse_bootstrap = parse(k, v)?
+                }
                 // P2P_CONFIG is handled in `load`, ignore here.
                 "P2P_CONFIG" => {}
                 _ => {} // ignore unknown P2P_* to stay forward-compatible
@@ -1668,6 +1744,9 @@ impl GridConfig {
 
         // ---- economics / settlement layer ----
         self.economics.validate()?;
+
+        // ---- anti-abuse / robustness layer ----
+        self.antiabuse.validate()?;
 
         Ok(())
     }

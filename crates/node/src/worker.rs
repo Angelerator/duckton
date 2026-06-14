@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use tracing::{debug, warn};
 
 use crate::admission::AdmissionController;
+use crate::antiabuse::{cost_gate_reason, Blocklist, RateLimiter};
 use crate::compression::algo_to_wire;
 use crate::engine::{ExecLease, QueryEngine};
 use crate::result_stream::SendOpts;
@@ -113,6 +114,18 @@ impl SandboxPolicy {
     }
 }
 
+/// Worker-side anti-abuse runtime (ARCHITECTURE "Abuse resistance"): refuse
+/// blocked requesters, decline over-budget offers up front, and rate-limit FREE
+/// jobs per requester identity. Off (all `None`) unless wired via
+/// [`Worker::with_antiabuse`], so the default worker behaves exactly as before.
+#[derive(Clone)]
+struct AntiAbuseRuntime {
+    cfg: Arc<p2p_config::AntiAbuseConfig>,
+    economics: Arc<p2p_config::EconomicsConfig>,
+    blocklist: Option<Arc<Blocklist>>,
+    rate_limiter: Option<Arc<RateLimiter>>,
+}
+
 /// A running worker service.
 #[derive(Clone)]
 pub struct Worker {
@@ -122,6 +135,7 @@ pub struct Worker {
     attestation: Attestation,
     params: WorkerParams,
     sandbox: SandboxPolicy,
+    antiabuse: Option<AntiAbuseRuntime>,
 }
 
 impl Worker {
@@ -139,7 +153,27 @@ impl Worker {
             attestation,
             params,
             sandbox: SandboxPolicy::disabled(),
+            antiabuse: None,
         }
+    }
+
+    /// Wire the anti-abuse runtime (ARCHITECTURE "Abuse resistance"): a shared
+    /// deny-list and a free-job rate limiter, both consulted in `make_bid`. The
+    /// behaviors are gated by `cfg.antiabuse` (defaults preserve today's
+    /// behavior). A `None` blocklist/limiter disables that specific check.
+    pub fn with_antiabuse(
+        mut self,
+        cfg: &p2p_config::GridConfig,
+        blocklist: Option<Arc<Blocklist>>,
+        rate_limiter: Option<Arc<RateLimiter>>,
+    ) -> Self {
+        self.antiabuse = Some(AntiAbuseRuntime {
+            cfg: Arc::new(cfg.antiabuse.clone()),
+            economics: Arc::new(cfg.economics.clone()),
+            blocklist,
+            rate_limiter,
+        });
+        self
     }
 
     /// Attach an OS-level execution sandbox (architecture §9.4) resolved from
@@ -220,8 +254,81 @@ impl Worker {
         Ok(())
     }
 
+    /// Build a rejecting bid with a given reason (no admission, no receipt).
+    fn reject_bid(&self, offer: &Offer, reason: impl Into<String>) -> Bid {
+        let free = self.admission.free();
+        Bid {
+            job_id: offer.job_id.clone(),
+            worker_id: self.transport.local_node_id().clone(),
+            decision: BidDecision::Reject { reason: reason.into() },
+            eta_ms: 0,
+            price: 0,
+            attestation: self.attestation.clone(),
+            recent_receipts: vec![],
+            free_mem_bytes: free.memory_bytes,
+            free_threads: free.threads,
+        }
+    }
+
+    /// Pre-admission anti-abuse gates (ARCHITECTURE "Abuse resistance"): refuse a
+    /// blocked requester, decline an over-budget offer, and rate-limit FREE jobs
+    /// per requester identity. Returns a rejecting `Bid` to short-circuit, or
+    /// `None` to continue to normal admission. A rejection is **not** an
+    /// execution failure — it produces no receipt and never affects a score.
+    fn antiabuse_reject(&self, offer: &Offer) -> Option<Bid> {
+        let rt = self.antiabuse.as_ref()?;
+        if !rt.cfg.enabled {
+            return None;
+        }
+        // 1. Deny-list: refuse a blocked requester (node id).
+        if let Some(bl) = &rt.blocklist {
+            if bl.is_blocked(offer.requester_id.as_str()) {
+                return Some(self.reject_bid(offer, "requester is blocklisted"));
+            }
+        }
+        // 2. Pre-flight cost gate: decline an over-budget query up front.
+        if rt.cfg.cost_gate_active() {
+            if let Some(reason) = cost_gate_reason(
+                &rt.cfg.cost_gate,
+                offer.cost_hint_rows,
+                None,
+                self.params.per_job_memory_bytes,
+            ) {
+                return Some(self.reject_bid(offer, reason));
+            }
+        }
+        // 3. Free-mode rate limit (paid jobs are prioritized and bypass it).
+        if rt.cfg.free_rate_limit_active() {
+            let class = match offer.data_class {
+                p2p_proto::DataClass::Public => p2p_config::DataClassCfg::Public,
+                p2p_proto::DataClass::Internal => p2p_config::DataClassCfg::Internal,
+                p2p_proto::DataClass::Sensitive => p2p_config::DataClassCfg::Sensitive,
+            };
+            let is_free = rt.economics.resolve_payment(class).is_free();
+            let prioritize_paid = rt.cfg.free_rate_limit.prioritize_paid;
+            if is_free || !prioritize_paid {
+                if let Some(rl) = &rt.rate_limiter {
+                    if !rl.check_and_record(&offer.requester_id, p2p_trust::now_ts()) {
+                        return Some(self.reject_bid(offer, "free-job rate limit exceeded"));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Evaluate an offer and produce this worker's [`Bid`] (the anti-abuse gates
+    /// + admission-control decision). This is exactly what the worker replies to
+    /// an inbound `Offer`; exposed for tests and tooling.
+    pub fn bid_for(&self, offer: &Offer) -> Bid {
+        self.make_bid(offer)
+    }
+
     /// Admission-control decision for an offer.
     fn make_bid(&self, offer: &Offer) -> Bid {
+        if let Some(rejection) = self.antiabuse_reject(offer) {
+            return rejection;
+        }
         let worker_id = self.transport.local_node_id().clone();
         let free = self.admission.free();
 

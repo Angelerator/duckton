@@ -12,6 +12,7 @@
 //! This crate is transport-agnostic (no QUIC dependency); signing is abstracted
 //! by the [`receipt::Signer`] trait.
 
+pub mod antiabuse;
 pub mod attestation;
 pub mod canary;
 pub mod canonical;
@@ -23,6 +24,10 @@ pub mod sealing;
 pub mod sybil;
 pub mod token;
 
+pub use antiabuse::{
+    classify_failure, is_job_consensus_failure, is_nondeterministic, requester_trust_weight,
+    sign_abuse_signal, verify_abuse_signal,
+};
 pub use canonical::{canonical_hash, evaluate_quorum, QuorumOutcome};
 pub use receipt::{sign_receipt, signing_bytes, verify_receipt, ReceiptDraft, Signer};
 pub use reputation::{

@@ -224,13 +224,55 @@ pub struct Ack {
     pub detail: String,
 }
 
-/// Verdict recorded in a [`Receipt`] (architecture §7.3).
+/// Verdict recorded in a [`Receipt`] (architecture §7.3, "Abuse resistance").
+///
+/// Verdicts split into three fault classes (see [`Verdict::is_provider_fault`]):
+///  * **Provider fault** — `Incorrect` / `Timeout` / `Malformed`: the provider
+///    returned a wrong result, went silent, or produced a corrupt frame. These
+///    count against the provider's reputation and may incur a penalty.
+///  * **Requester / job fault** — `ResourceExceeded` / `Infeasible`: the *job*
+///    was too expensive (OOM / over budget) or impossible (missing data, query
+///    infeasible). The provider is blameless; **zero** provider penalty.
+///  * **Non-attributable** — `Inconclusive`: a non-verifiable (non-deterministic)
+///    query, a job-consensus failure (most/all providers failed the same way), or
+///    an admission rejection. Neutral: no reputation effect either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Verdict {
     Correct,
     Incorrect,
     Timeout,
     Malformed,
+    /// The job exceeded a resource budget (OOM / memory limit / too expensive).
+    /// Requester/job fault — never penalizes the provider.
+    ResourceExceeded,
+    /// The query was infeasible (missing data, unsatisfiable, malformed *input*).
+    /// Requester/job fault — never penalizes the provider.
+    Infeasible,
+    /// The outcome is non-attributable (non-verifiable/non-deterministic query,
+    /// job-consensus failure, or admission rejection). Neutral — no score effect.
+    Inconclusive,
+}
+
+impl Verdict {
+    /// A success.
+    pub fn is_correct(self) -> bool {
+        matches!(self, Verdict::Correct)
+    }
+
+    /// Whether this verdict is **provable provider fault** (the only class that
+    /// may reduce a provider's reputation / incur a penalty). Requester/job-caused
+    /// and non-attributable verdicts return `false`.
+    pub fn is_provider_fault(self) -> bool {
+        matches!(self, Verdict::Incorrect | Verdict::Timeout | Verdict::Malformed)
+    }
+
+    /// Whether this verdict should be recorded as an observation against a
+    /// provider's reputation at all. `Correct` and provider-fault verdicts are
+    /// recorded; requester/job-caused and non-attributable verdicts are neutral
+    /// and recorded as nothing (so they cannot be used to grief a provider).
+    pub fn affects_reputation(self) -> bool {
+        self.is_correct() || self.is_provider_fault()
+    }
 }
 
 /// A signed statement about a completed job's outcome (architecture §7.3).
@@ -251,6 +293,32 @@ pub struct Receipt {
     pub ts: u64,
     /// Hex Ed25519 public key of the requester (so verifiers can check `sig`).
     pub requester_pubkey: String,
+    /// Hex Ed25519 signature over the canonical signing bytes.
+    pub sig: String,
+}
+
+/// A signed statement that a node/wallet is an abusive actor, gossiped so each
+/// node can **independently** decide to refuse the flagged actor (ARCHITECTURE
+/// "Abuse resistance"). There is no central authority: a node honors a signal
+/// only if it verifies and only if its policy opts in.
+///
+/// The `sig` is an Ed25519 signature by `reporter_id`'s key over the canonical
+/// signing bytes (see `p2p-trust::abuse`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AbuseSignal {
+    /// The accused node identity.
+    pub subject_id: NodeId,
+    /// The accused wallet address, if the report is wallet-keyed.
+    pub subject_wallet: Option<String>,
+    /// Machine-readable reason (`wrong_result` | `equivocation` | `slashed` |
+    /// `downtime` | `exfiltration` | …).
+    pub reason: String,
+    /// Unix-seconds timestamp the signal was issued.
+    pub ts: u64,
+    /// The reporter's node identity (must hash to `reporter_pubkey`).
+    pub reporter_id: NodeId,
+    /// Hex Ed25519 public key of the reporter.
+    pub reporter_pubkey: String,
     /// Hex Ed25519 signature over the canonical signing bytes.
     pub sig: String,
 }
@@ -303,6 +371,8 @@ pub enum Wire {
     Ack(Ack),
     /// A whole result set delivered in one message (small results / tests).
     Result(JobId, ResultSet),
+    /// A signed abuse signal (gossiped; each node decides independently).
+    Abuse(AbuseSignal),
 }
 
 #[cfg(test)]

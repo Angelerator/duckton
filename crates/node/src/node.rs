@@ -122,7 +122,7 @@ impl Node {
             Arc::new(DefaultPlanner::new(config.planner.clone()));
 
         let config = Arc::new(config);
-        let coordinator = Coordinator::new(
+        let mut coordinator = Coordinator::new(
             transport,
             discovery,
             trust_store,
@@ -130,6 +130,15 @@ impl Node {
             engine_version,
         )
         .with_local_execution(local, planner);
+
+        // Anti-abuse: wire the persisted local deny-list so SQL `p2p_block` /
+        // auto-block actually exclude flagged candidates on this requester. An
+        // empty/missing blocklist is a no-op, so default behavior is unchanged.
+        if config.antiabuse.enabled {
+            let blocklist =
+                Arc::new(crate::antiabuse::Blocklist::with_store(p2p_config::BlocklistStore::open()));
+            coordinator = coordinator.with_blocklist(blocklist);
+        }
 
         Ok(Self {
             coordinator,

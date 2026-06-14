@@ -23,7 +23,7 @@ use duckdb::core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId};
 use duckdb::vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab};
 use duckdb::{duckdb_entrypoint_c_api, Connection, Result};
 
-use p2p_config::{ConfigStore, SettingRow};
+use p2p_config::{BlockKind, BlocklistStore, ConfigStore, SettingRow};
 
 /// Rows materialized at bind time; emitted in one chunk.
 #[repr(C)]
@@ -638,6 +638,154 @@ impl VTab for UnstakeVTab {
     }
 }
 
+// ===========================================================================
+// Anti-abuse deny-list surface (ARCHITECTURE "Abuse resistance").
+//
+// Local deny-lists keyed by node_id / wallet. Each node maintains its OWN list
+// and decides independently whom to refuse — no central authority. Persisted to
+// blocklist.toml via `p2p_config::BlocklistStore`.
+// ===========================================================================
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Infer the kind of an identifier: a `b3:` prefix ⇒ node id, else wallet.
+/// An explicit `kind` arg overrides.
+fn resolve_kind(explicit: Option<&str>, id: &str) -> BlockKind {
+    if let Some(k) = explicit.and_then(BlockKind::parse) {
+        return k;
+    }
+    if id.starts_with("b3:") {
+        BlockKind::NodeId
+    } else {
+        BlockKind::Wallet
+    }
+}
+
+fn blocklist_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
+    let store = BlocklistStore::open();
+    let entries = store.list().map_err(boxed)?;
+    if entries.is_empty() {
+        return Ok(vec![["blocklist".into(), "empty".into(), "no blocked actors".into()]]);
+    }
+    Ok(entries
+        .into_iter()
+        .map(|e| {
+            [
+                e.id,
+                e.kind.as_str().to_string(),
+                format!("{} (source={}, ts={})", e.reason, e.source, e.ts),
+            ]
+        })
+        .collect())
+}
+
+/// `CALL p2p_block(id => '...', reason => '...', kind => 'node_id'|'wallet')`.
+struct BlockVTab;
+impl VTab for BlockVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "id", "kind", "detail");
+        let id = bind
+            .get_named_parameter("id")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            return Err(boxed("p2p_block: an `id` (node_id or wallet) is required"));
+        }
+        let reason = bind
+            .get_named_parameter("reason")
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "manual block".to_string());
+        let kind_arg = bind.get_named_parameter("kind").map(|v| v.to_string());
+        let kind = resolve_kind(kind_arg.as_deref(), &id);
+        BlocklistStore::open()
+            .block(&id, kind, &reason, "manual", now_secs())
+            .map_err(boxed)?;
+        let mut rows: Vec<[String; 3]> =
+            vec![["result".into(), "blocked".into(), id.clone()]];
+        rows.extend(blocklist_rows()?);
+        Ok(Rows3 { rows })
+    }
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(vec![
+            ("id".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("reason".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            ("kind".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+        ])
+    }
+}
+
+/// `CALL p2p_unblock(id => '...')`.
+struct UnblockVTab;
+impl VTab for UnblockVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "id", "kind", "detail");
+        let id = bind
+            .get_named_parameter("id")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            return Err(boxed("p2p_unblock: an `id` is required"));
+        }
+        let removed = BlocklistStore::open().unblock(&id).map_err(boxed)?;
+        let mut rows: Vec<[String; 3]> = vec![[
+            "result".into(),
+            if removed { "unblocked".into() } else { "not_found".into() },
+            id.clone(),
+        ]];
+        rows.extend(blocklist_rows()?);
+        Ok(Rows3 { rows })
+    }
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(vec![("id".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar))])
+    }
+}
+
+/// `SELECT * FROM p2p_blocklist()` — current deny-list entries.
+struct BlocklistVTab;
+impl VTab for BlocklistVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "id", "kind", "detail");
+        Ok(Rows3 { rows: blocklist_rows()? })
+    }
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![])
+    }
+}
+
 #[duckdb_entrypoint_c_api(ext_name = "duckdb_p2p", min_duckdb_version = "v1.0.0")]
 pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // Read-only metadata + inspection.
@@ -663,5 +811,10 @@ pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<StakeVTab>("p2p_stake")?;
     con.register_table_function::<UnstakeVTab>("p2p_unstake")?;
     con.register_table_function::<AdminParamsVTab>("p2p_admin_params")?;
+
+    // Anti-abuse deny-list surface.
+    con.register_table_function::<BlockVTab>("p2p_block")?;
+    con.register_table_function::<UnblockVTab>("p2p_unblock")?;
+    con.register_table_function::<BlocklistVTab>("p2p_blocklist")?;
     Ok(())
 }

@@ -60,6 +60,8 @@ fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
         query_parallelism: 3,
         protocol_major: p2p_proto::PROTOCOL_VERSION.major,
         nat: test_nat(false),
+        gossip_peer_scoring: false,
+        diverse_bootstrap: true,
     }
 }
 

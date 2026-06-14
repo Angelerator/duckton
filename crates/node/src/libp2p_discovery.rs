@@ -79,6 +79,12 @@ pub struct Libp2pDiscoveryConfig {
     /// Global NAT-traversal stack parameters (AutoNAT, DCUtR, Circuit Relay v2 +
     /// AutoRelay, mDNS). Built from `[discovery.nat]`.
     pub nat: NatParams,
+    /// Enable gossipsub peer scoring (eclipse/gossip hardening, ARCHITECTURE
+    /// "Abuse resistance"). Built from `[antiabuse.gossip].peer_scoring`.
+    pub gossip_peer_scoring: bool,
+    /// Prefer a diverse bootstrap/relay set (shuffle entry points) to resist
+    /// eclipse. Built from `[antiabuse.gossip].diverse_bootstrap`.
+    pub diverse_bootstrap: bool,
 }
 
 /// Resolved NAT-traversal parameters for the overlay (parsed from
@@ -188,6 +194,8 @@ impl Libp2pDiscoveryConfig {
             query_parallelism: cfg.discovery.kademlia.query_parallelism.max(1),
             protocol_major,
             nat: NatParams::from_config(&cfg.discovery.nat)?,
+            gossip_peer_scoring: cfg.antiabuse.enabled && cfg.antiabuse.gossip.peer_scoring,
+            diverse_bootstrap: cfg.antiabuse.gossip.diverse_bootstrap,
         })
     }
 }
@@ -328,6 +336,7 @@ impl Libp2pDiscovery {
         let mesh_n = cfg.mesh_n;
         let replication = cfg.replication_factor;
         let parallelism = cfg.query_parallelism;
+        let peer_scoring = cfg.gossip_peer_scoring;
         // NAT params: a clone is moved into the (FnOnce) behaviour constructor;
         // the original `cfg.nat` is reused afterwards for listen/external-addr
         // wiring.
@@ -362,11 +371,22 @@ impl Libp2pDiscovery {
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .build()
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
-                let gossipsub = gossipsub::Behaviour::new(
+                let mut gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossip_cfg,
                 )
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                // Eclipse/gossip hardening: enable gossipsub peer scoring so
+                // misbehaving mesh peers are penalized and pruned (ARCHITECTURE
+                // "Abuse resistance"). Default-lenient library params; off unless
+                // [antiabuse.gossip].peer_scoring is set.
+                if peer_scoring {
+                    let params = gossipsub::PeerScoreParams::default();
+                    let thresholds = gossipsub::PeerScoreThresholds::default();
+                    gossipsub
+                        .with_peer_score(params, thresholds)
+                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                }
 
                 // Kademlia in server mode with configured replication/parallelism.
                 let mut kad_cfg = kad::Config::default();
@@ -451,7 +471,15 @@ impl Libp2pDiscovery {
         }
 
         // Seed the routing table and dial bootstrap peers to enter the swarm.
-        for addr in &cfg.bootstrap {
+        // Eclipse hardening: when `diverse_bootstrap` is on, randomize the dial
+        // order so a node does not deterministically favor one entry point that
+        // could eclipse it (ARCHITECTURE "Abuse resistance").
+        let mut bootstrap = cfg.bootstrap.clone();
+        if cfg.diverse_bootstrap {
+            use rand::seq::SliceRandom;
+            bootstrap.shuffle(&mut rand::thread_rng());
+        }
+        for addr in &bootstrap {
             if let Some(peer) = peer_id_from_multiaddr(addr) {
                 swarm
                     .behaviour_mut()
@@ -462,7 +490,7 @@ impl Libp2pDiscovery {
                 debug!("dial bootstrap {addr} failed: {e}");
             }
         }
-        if !cfg.bootstrap.is_empty() {
+        if !bootstrap.is_empty() {
             let _ = swarm.behaviour_mut().kademlia.bootstrap();
         }
 

@@ -222,4 +222,25 @@ fn extension_sql_admin_surface_end_to_end() {
     assert_eq!(stdout, "0", "secret must be redacted from p2p_config()");
     let runtime = std::fs::read_to_string(d4.join("runtime.toml")).unwrap_or_default();
     assert!(!runtime.contains("abandon"), "secret must not land in the config file");
+
+    // 5. Anti-abuse deny-list: p2p_block persists, p2p_blocklist lists it, and
+    //    p2p_unblock removes it (ARCHITECTURE "Abuse resistance").
+    let d5 = tmp_dir.join("c5");
+    let _ = std::fs::remove_dir_all(&d5);
+    let (ok, _o, e) = run(&d5, "CALL p2p_block(id => 'b3:badactor', reason => 'cheating');");
+    assert!(ok, "p2p_block failed: {e}");
+    let (ok, stdout, _e) =
+        run(&d5, "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';");
+    assert!(ok);
+    assert_eq!(stdout, "1", "blocked actor must appear in p2p_blocklist()");
+    // It is persisted to blocklist.toml under the hermetic config dir.
+    let bl = std::fs::read_to_string(d5.join("blocklist.toml")).unwrap_or_default();
+    assert!(bl.contains("b3:badactor"), "block must persist to blocklist.toml");
+    // Unblock removes it.
+    let (ok, _o, e) = run(&d5, "CALL p2p_unblock(id => 'b3:badactor');");
+    assert!(ok, "p2p_unblock failed: {e}");
+    let (ok, stdout, _e) =
+        run(&d5, "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';");
+    assert!(ok);
+    assert_eq!(stdout, "0", "unblocked actor must be gone from p2p_blocklist()");
 }

@@ -686,7 +686,140 @@ deviations / environment limits (do **not** assume otherwise):
   `lock_configuration=true`, ephemeral `temp_directory`, budgeted
   `memory_limit`/`threads`), verified to block local file reads and `INSTALL`.
 
-## 20. Transport performance tuning (implemented)
+## 20. Abuse resistance (anti-griefing & robustness) — implemented
+
+A trust/quorum/reputation system is only as good as its resistance to *abuse of
+the scoring itself*. The headline threat is **reputation-griefing**: an attacker
+spins up a cheap requester identity and fires **heavy / infeasible / non-verifiable**
+queries at an honest provider so the provider "fails" and loses reputation —
+even though nothing was the provider's fault. This layer defends against that and
+related abuse. Everything is behind **configurable knobs** under `[antiabuse]`
+(layered defaults → TOML → `P2P_ANTIABUSE_*` env → per-call), and **defaults
+preserve today's behavior where a change would be observable**: the always-safe
+pieces (fault attribution, non-determinism detection — which never *add* a
+penalty) default **on**; the scoring-altering pieces (requester-trust weighting,
+cost gating, free-mode rate limiting, auto-blocking, gossip peer scoring) default
+**off**. Code: `crates/trust/src/antiabuse.rs` (pure primitives),
+`crates/node/src/antiabuse.rs` (deny-list + rate limiter), and the wiring in
+`coordinator.rs` / `worker.rs` / `libp2p_discovery.rs`.
+
+### 1. Failure fault attribution (the core fix)
+A provider is penalized **only for provable PROVIDER fault**. Verdicts now carry
+a fault class (`p2p_proto::Verdict`):
+
+| Class | Verdicts | Score effect |
+|---|---|---|
+| **Provider fault** | `Incorrect` (hash ≠ verified quorum), `Timeout`, `Malformed` | counts against reputation; may incur a penalty |
+| **Requester / job fault** | `ResourceExceeded` (OOM / too expensive), `Infeasible` (missing data / unsatisfiable) | **zero** provider penalty |
+| **Non-attributable** | `Inconclusive` (non-verifiable query, job-consensus failure, admission rejection) | neutral — no reputation effect at all |
+
+`Verdict::affects_reputation()` gates what the `TrustStore` even records:
+requester/job-caused and non-attributable verdicts are **recorded as nothing**,
+so a heavy/infeasible/non-verifiable job can never move a provider's score. A
+**job-consensus** signal (`is_job_consensus_failure`) handles the "everyone
+failed the same way" case: when ≥ `job_consensus_fraction` (default `0.67`, min 2
+nodes) of the selected providers fail identically and no quorum forms, the
+failure is attributed to the **job**, not the providers (the coordinator emits
+`Inconclusive`, not `Malformed`). A genuine minority cheater is still caught on
+the success path (it mismatches a *reached* quorum ⇒ `Incorrect` ⇒ penalized).
+
+### 2. Pre-flight cost gating at admission
+The worker declines an **over-budget** query *before* executing it
+(`cost_gate_reason`): an offer whose advertised `cost_hint_rows` exceeds
+`max_cost_hint_rows`, or whose estimated peak working set exceeds
+`per_job_memory_bytes × max_working_set_factor`, gets a `Reject` bid. **A
+rejection is not an execution failure** — it produces no receipt and never
+affects a score. Heavy queries are *declined*, not *failed*. (Defaults off; when
+on, the gate reuses the requester's cost hint and the same metadata working-set
+estimator the local planner uses.)
+
+### 3. Requester reputation + trust-weighted score impact ("newer sender → less effect")
+Requesters now have a reputation + age too (`TrustStore::record_requester` /
+`requester_reputation` / `requester_observation_count`). A job's effect on a
+provider's score is multiplied by
+
+```
+w(requester) = floor + (1 − floor) · clamp01( age_factor(obs, saturation) · reputation )
+```
+
+A brand-new requester (`obs = 0`) gets exactly `floor`; an established,
+good-reputation requester approaches `1`. The weighting is **asymmetric**: the
+**negative** floor (`negative_floor_weight`, default `0.0`) gates penalties
+hardest, while the **positive** floor (`positive_floor_weight`, default `0.5`)
+is more lenient about reputation credit. Concretely: **a brand-new requester's
+incorrect/heavy outcome barely moves a provider's score (penalty × ≈ 0)**, while
+an established requester's does (penalty × ≈ 1). This is the **primary defense**
+against the heavy-query griefing attack. Default **off** (when off, `w = 1.0` —
+today's behavior). *Honest note:* in a single process the requester is the local
+node, so this models "this node accrues requester standing over time"; the full
+cross-node defense (down-weighting a stranger's **gossiped** receipts by their
+standing in the receiver's store) shares the same primitive but needs a
+multi-host deployment to exercise end-to-end.
+
+### 4. Blocking bad players (local deny-lists, no central authority)
+Local deny/allow lists keyed by `node_id` / `wallet`
+(`crates/config/src/blocklist.rs`, persisted to `blocklist.toml`), managed by new
+SQL admin calls: `CALL p2p_block(id => '…', reason => '…')`,
+`CALL p2p_unblock(id => '…')`, `SELECT * FROM p2p_blocklist()`. The coordinator
+excludes blocked candidates from selection; the worker refuses offers from
+blocked requesters. Triggers:
+- **manual** (the SQL calls above);
+- **auto-block** below a configurable trust floor (`auto_block_trust_floor`) —
+  also the natural hook for a slashing record;
+- **signed, gossiped abuse signals** (`p2p_proto::AbuseSignal`,
+  `sign_abuse_signal` / `verify_abuse_signal`): each node *independently* decides
+  whether to act on a verified signal (`honor_gossip_signals`) — no central
+  authority forces a refusal;
+- an optional **on-chain governance blocklist** in `GlobalParams`
+  (`SetBlocklisted`, admin-gated, `get_blocklisted`) for egregious provable cases
+  (`honor_global_params`).
+
+### 5. Non-determinism handling
+Queries that cannot produce a stable canonical hash — `random()`,
+`now()`/`current_*`, `uuid()`/`gen_random_uuid()`, an unordered `LIMIT`, … —
+are detected (`is_nondeterministic`) and the job is marked **non-verifiable**:
+the coordinator returns the fastest result with `verified = false`, records
+`Inconclusive` verdicts, and applies **no** provider penalty. A divergent hash on
+such a query is *expected*, not provable fault. Default **on** (deterministic
+queries are unaffected; a false positive only costs a correct result being
+returned non-verified, which is the safe direction).
+
+### 6. Free-mode anti-spam
+Per-requester-identity sliding-window rate limiting for **free** jobs
+(`RateLimiter`, bounded + LRU-evicted). Paid jobs are **prioritized** and bypass
+the free limiter (`prioritize_paid`). Over-rate free offers get a `Reject` bid.
+An optional small PoW for free requesters (`require_pow_bits`) is a configured
+knob (full wire enforcement needs the offer to carry a PoW stamp — a noted
+follow-up). Default off.
+
+### 7. Eclipse / gossip hardening
+The libp2p discovery overlay can enable **gossipsub peer scoring**
+(`[antiabuse.gossip].peer_scoring`) so misbehaving mesh peers are penalized and
+pruned, and **diverse bootstrap** (`diverse_bootstrap`, default on) randomizes
+the bootstrap/relay dial order so a node does not deterministically favor a
+single entry point that could eclipse it. Peer scoring defaults **off** (lenient
+small-mesh loopback behavior) and uses the library's default score params when
+enabled.
+
+**Config knobs** (all under `[antiabuse]`, see `config/p2p.example.toml`):
+`enabled`, `fault_attribution.{enabled,job_consensus_fraction}`,
+`requester_trust.{enabled,negative_floor_weight,positive_floor_weight,age_saturation}`,
+`cost_gate.{enabled,max_cost_hint_rows,max_working_set_factor}`,
+`nondeterminism.enabled`,
+`free_rate_limit.{enabled,max_free_per_window,window_secs,max_tracked_requesters,require_pow_bits,prioritize_paid}`,
+`blocklist.{auto_block_enabled,auto_block_trust_floor,honor_gossip_signals,honor_global_params}`,
+`gossip.{peer_scoring,diverse_bootstrap}`.
+
+**Honest limits.** Requester-trust weighting and the gossiped-abuse-signal /
+on-chain-governance-blocklist paths are exercised by unit/integration tests and
+the Acton emulation, but their *full* cross-node value (down-weighting a
+stranger's gossiped receipts; propagating abuse signals across a real swarm;
+reading the on-chain blocklist over live RPC) requires a **multi-host / live
+testnet** deployment. The PoW-for-free-requesters knob is plumbed but its wire
+enforcement (a PoW stamp inside the `Offer`) is a follow-up. None of these weaken
+the always-on protections.
+
+## 21. Transport performance tuning (implemented)
 
 QUIC is tuned for **low latency + high throughput**, with every knob
 **configurable** (no magic numbers) under a dedicated `[transport]` section of
