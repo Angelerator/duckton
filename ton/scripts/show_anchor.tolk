@@ -66,6 +66,7 @@ fun main() {
             nextDisputeId: 0,
             disputes: createEmptyMap(),
             config: cfg.toCell(),
+            codeVersion: 0,
         };
         anchor = RecordAnchor.fromStorage(storage);
         anchor.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();

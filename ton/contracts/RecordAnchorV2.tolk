@@ -1,22 +1,24 @@
-// Record-anchor + dispute contract (BLOCKCHAIN_ECONOMICS §7, §11).
-// Permissionless keepers anchor a per-epoch Merkle root (chained to the previous
-// root, gated by a stake-weighted threshold). Anyone can open a bonded dispute
-// with a Merkle inclusion proof; an authoritative committee resolves it
-// (upheld => challenger bond returned + slashing happens via the StakeVault
-// slasher path; rejected => bond forfeited, anti-griefing).
+// RecordAnchor **v2** — the in-place upgrade TARGET proving address-stable code
+// upgradeability for the anchor/dispute contract (BLOCKCHAIN_ECONOMICS §12.1).
 //
-// Only PAID jobs are anchored. Free jobs keep their signed receipts purely
-// off-chain and are never written here (§8.2).
+// Faithful successor of `RecordAnchor.tolk`: SAME storage layout (`AnchorStorage`
+// — so the anchored epoch chain + open disputes are read unchanged after the
+// swap) and SAME authority-gated handlers, plus ONE new getter v1 lacked —
+// `get_verdict_authority()`. After an authority-gated `upgrade_code` (TVM
+// SETCODE) the contract exposes this getter at the SAME address over the SAME
+// anchored history: the concrete proof the new code is live without a redeploy.
+//
+// Keeps `upgrade_code` so v2 is itself upgradable (v2 -> v3 ...).
 
 import "anchor_types"
 import "common"
 
-contract RecordAnchor {
+contract RecordAnchorV2 {
     storage: AnchorStorage
-    incomingMessages: AllowedMessageToAnchor
+    incomingMessages: AllowedMessageToAnchorV2
 }
 
-type AllowedMessageToAnchor =
+type AllowedMessageToAnchorV2 =
     | AnchorSubmitRoot
     | AnchorOpenDispute
     | AnchorResolveDispute
@@ -25,24 +27,20 @@ type AllowedMessageToAnchor =
 fun onBouncedMessage(_in: InMessageBounced) {}
 
 fun onInternalMessage(in: InMessage) {
-    val msg = lazy AllowedMessageToAnchor.fromSlice(in.body);
+    val msg = lazy AllowedMessageToAnchorV2.fromSlice(in.body);
 
     match (msg) {
         AnchorSubmitRoot => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
 
-            // Epochs advance monotonically; each root chains to the previous one.
             assert (msg.epoch == storage.currentEpoch + 1) throw ErrCode.EPOCH_REGRESSION;
             assert (msg.prevRoot == storage.lastRoot) throw ErrCode.BAD_PREV_ROOT;
-            // Stake-weighted acceptance: the aggregate weight backing the root
-            // must clear the threshold (anchoring is not a trust bottleneck).
             assert (msg.stakeWeight >= cfg.minStakeWeight) throw ErrCode.INSUFFICIENT_ANCHOR_STAKE;
 
             storage.currentEpoch = msg.epoch;
             storage.lastRoot = msg.root;
             storage.save();
-            // (A small keeper reward could be paid here from accumulated fees.)
         }
 
         AnchorOpenDispute => {
@@ -50,7 +48,6 @@ fun onInternalMessage(in: InMessage) {
             val cfg = storage.config.load();
             assert (in.valueCoins >= cfg.disputeBondMin) throw ErrCode.DISPUTE_BOND_TOO_LOW;
 
-            // The inclusion proof must reproduce the claimed (anchored) root.
             val recomputed = computeRootFromProof(msg.leaf, msg.proof);
             assert (recomputed == msg.claimedRoot) throw ErrCode.BAD_INCLUSION_PROOF;
 
@@ -81,13 +78,9 @@ fun onInternalMessage(in: InMessage) {
             var dispute = found.loadValue();
 
             if (msg.upheld) {
-                // Challenge upheld: return the bond to the challenger (the actual
-                // stake slash + challenger bounty is applied on the cheater's
-                // StakeVault via the slasher path).
                 dispute.status = 1;
                 refund(dispute.challenger, dispute.bond);
             } else {
-                // Frivolous challenge: forfeit the bond to the treasury.
                 dispute.status = 2;
                 refund(cfg.treasury, dispute.bond);
             }
@@ -95,12 +88,6 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
-        // Authority-gated IN-PLACE code upgrade (§12.1). Replaces the CODE via
-        // TVM `SETCODE` (postponed to after this run) at a STABLE address,
-        // preserving the anchored epoch chain + open disputes, so the
-        // anchor/dispute logic can evolve without orphaning history at a new
-        // address. Gated to `verdictAuthority` (the anchor's governance
-        // authority); `codeVersion` is bumped by the contract.
         AnchorUpgradeCode => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
@@ -126,7 +113,8 @@ fun refund(to: address, amount: coins) {
 }
 
 // ---------------------------------------------------------------------------
-// Getters
+// Getters — identical to v1, PLUS the new `get_verdict_authority` that proves
+// the upgraded code is live at the unchanged address.
 // ---------------------------------------------------------------------------
 
 get fun get_anchor_state(): AnchorState {
@@ -138,13 +126,17 @@ get fun get_anchor_state(): AnchorState {
     };
 }
 
-// Monotonic CODE version/seqno — bumped on every successful in-place
-// `upgrade_code` (§12.1). 0 = original deployed code. The anchor's code can be
-// upgraded at a STABLE address (TVM SETCODE), so the anchored epoch chain is
-// never orphaned by a logic change.
 get fun get_code_version(): int {
     val storage = lazy AnchorStorage.load();
     return storage.codeVersion;
+}
+
+// NEW in v2: expose the configured dispute verdict authority (governance), which
+// v1 kept only inside the config child cell. Adding it used to require a redeploy
+// (new code -> new address, orphaning the epoch chain); now it ships in place.
+get fun get_verdict_authority(): address {
+    val storage = lazy AnchorStorage.load();
+    return storage.config.load().verdictAuthority;
 }
 
 get fun get_dispute(disputeId: int): DisputeInfo? {
@@ -156,8 +148,6 @@ get fun get_dispute(disputeId: int): DisputeInfo? {
     return found.loadValue();
 }
 
-// Pure inclusion verifier (also used by tests): does `leaf` + `proof` reproduce
-// `root`?
 get fun verify_inclusion(leaf: int, root: int, proof: Cell<MerkleStep>?): bool {
     return computeRootFromProof(leaf, proof) == root;
 }

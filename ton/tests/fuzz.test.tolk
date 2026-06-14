@@ -64,6 +64,7 @@ fun deployVaultSplit(
         totalSupply: 0,
         bindingHash: 0xDEADBEEF,
         config: cfg.toCell(),
+        upgrade: freshVaultUpgrade(),
     };
     val vault = StakeVault.fromStorage(storage);
     expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
@@ -126,6 +127,7 @@ fun deployGlobalParams(admin: address): GlobalParams {
         params: validParams().toCell(),
         blocklist: createEmptyMap(),
         paramsVersion: 1,
+        codeVersion: 0,
     };
     val gp = GlobalParams.fromStorage(storage);
     expect(gp.deploy(admin, { value: ton("1") })).toHaveSuccessfulDeploy({ to: gp.address });
@@ -145,6 +147,7 @@ fun deployAnchor(authority: address): RecordAnchor {
         nextDisputeId: 0,
         disputes: createEmptyMap(),
         config: cfg.toCell(),
+        codeVersion: 0,
     };
     val anchor = RecordAnchor.fromStorage(storage);
     expect(anchor.deploy(authority, { value: ton("1") })).toHaveSuccessfulDeploy({ to: anchor.address });

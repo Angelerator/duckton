@@ -33,13 +33,21 @@ pub const OP_STAKE_DEPOSIT: u32 = 0x534b_4b01;
 pub const OP_STAKE_UNBOND: u32 = 0x534b_4b02;
 pub const OP_STAKE_WITHDRAW: u32 = 0x534b_4b03;
 pub const OP_STAKE_SLASH: u32 = 0x534b_4b05;
+// StakeVault timelocked governance code upgrade (§8.6) — MUST match `stake_types.tolk`.
+pub const OP_STAKE_ANNOUNCE_UPGRADE: u32 = 0x534b_4b07;
+pub const OP_STAKE_APPLY_UPGRADE: u32 = 0x534b_4b08;
+pub const OP_STAKE_CANCEL_UPGRADE: u32 = 0x534b_4b09;
 pub const OP_ESCROW_TOPUP: u32 = 0x4553_4300;
 pub const OP_ESCROW_SETTLE: u32 = 0x4553_4302;
 pub const OP_ESCROW_REFUND: u32 = 0x4553_4303;
 pub const OP_ANCHOR_SUBMIT: u32 = 0x414e_4301;
+// RecordAnchor authority-gated in-place code upgrade — MUST match `anchor_types.tolk`.
+pub const OP_ANCHOR_UPGRADE_CODE: u32 = 0x414e_4304;
 // GlobalParams (platform-wide economic params) — MUST match `global_params_types.tolk`.
 pub const OP_UPDATE_PARAMS: u32 = 0x4750_4101;
 pub const OP_UPDATE_ADMIN: u32 = 0x4750_4102;
+// GlobalParams admin-gated in-place code upgrade (§12.1).
+pub const OP_UPGRADE_CODE: u32 = 0x4750_4104;
 
 /// A typed message body for an on-chain contract.
 ///
@@ -403,6 +411,52 @@ pub fn build_update_admin(query_id: u64, new_admin: &WalletAddress) -> MessageBo
     MessageBody::new(OP_UPDATE_ADMIN).u64(query_id).addr(new_admin).finish()
 }
 
+// ---------------------------------------------------------------------------
+// In-place code-upgrade message builders (TVM SETCODE) — the address-stable
+// upgradeability path (BLOCKCHAIN_ECONOMICS §8.6, §12.1). The new code travels
+// as a `^ref` (a contract code cell is a multi-cell tree), so — like
+// `build_update_params`'s EcoParams child — the flat test ABI keeps only the
+// scalar prefix (opcode + queryId [+ hash]) inline and the live cell carries the
+// code as a child ref. `ton-live` gating is unchanged: these builders are pure
+// (no network); only the broadcaster (feature `ton-live`) hits the chain.
+// ---------------------------------------------------------------------------
+
+/// Build the GlobalParams `UpgradeCode` body (`queryId`, `newCode: ^cell`). The
+/// admin sends this to swap the contract CODE in place via SETCODE — address
+/// unchanged, storage preserved, `codeVersion` bumped on-chain (§12.1).
+pub fn build_upgrade_code(query_id: u64, new_code: &Cell) -> MessageBody {
+    MessageBody::new(OP_UPGRADE_CODE).u64(query_id).cell_ref(new_code.clone()).finish()
+}
+
+/// Build the RecordAnchor `AnchorUpgradeCode` body (`queryId`, `newCode: ^cell`).
+/// The configured `verdictAuthority` sends this to swap the anchor CODE in place
+/// (epoch chain + disputes preserved, address unchanged).
+pub fn build_anchor_upgrade_code(query_id: u64, new_code: &Cell) -> MessageBody {
+    MessageBody::new(OP_ANCHOR_UPGRADE_CODE).u64(query_id).cell_ref(new_code.clone()).finish()
+}
+
+/// Build the StakeVault `StakeAnnounceUpgrade` body (`queryId`, `newCodeHash`):
+/// step 1 of the TIMELOCKED upgrade (§8.6). The governance authority commits to
+/// the successor code's 256-bit cell hash and starts the timelock clock; apply
+/// is rejected until `announce + unbondingPeriod` (the staker exit window).
+pub fn build_stake_announce_upgrade(query_id: u64, new_code_hash: &[u8; 32]) -> MessageBody {
+    MessageBody::new(OP_STAKE_ANNOUNCE_UPGRADE).u64(query_id).hash(new_code_hash).finish()
+}
+
+/// Build the StakeVault `StakeApplyUpgrade` body (`queryId`, `newCode: ^cell`):
+/// step 2 of the timelocked upgrade (§8.6). Accepted only after the timelock and
+/// only if `newCode.hash() == pendingCodeHash` (binds apply to the announced
+/// code); performs the in-place SETCODE preserving every bond.
+pub fn build_stake_apply_upgrade(query_id: u64, new_code: &Cell) -> MessageBody {
+    MessageBody::new(OP_STAKE_APPLY_UPGRADE).u64(query_id).cell_ref(new_code.clone()).finish()
+}
+
+/// Build the StakeVault `StakeCancelUpgrade` body (`queryId`): governance safety
+/// valve to abort a pending announcement before it is applied (§8.6).
+pub fn build_stake_cancel_upgrade(query_id: u64) -> MessageBody {
+    MessageBody::new(OP_STAKE_CANCEL_UPGRADE).u64(query_id).finish()
+}
+
 /// The authoritative ecosystem-wide policy read back from the on-chain
 /// `GlobalParams` contract (BLOCKCHAIN_ECONOMICS §12). It is the **single source
 /// of truth** for paid jobs: the monotonic `version` is what a job binds to, and
@@ -462,6 +516,16 @@ impl<R: TonRpc> GlobalParamsClient<R> {
     /// parties agree which params the job ran under.
     pub fn params_version(&self) -> Result<u32, SettleError> {
         let v = self.rpc.run_get_int(&self.address, "get_params_version")?;
+        Ok(v.max(0) as u32)
+    }
+
+    /// The monotonic CODE version/seqno (`get_code_version`) — bumped on every
+    /// in-place `upgrade_code` (TVM SETCODE) at this STABLE address (§12.1).
+    /// 0 = original deployed code. Distinct from [`Self::params_version`]: this
+    /// tracks CODE swaps, that one tracks data/param edits. Lets off-chain code
+    /// learn which contract code is live without the address ever changing.
+    pub fn code_version(&self) -> Result<u32, SettleError> {
+        let v = self.rpc.run_get_int(&self.address, "get_code_version")?;
         Ok(v.max(0) as u32)
     }
 
@@ -548,8 +612,21 @@ pub struct VaultInit {
 
 /// Build the per-node `StakeVault` init **data** cell (fresh vault: zero stake),
 /// matching `VaultStorage.toCell()` field order: `owner, staked, unbondingAmount,
-/// unbondingAt, totalSupply, bindingHash, config(ref)`.
+/// unbondingAt, totalSupply, bindingHash, config(ref), upgrade(ref)`.
+///
+/// The trailing `upgrade` field is the timelocked code-upgrade state (§8.6),
+/// kept in a CHILD cell (a `^ref`) — mirroring `stake_types.tolk::VaultStorage`
+/// + `freshVaultUpgrade()`. A fresh vault's upgrade child is all-zero:
+/// `codeVersion(32)=0, pendingCodeHash(256)=0, pendingCodeAt(32)=0`. This ref is
+/// part of the init data, so it participates in the deterministic StateInit
+/// address derivation (cross-checked against the Acton emulator probe, see the
+/// `vault_data_state_init_matches_onchain` test).
 pub fn build_vault_data(init: &VaultInit, config: Cell) -> Cell {
+    let upgrade = CellBuilder::new()
+        .store_uint(0, 32) // codeVersion
+        .store_u256(&[0u8; 32]) // pendingCodeHash
+        .store_uint(0, 32) // pendingCodeAt
+        .build();
     CellBuilder::new()
         .store_address(&init.owner)
         .store_coins(0) // staked
@@ -558,6 +635,7 @@ pub fn build_vault_data(init: &VaultInit, config: Cell) -> Cell {
         .store_coins(0) // totalSupply
         .store_u256(&init.binding_hash)
         .store_ref(config)
+        .store_ref(upgrade)
         .build()
 }
 
@@ -1222,6 +1300,66 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_code_bodies_carry_opcodes_and_ref_the_new_code() {
+        // A stand-in "new code" cell tree (multi-cell) the upgrade carries by ref.
+        let new_code = CellBuilder::new()
+            .store_uint(0xC0DE, 16)
+            .store_ref(CellBuilder::new().store_uint(0xBEEF, 16).build())
+            .build();
+
+        // GlobalParams admin upgrade_code: opcode + queryId inline, code as ^ref.
+        let gp = build_upgrade_code(7, &new_code);
+        assert_eq!(gp.opcode, OP_UPGRADE_CODE);
+        assert_eq!(gp.opcode, 0x4750_4104);
+        assert_eq!(&gp.bytes[0..4], &OP_UPGRADE_CODE.to_be_bytes());
+        assert_eq!(gp.bytes.len(), 4 + 8); // flat ABI: opcode + queryId (code is a ref)
+        assert_eq!(gp.cell.refs().len(), 1, "new code lives in a ^child cell");
+        assert_eq!(gp.cell.refs()[0].repr_hash(), new_code.repr_hash());
+
+        // RecordAnchor authority upgrade_code: same shape, distinct opcode.
+        let an = build_anchor_upgrade_code(8, &new_code);
+        assert_eq!(an.opcode, OP_ANCHOR_UPGRADE_CODE);
+        assert_eq!(an.opcode, 0x414e_4304);
+        assert_eq!(an.bytes.len(), 4 + 8);
+        assert_eq!(an.cell.refs().len(), 1);
+    }
+
+    #[test]
+    fn stake_timelocked_upgrade_bodies_layout() {
+        // Announce carries the announced code's 256-bit cell hash inline.
+        let code_hash = [0x5Au8; 32];
+        let ann = build_stake_announce_upgrade(1, &code_hash);
+        assert_eq!(ann.opcode, OP_STAKE_ANNOUNCE_UPGRADE);
+        assert_eq!(ann.opcode, 0x534b_4b07);
+        // opcode(4) + queryId(8) + hash(32)
+        assert_eq!(ann.bytes.len(), 4 + 8 + 32);
+        assert_eq!(&ann.bytes[4 + 8..], &code_hash);
+
+        // Apply carries the successor code by ref (its hash must match announce).
+        let new_code = CellBuilder::new().store_uint(0xABCD, 16).build();
+        let apply = build_stake_apply_upgrade(2, &new_code);
+        assert_eq!(apply.opcode, OP_STAKE_APPLY_UPGRADE);
+        assert_eq!(apply.opcode, 0x534b_4b08);
+        assert_eq!(apply.bytes.len(), 4 + 8);
+        assert_eq!(apply.cell.refs().len(), 1);
+        assert_eq!(apply.cell.refs()[0].repr_hash(), new_code.repr_hash());
+
+        // Cancel is just opcode + queryId.
+        let canc = build_stake_cancel_upgrade(3);
+        assert_eq!(canc.opcode, OP_STAKE_CANCEL_UPGRADE);
+        assert_eq!(canc.opcode, 0x534b_4b09);
+        assert_eq!(canc.bytes.len(), 4 + 8);
+    }
+
+    #[test]
+    fn global_params_client_reads_code_version() {
+        let mut values = HashMap::new();
+        values.insert("get_code_version".to_string(), 3i128);
+        let client = GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xCD; 32]));
+        assert_eq!(client.code_version().unwrap(), 3);
+    }
+
+    #[test]
     fn escrow_settle_body_layout_is_stable() {
         let winner = WalletAddress::new(0, [2u8; 32]);
         let b = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[]);
@@ -1617,9 +1755,13 @@ mod tests {
         let init = VaultInit { owner, binding_hash: binding };
         let data = build_vault_data(&init, config.clone());
         let addr = WalletAddress::from_state_init(BASECHAIN, &code, &data);
+        // Pinned to the Acton emulator probe (ton/scripts/_probe_addr.tolk,
+        // VAULT_SI) which now includes the trailing `upgrade` child ref
+        // (codeVersion/pendingCodeHash/pendingCodeAt = 0). The off-chain
+        // `build_vault_data` upgrade child must hash byte-identically to on-chain.
         assert_eq!(
             hex::encode(addr.hash),
-            "40f3f53e350757798a90c6546d8375993bf7eda0b0fdca0824c78184272ada83"
+            "f5076c5886d3627cebd5b4eb64eb9239559e1791330ff24f3401e7bc91e4fb58"
         );
 
         // Same registry resolves the node to that exact vault address.

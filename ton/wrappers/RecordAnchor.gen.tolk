@@ -100,6 +100,22 @@ fun RecordAnchor.sendAnchorResolveDispute(
     return net.send(from, genericMsg);
 }
 
+fun RecordAnchor.sendAnchorUpgradeCode(
+    self,
+    from: address,
+    queryId: uint64,
+    newCode: cell,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: AnchorUpgradeCode { queryId, newCode },
+    });
+    return net.send(from, genericMsg);
+}
+
 /// Send message to the contract with a custom body cell
 fun RecordAnchor.sendAny(self, from: address, body: cell, config: SendParams = {}): SendResultList {
     val genericMsg = createMessage({
@@ -113,6 +129,10 @@ fun RecordAnchor.sendAny(self, from: address, body: cell, config: SendParams = {
 
 fun RecordAnchor.getAnchorState(self): AnchorState {
     return net.runGetMethod(self.address, "get_anchor_state");
+}
+
+fun RecordAnchor.getCodeVersion(self): int {
+    return net.runGetMethod(self.address, "get_code_version");
 }
 
 fun RecordAnchor.getDispute(self, disputeId: int): DisputeInfo? {

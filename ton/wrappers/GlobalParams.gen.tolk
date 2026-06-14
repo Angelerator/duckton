@@ -99,6 +99,22 @@ fun GlobalParams.sendSetBlocklisted(
     return net.send(from, genericMsg);
 }
 
+fun GlobalParams.sendUpgradeCode(
+    self,
+    from: address,
+    queryId: uint64,
+    newCode: cell,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: UpgradeCode { queryId, newCode },
+    });
+    return net.send(from, genericMsg);
+}
+
 /// Send message to the contract with a custom body cell
 fun GlobalParams.sendAny(self, from: address, body: cell, config: SendParams = {}): SendResultList {
     val genericMsg = createMessage({
@@ -116,6 +132,10 @@ fun GlobalParams.getParams(self): GlobalParamsView {
 
 fun GlobalParams.getParamsVersion(self): int {
     return net.runGetMethod(self.address, "get_params_version");
+}
+
+fun GlobalParams.getCodeVersion(self): int {
+    return net.runGetMethod(self.address, "get_code_version");
 }
 
 fun GlobalParams.getPlatformFeeBps(self): int {

@@ -1,40 +1,44 @@
-// Per-node stake contract (BLOCKCHAIN_ECONOMICS §8). Non-custodial: no human key
-// controls the funds — deposit, unbond cooldown, slashing and keeper withdrawal
-// are all governed by contract code. The vault is ALSO the master of this node's
-// transfer-locked stake-receipt jetton (§8.5): it mints 1:1 on deposit and burns
-// on withdrawal/slash.
+// StakeVault **v2** — the in-place upgrade TARGET proving address-stable, but
+// TIMELOCKED + governance-gated, code upgradeability for the bond-custody vault
+// (BLOCKCHAIN_ECONOMICS §8.6, §12.1).
 //
-// This contract is only ever touched by PAID work. Free jobs (§8.2) bypass it
-// entirely via the off-chain NoopSettlement path.
+// Faithful successor of `StakeVault.tolk`: SAME storage layout (`VaultStorage`,
+// so bonds / supply / cooldown / the upgrade child cell are read unchanged after
+// the swap) and SAME handlers (including the timelocked announce -> apply path),
+// plus ONE new getter v1 lacked — `get_slasher()`. After a timelocked
+// `apply_upgrade` (TVM SETCODE), the vault exposes this getter at the SAME
+// address over the SAME bonded state: the proof the new code is live without a
+// redeploy (which would have stranded every staker's bond at the old address).
+//
+// Keeps the announce/apply/cancel handlers so v2 is itself upgradable under the
+// same non-custodial, timelocked discipline (v2 -> v3 ...).
 
 import "common"
 import "stake_types"
 
-contract StakeVault {
+contract StakeVaultV2 {
     storage: VaultStorage
-    incomingMessages: AllowedMessageToVault
+    incomingMessages: AllowedMessageToVaultV2
 }
 
-type AllowedMessageToVault =
+type AllowedMessageToVaultV2 =
     | StakeDeposit
     | StakeRequestUnbond
     | StakeWithdraw
     | StakeKeeperWithdraw
     | StakeSlash
-    | ProvideWalletAddress // TEP-89 jetton-wallet discovery
+    | ProvideWalletAddress
     | ReceiptTopUp
-    | StakeAnnounceUpgrade // §8.6 timelocked code upgrade: step 1 (announce)
-    | StakeApplyUpgrade    // §8.6 timelocked code upgrade: step 2 (apply, after delay)
-    | StakeCancelUpgrade   // §8.6 abort a pending announcement
+    | StakeAnnounceUpgrade
+    | StakeApplyUpgrade
+    | StakeCancelUpgrade
 
 fun onBouncedMessage(_in: InMessageBounced) {}
 
 fun onInternalMessage(in: InMessage) {
-    val msg = lazy AllowedMessageToVault.fromSlice(in.body);
+    val msg = lazy AllowedMessageToVaultV2.fromSlice(in.body);
 
     match (msg) {
-        // Deposit: bond `amount` (held non-custodially in this contract) and mint
-        // an equal amount of the transfer-locked stake-receipt jetton to the owner.
         StakeDeposit => {
             var storage = lazy VaultStorage.load();
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
@@ -54,9 +58,6 @@ fun onInternalMessage(in: InMessage) {
             );
         }
 
-        // Begin unbonding: move `amount` from the bonded bucket into the cooldown
-        // bucket. The cooldown stake stays SLASHABLE (§8.4) and the receipt stays
-        // locked until withdrawal completes.
         StakeRequestUnbond => {
             var storage = lazy VaultStorage.load();
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
@@ -69,8 +70,6 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
-        // Owner withdrawal after the cooldown elapses: release the cooled stake and
-        // burn the matching receipts.
         StakeWithdraw => {
             var storage = lazy VaultStorage.load();
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
@@ -95,8 +94,6 @@ fun onInternalMessage(in: InMessage) {
             payout(storage.owner, amount);
         }
 
-        // Keeper liveness (TON idiom, §8.4): once cooldown + grace elapses, ANYONE
-        // can finalize an unresponsive owner's withdrawal and earn a small bounty.
         StakeKeeperWithdraw => {
             var storage = lazy VaultStorage.load();
             assert (storage.unbondingAmount > 0) throw ErrCode.NO_UNBONDING;
@@ -124,9 +121,6 @@ fun onInternalMessage(in: InMessage) {
             }
         }
 
-        // Graduated slashing (§8.3) by the authorized slasher (dispute contract).
-        // Takes from the bonded bucket first, then the still-slashable cooldown
-        // bucket, splits the slashed funds per config, and burns the receipts.
         StakeSlash => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
@@ -150,9 +144,6 @@ fun onInternalMessage(in: InMessage) {
             applySlashSplit(cfg.slash.load(), msg.amount, msg.challenger);
         }
 
-        // TEP-89: reply with this node's receipt jetton-wallet address for the
-        // requested owner so indexers/explorers/wallets can discover and link
-        // holder wallets to this master (the vault).
         ProvideWalletAddress => {
             val storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
@@ -181,36 +172,7 @@ fun onInternalMessage(in: InMessage) {
             // accept TON top-ups for storage rent
         }
 
-        // ===================================================================
-        // Timelocked governance code upgrade (§8.6) — UPGRADEABILITY vs the
-        // NON-CUSTODIAL guarantee, and how the timelock reconciles them.
-        //
-        // This vault holds stakers' bonds non-custodially: release is governed
-        // ONLY by code (deposit / unbond cooldown / slashing / keeper). An
-        // ARBITRARY admin code-swap would BREAK that — whoever could replace the
-        // code could insert a "drain to me" path and rug every bond. So we make
-        // the code upgradeable, but DELIBERATELY constrain it so it cannot be
-        // used to rug:
-        //   * Gated to `cfg.slasher` (the configured slasher/GOVERNANCE
-        //     authority — meant to be a dispute/governance contract or multisig,
-        //     NOT an arbitrary platform key).
-        //   * TIMELOCKED two-step: ANNOUNCE (commit to the successor code's hash
-        //     + start the clock) then APPLY, where apply is rejected until
-        //     `pendingAt + unbondingPeriod` has elapsed. `unbondingPeriod` is
-        //     >= the challenge window (enforced in GlobalParams.validateEcoParams
-        //     / EconomicsConfig::validate), so ANY staker who dislikes an
-        //     announced upgrade can `request_unbond` and fully withdraw under the
-        //     CURRENT (trusted) code BEFORE the new code can take effect.
-        //   * Apply must present code whose hash == the announced hash, so the
-        //     swap is exactly what was published (no bait-and-switch), and the
-        //     announcement is publicly observable via `get_pending_upgrade`.
-        //   * `StakeCancelUpgrade` lets governance abort a bad announcement.
-        // This is the explicit tradeoff documented in BLOCKCHAIN_ECONOMICS §8.6:
-        // in-place upgradeability is retained, but the non-custodial promise is
-        // preserved by guaranteeing an exit window before any code change lands.
-        // ===================================================================
-
-        // Step 1/2 — announce: record the successor code hash + start the clock.
+        // §8.6 timelocked governance upgrade — identical discipline to v1.
         StakeAnnounceUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
@@ -223,7 +185,6 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
-        // Step 2/2 — apply: only after the timelock, only the announced code.
         StakeApplyUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
@@ -231,15 +192,10 @@ fun onInternalMessage(in: InMessage) {
 
             var up = storage.upgrade.load();
             assert (up.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
-            // Bind apply to EXACTLY the announced code (commit-then-reveal).
             assert (msg.newCode.hash() == up.pendingCodeHash) throw ErrCode.UPGRADE_CODE_MISMATCH;
-            // Enforce the exit window: apply only after >= the unbonding period.
             val readyAt = up.pendingCodeAt + cfg.unbondingPeriod;
             assert (blockchain.now() >= readyAt) throw ErrCode.UPGRADE_TIMELOCK_ACTIVE;
 
-            // Postponed SETCODE: new code is live only AFTER this run succeeds;
-            // storage (bonds, supply, cooldown) is fully preserved. Bump the
-            // monotonic codeVersion and clear the pending announcement.
             contract.setCodePostponed(msg.newCode);
             up.codeVersion += 1;
             up.pendingCodeHash = 0;
@@ -248,7 +204,6 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
-        // Abort a pending announcement (governance safety valve).
         StakeCancelUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
@@ -269,15 +224,11 @@ fun onInternalMessage(in: InMessage) {
 }
 
 // ---------------------------------------------------------------------------
-// Internal helpers
+// Internal helpers (duplicated from v1 — separate compilation unit)
 // ---------------------------------------------------------------------------
 
 fun mintReceipt(owner: address, master: address, walletCode: cell, amount: coins, queryId: int) {
     val dest = calcDeployedReceiptWallet(owner, master, walletCode);
-    // Credit via the STANDARD TEP-74 internal_transfer so indexers recognize the
-    // mint. `from`/`responseAddress` are the master; `forwardTonAmount` is 0 (no
-    // owner notification — keeps the deposit gas budget unchanged), and the
-    // forward payload is empty.
     val m = createMessage({
         bounce: BounceMode.NoBounce,
         dest: dest,
@@ -317,9 +268,6 @@ fun payout(to: address, amount: coins) {
     m.send(SEND_MODE_PAY_FEES_SEPARATELY | SEND_MODE_IGNORE_ERRORS);
 }
 
-// Split slashed funds: challenger bounty / redundancy-reward pool / burn /
-// treasury (§8.3). The burn share is simply left locked in this contract (no key
-// can release it), which removes it from circulation.
 fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
     val sum = sc.splitChallengerBps + sc.splitRedundancyBps + sc.splitBurnBps + sc.splitTreasuryBps;
     assert (sum == BPS_DENOM) throw ErrCode.INVALID_SPLIT;
@@ -327,7 +275,6 @@ fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
     val challengerAmt = mulDivFloor(amount, sc.splitChallengerBps, BPS_DENOM);
     val redundancyAmt = mulDivFloor(amount, sc.splitRedundancyBps, BPS_DENOM);
     val treasuryAmt = mulDivFloor(amount, sc.splitTreasuryBps, BPS_DENOM);
-    // burn share = remainder, left locked in the vault forever.
 
     if (challengerAmt > 0) {
         payout(challenger, challengerAmt);
@@ -341,7 +288,8 @@ fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
 }
 
 // ---------------------------------------------------------------------------
-// Getters
+// Getters — identical to v1, PLUS the new `get_slasher` that proves the
+// upgraded code is live at the unchanged address.
 // ---------------------------------------------------------------------------
 
 get fun get_vault_state(): VaultState {
@@ -362,17 +310,11 @@ get fun get_owner(): address {
     return storage.owner;
 }
 
-// Monotonic CODE version/seqno (§8.6). 0 = original deployed code. Bumped only
-// by a successful timelocked `apply_upgrade` (TVM SETCODE) at a STABLE address.
 get fun get_code_version(): int {
     val storage = lazy VaultStorage.load();
     return storage.upgrade.load().codeVersion;
 }
 
-// Pending timelocked upgrade (§8.6), for stakers to monitor: the announced
-// successor code hash, when it was announced, and `readyAt` (the earliest unix
-// ts it can be applied = announce + unbondingPeriod). All 0 when none pending —
-// the exit window guarantee made observable on-chain.
 get fun get_pending_upgrade(): VaultUpgradeView {
     val storage = lazy VaultStorage.load();
     val up = storage.upgrade.load();
@@ -386,6 +328,14 @@ get fun get_pending_upgrade(): VaultUpgradeView {
     };
 }
 
+// NEW in v2: expose the configured slasher/governance authority, which v1 kept
+// only inside the config child cell. Adding it used to require a redeploy (new
+// code -> new address, stranding every bond); now it ships in place.
+get fun get_slasher(): address {
+    val storage = lazy VaultStorage.load();
+    return storage.config.load().slasher;
+}
+
 get fun get_binding_hash(): int {
     val storage = lazy VaultStorage.load();
     return storage.bindingHash;
@@ -397,22 +347,12 @@ get fun get_receipt_wallet_address(owner: address): address {
     return calcReceiptWalletAddress(owner, contract.getAddress(), cfg.receiptWalletCode);
 }
 
-// TEP-89 standard discovery get-method. Indexers/explorers/wallets call exactly
-// `get_wallet_address(owner)` on a jetton master and require it to return the
-// owner's jetton-wallet address; the wallet's `get_wallet_data` master must point
-// back here. Without this method the back-reference check fails and holder wallets
-// are NOT indexed as jettons — which is why the receipt didn't show up. (Same
-// computation as `get_receipt_wallet_address`, under the standard name.)
 get fun get_wallet_address(owner: address): address {
     val storage = lazy VaultStorage.load();
     val cfg = storage.config.load();
     return calcReceiptWalletAddress(owner, contract.getAddress(), cfg.receiptWalletCode);
 }
 
-// TEP-74/TEP-64 jetton-master data for the stake-receipt jetton ("Duckton").
-// Lets wallets/explorers render the (non-transferable) receipt. The vault is the
-// master, so `adminAddress` is this contract and `jettonContent` is the on-chain
-// Duckton metadata (name/symbol/decimals/description).
 get fun get_jetton_data(): ReceiptJettonData {
     val storage = lazy VaultStorage.load();
     val cfg = storage.config.load();

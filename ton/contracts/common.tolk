@@ -40,6 +40,12 @@ enum ErrCode: int32 {
     KEEPER_TOO_EARLY = 205     // keeper withdraw before the owner-grace window
     SLASH_EXCEEDS_STAKE = 206  // slash amount larger than slashable stake
     INVALID_SPLIT = 207        // slash split bps do not sum to 10000
+    // Timelocked governance code upgrade (§8.6) — preserves the non-custodial
+    // guarantee: an announced code swap can only be APPLIED after a delay >= the
+    // unbonding window, so stakers can exit before any new code takes effect.
+    NO_PENDING_UPGRADE = 208   // apply/cancel with nothing announced
+    UPGRADE_TIMELOCK_ACTIVE = 209 // apply before the timelock delay elapsed
+    UPGRADE_CODE_MISMATCH = 210 // applied code != the announced (hash-committed) code
 
     // Escrow
     ESCROW_NOT_FUNDED = 220    // escrow opened without the requester's max-bid B

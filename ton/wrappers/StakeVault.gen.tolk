@@ -157,6 +157,53 @@ fun StakeVault.sendReceiptTopUp(
     return net.send(from, genericMsg);
 }
 
+fun StakeVault.sendStakeAnnounceUpgrade(
+    self,
+    from: address,
+    queryId: uint64,
+    newCodeHash: uint256,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: StakeAnnounceUpgrade { queryId, newCodeHash },
+    });
+    return net.send(from, genericMsg);
+}
+
+fun StakeVault.sendStakeApplyUpgrade(
+    self,
+    from: address,
+    queryId: uint64,
+    newCode: cell,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: StakeApplyUpgrade { queryId, newCode },
+    });
+    return net.send(from, genericMsg);
+}
+
+fun StakeVault.sendStakeCancelUpgrade(
+    self,
+    from: address,
+    queryId: uint64,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: StakeCancelUpgrade { queryId },
+    });
+    return net.send(from, genericMsg);
+}
+
 /// Send message to the contract with a custom body cell
 fun StakeVault.sendAny(self, from: address, body: cell, config: SendParams = {}): SendResultList {
     val genericMsg = createMessage({
@@ -174,6 +221,14 @@ fun StakeVault.getVaultState(self): VaultState {
 
 fun StakeVault.getOwner(self): address {
     return net.runGetMethod(self.address, "get_owner");
+}
+
+fun StakeVault.getCodeVersion(self): int {
+    return net.runGetMethod(self.address, "get_code_version");
+}
+
+fun StakeVault.getPendingUpgrade(self): VaultUpgradeView {
+    return net.runGetMethod(self.address, "get_pending_upgrade");
 }
 
 fun StakeVault.getBindingHash(self): int {

@@ -21,6 +21,7 @@ import "common"
 const OP_ANCHOR_SUBMIT = 0x414e_4301
 const OP_ANCHOR_DISPUTE = 0x414e_4302
 const OP_ANCHOR_VERDICT = 0x414e_4303
+const OP_ANCHOR_UPGRADE_CODE = 0x414e_4304 // "ANC" 04 — authority-gated in-place SETCODE upgrade
 
 // One sibling on a Merkle inclusion path. `dir = 0`: sibling is the RIGHT node
 // (current is the left child); `dir = 1`: sibling is the LEFT node.
@@ -52,6 +53,14 @@ struct AnchorStorage {
     nextDisputeId: uint32
     disputes: map<uint32, DisputeInfo>
     config: Cell<AnchorConfig>
+    // Monotonic CODE version/seqno for in-place upgradeability (§12.1). Bumped by
+    // the contract on every successful authority-gated `upgrade_code` (TVM
+    // SETCODE), which swaps the CODE at a STABLE address without touching storage
+    // — so the anchor/dispute logic can evolve (new getter/field, fixed verifier)
+    // without forcing a redeploy that would orphan the anchored epoch chain.
+    // Appended last (additive); 0 = original deployed code. Storage migrations
+    // stay additive (append new fields LAST; older fields read unchanged).
+    codeVersion: uint32
 }
 
 fun AnchorStorage.load(): AnchorStorage {
@@ -87,6 +96,17 @@ struct (0x414e_4303) AnchorResolveDispute {
     queryId: uint64
     disputeId: uint32
     upheld: bool
+}
+
+// Authority-gated IN-PLACE code upgrade (§12.1). Swaps this contract's CODE via
+// TVM `SETCODE` (postponed to after this run) at a STABLE address, preserving the
+// anchored epoch chain + open disputes. Gated to `config.verdictAuthority` (the
+// same committee/oracle that resolves disputes — the anchor's governance
+// authority); `newCode` is carried as a ^ref; `codeVersion` is bumped by the
+// contract.
+struct (0x414e_4304) AnchorUpgradeCode {
+    queryId: uint64
+    newCode: cell
 }
 
 struct AnchorState {

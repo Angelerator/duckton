@@ -57,6 +57,7 @@ fun deployVault(
         totalSupply: 0,
         bindingHash: 0xDEADBEEF,
         config: makeConfig(minStake, slasher, treasury, redundancy),
+        upgrade: freshVaultUpgrade(),
     };
     val vault = StakeVault.fromStorage(storage);
     val res = vault.deploy(owner, { value: ton("1") });
@@ -499,6 +500,7 @@ fun deployVaultSplit(
         totalSupply: 0,
         bindingHash: 0xDEADBEEF,
         config: makeConfigSplit(minStake, slasher, treasury, redundancy, splitCh, splitRe, splitBu, splitTr),
+        upgrade: freshVaultUpgrade(),
     };
     val vault = StakeVault.fromStorage(storage);
     expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });

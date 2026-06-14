@@ -36,6 +36,8 @@ fun main() {
         nextDisputeId: 0,
         disputes: createEmptyMap(),
         config: cfg.toCell(),
+        // Fresh deploy = original code; `upgrade_code` bumps it in place.
+        codeVersion: 0,
     };
 
     val anchor = RecordAnchor.fromStorage(storage);

@@ -724,6 +724,81 @@ slashing** while a fraud proof is still possible. Therefore:
   non-transferable. (Acton test: `stake-receipt jetton exposes Duckton TEP-64
   metadata`.)
 
+### 8.6 In-place code upgradeability vs the non-custodial guarantee (timelocked)
+
+TON contract code can be upgraded **in place** via the TVM `SETCODE` action
+(Tolk `contract.setCodePostponed(newCode)`): the code is swapped **without
+changing the contract address or wiping storage** (the address is
+`hash(StateInit)`, fixed at deploy; `SETCODE` only replaces the code register,
+and we never call `setData` to wipe data). `SETCODE` is **postponed** — the new
+code takes effect only *after* the current transaction terminates successfully,
+so the message that triggers the upgrade is processed by the OLD code and the
+NEXT message runs the new code over the same (preserved) storage. This is the
+fix for "address changes when code changes": adding a field/getter no longer
+forces a redeploy to a fresh address. Each upgradable contract carries a
+monotonic **`codeVersion`** (separate from `paramsVersion`), bumped by the
+contract on every successful upgrade, exposed via `get_code_version`.
+
+**The tension for `StakeVault`.** The vault holds stakers' bonds
+**non-custodially**: release is governed *only* by code (deposit / unbond
+cooldown / slashing / keeper). An **arbitrary admin code-swap would BREAK that
+guarantee** — whoever could replace the code could insert a "drain to me" path
+and rug every bonded host. So the vault is upgradable, but the upgrade path is
+deliberately constrained so it **cannot be used to rug**:
+
+- **Governance-gated, not an arbitrary key.** Only `config.slasher` (the
+  configured slasher / governance authority — intended to be a dispute/governance
+  contract or multisig) may announce/apply/cancel an upgrade.
+- **Two-step + TIMELOCKED.** `announce_upgrade(newCodeHash)` commits to the
+  successor code's cell hash and starts a clock; `apply_upgrade(newCode)` is
+  **rejected until `announced_at + unbonding_period`** has elapsed
+  (`ERROR_UPGRADE_TIMELOCK_ACTIVE`). Because `unbonding_period ≥ challenge_window`
+  (a §12 invariant), **any staker who distrusts an announced upgrade has at least
+  the full unbonding window to `request_unbond` and exit under the CURRENT,
+  trusted code before the new code can take effect.** The pending announcement is
+  publicly observable via `get_pending_upgrade` (hash, announced-at, ready-at).
+- **Commit-then-reveal.** `apply` must present code whose hash equals the
+  announced hash (`ERROR_UPGRADE_CODE_MISMATCH`), so the swap is exactly what was
+  published — no bait-and-switch.
+- **Cancellable.** `cancel_upgrade` lets governance abort a bad announcement.
+
+This is the explicit, deliberate tradeoff: **in-place upgradeability is retained,
+but the non-custodial promise is preserved** by guaranteeing an exit window
+before any code change lands. Contrast the other contracts:
+
+- **`GlobalParams` (singleton policy):** admin-gated `upgrade_code`, **no
+  timelock** — it holds *no user funds*, so an immediate in-place upgrade is the
+  intended primary win (e.g. ship a new `EcoParams` getter/field without moving
+  the hard-pinned address). See §12.1.
+- **`RecordAnchor`:** authority-gated `upgrade_code` (the `verdictAuthority`), no
+  timelock — it holds only refundable dispute bonds and the epoch Merkle chain;
+  upgrading in place avoids orphaning the anchored history at a new address.
+- **`JobEscrow` (per-job, ephemeral HTLC): intentionally NOT upgradable.** A live
+  per-job escrow is a short-lived HTLC whose guarantees (settle-on-quorum-hash /
+  refund-on-timeout, bounded by the locked `B`) the requester relied on at funding
+  time; allowing a mid-flight code swap would let those guarantees be rewritten
+  under an in-flight job. There is **no `set_code` handler** on `JobEscrow`. New
+  jobs automatically pick up the current escrow template code at deploy, so the
+  contract still "evolves" — only *already-open* escrows are immutable, by design.
+- **`StakeReceiptWallet`: left standard (not upgradable).** The receipt wallet is
+  a minimal, transfer-locked balance tracker minted/burned by its master vault; it
+  holds no TON and has no admin. We deliberately leave it **non-upgradable** to
+  keep its attack surface minimal. If a wallet-code change were ever needed it
+  would ride the **vault's** timelocked governance (the vault is the master and
+  pins `receiptWalletCode`), inheriting the same exit-window protection — but no
+  such handler is shipped in v1.
+
+**Storage-migration rule (all upgradable contracts).** New code must read the
+*existing* storage layout. Keep changes **additive**: append new fields LAST
+(older fields read unchanged). `codeVersion` (and the vault's timelock state) are
+appended as such; the vault groups its upgrade state in a **child cell** (a
+`^ref`) both to stay within the 1023-bit root-cell budget and to decouple the
+delicate upgrade path from the hot bond data. If a real layout migration is ever
+needed, it is staged **inside the upgrade handler before `save()`** — the OLD
+code still controls the layout in that transaction (because `SETCODE` is
+postponed), so it can `setData()` the migrated cell and only then hand off to the
+new code.
+
 ---
 
 ## 9. End-to-end flows (mermaid)
@@ -1017,6 +1092,24 @@ so every contract / node reads one authoritative source:
   changes and other contracts can hard-pin it. Each update is **bounds-validated
   on-chain** (`validateEcoParams` mirrors the §12 invariants), **emits a
   `ParamsUpdated` log**, and **rejects unauthorized senders** (`ERROR_NOT_ADMIN`).
+- **Upgradable in place, address stable (the CODE too).** Beyond data, the
+  **code** is upgradable without moving the address: an admin-gated
+  `upgrade_code(newCode)` runs the TVM `SETCODE` action
+  (`contract.setCodePostponed`), swapping the contract code while the address and
+  all storage are preserved (no redeploy). This is the fix for *"the address used
+  to change whenever the code changed"* — e.g. adding a new `EcoParams` getter/
+  field now ships in place (proven end-to-end: deploy → `upgrade_code` to
+  `GlobalParamsV2` which adds `get_surcharge_bps`, address unchanged). A monotonic
+  **`codeVersion`** (separate from `paramsVersion`, read via `get_code_version`)
+  is bumped by the contract on each upgrade and a `CodeUpgraded` log is emitted;
+  non-admin senders are rejected (`ERROR_NOT_ADMIN`). `GlobalParams` has **no
+  timelock** (it custodies no user funds); the fund-custody `StakeVault` instead
+  uses a **timelocked, governance-gated** upgrade (see §8.6), and `JobEscrow` is
+  intentionally non-upgradable. The off-chain builder
+  `p2p_settlement::build_upgrade_code` mirrors the message ABI, and
+  `GlobalParamsClient::code_version()` reads the live code version. Acton tests
+  cover: in-place upgrade (address stable, state preserved, `codeVersion` bumped,
+  the v2-only getter live), and non-admin rejection.
 - **Admin model.** The admin is a single configurable address today, **designed to
   later point at a multisig** — `update_admin` rotates it (e.g. single key →
   multisig). Acton tests cover: admin update persists + address unchanged;

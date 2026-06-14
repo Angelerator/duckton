@@ -62,6 +62,9 @@ fun main() {
         blocklist: createEmptyMap(),
         // Fresh deploy starts at version 1; every `update_params` bumps it.
         paramsVersion: 1,
+        // Fresh deploy = original code (never upgraded); every `upgrade_code`
+        // bumps it in place (TVM SETCODE, address unchanged).
+        codeVersion: 0,
     };
 
     val gp = GlobalParams.fromStorage(storage);

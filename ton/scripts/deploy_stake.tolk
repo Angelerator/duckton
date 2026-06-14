@@ -57,6 +57,8 @@ fun main() {
         totalSupply: 0,
         bindingHash: bindingHash,
         config: cfg.toCell(),
+        // Fresh deploy: original code, no pending timelocked upgrade (§8.6).
+        upgrade: freshVaultUpgrade(),
     };
 
     val vault = StakeVault.fromStorage(storage);

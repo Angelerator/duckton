@@ -17,6 +17,11 @@ const OP_STAKE_WITHDRAW = 0x534b_4b03
 const OP_STAKE_KEEPER = 0x534b_4b04
 const OP_STAKE_SLASH = 0x534b_4b05
 const OP_RECEIPT_BURN = 0x534b_4b06
+// Timelocked governance code-upgrade ops (§8.6): two-step announce -> apply, with
+// an apply-after-delay >= the unbonding window so stakers can exit first.
+const OP_STAKE_ANNOUNCE_UPGRADE = 0x534b_4b07
+const OP_STAKE_APPLY_UPGRADE = 0x534b_4b08
+const OP_STAKE_CANCEL_UPGRADE = 0x534b_4b09
 // Mint uses the STANDARD TEP-74 internal_transfer op (0x178d4519), not a custom
 // one, so indexers recognize it; see `JettonInternalTransfer` below.
 
@@ -135,6 +140,23 @@ struct VaultConfig {
     slash: Cell<SlashConfig>
 }
 
+// Timelocked code-upgrade state (§8.6), kept in a CHILD cell (a ^ref) for two
+// reasons: (1) the vault's root storage cell is already near the 1023-bit budget
+// (owner+three coins+ts+bindingHash ~= 927 bits + config ref), so appending
+// codeVersion(32)+pendingCodeHash(256)+pendingCodeAt(32)=320 bits inline would
+// overflow it; (2) it groups the announce->apply state together.
+//
+// `pendingCodeHash`/`pendingCodeAt` are 0 when no upgrade is announced. On
+// announce, the governance authority records the SUCCESSOR code's cell hash +
+// the announcement time; apply (after the timelock) must present code whose hash
+// matches, so the community sees EXACTLY which code will land and has >= the
+// unbonding window to exit before it does.
+struct VaultUpgradeState {
+    codeVersion: uint32      // monotonic; 0 = original deployed code (never upgraded)
+    pendingCodeHash: uint256 // announced successor code cell-hash (0 = none pending)
+    pendingCodeAt: uint32    // unix ts the upgrade was announced (0 = none pending)
+}
+
 struct VaultStorage {
     owner: address         // node operator wallet
     staked: coins          // currently bonded
@@ -143,6 +165,21 @@ struct VaultStorage {
     totalSupply: coins     // receipts outstanding (== staked + unbondingAmount)
     bindingHash: uint256   // wallet<->node identity binding hash (§3.2)
     config: Cell<VaultConfig>
+    // Timelocked code-upgrade state (§8.6). Appended last (a ^ref) → additive,
+    // and decouples the (delicate, bond-custody) upgrade path from the hot
+    // deposit/slash data. New code reads the existing layout; a future storage
+    // migration stays additive (append fields LAST) and would be staged inside
+    // the apply handler before save() (SETCODE is postponed to after this run).
+    upgrade: Cell<VaultUpgradeState>
+}
+
+// A fresh (never-upgraded, nothing-pending) upgrade child cell for a new vault
+// deploy: codeVersion 0, no pending announcement. Use in every `VaultStorage`
+// construction site so the deploy data layout matches the off-chain Rust
+// `build_vault_data` (deterministic address derivation).
+fun freshVaultUpgrade(): Cell<VaultUpgradeState> {
+    val u: VaultUpgradeState = { codeVersion: 0, pendingCodeHash: 0, pendingCodeAt: 0 };
+    return u.toCell();
 }
 
 fun VaultStorage.load(): VaultStorage {
@@ -179,6 +216,30 @@ struct (0x534b_4b05) StakeSlash {
     challenger: address // receives the challenger bounty share
 }
 
+// --- Timelocked governance code upgrade (§8.6) -----------------------------
+// Step 1/2: ANNOUNCE the successor code (by its cell hash). Governance-gated
+// (cfg.slasher = the slasher/governance authority). Records the hash + now;
+// re-announcing overwrites and RESETS the timelock clock.
+struct (0x534b_4b07) StakeAnnounceUpgrade {
+    queryId: uint64
+    newCodeHash: uint256 // cell-hash of the successor code that apply must present
+}
+
+// Step 2/2: APPLY the announced code. Governance-gated. Allowed only after
+// `pendingCodeAt + unbondingPeriod` (>= the unbonding/challenge window, so
+// stakers could fully exit first), and only if `newCode.hash() == pendingCodeHash`
+// (binds apply to exactly what was announced). Performs the in-place TVM SETCODE.
+struct (0x534b_4b08) StakeApplyUpgrade {
+    queryId: uint64
+    newCode: cell        // the successor code cell (its hash must match the announced one)
+}
+
+// Abort a pending announcement before it is applied (governance-gated safety
+// valve, e.g. if a bad upgrade was announced). Clears the pending state.
+struct (0x534b_4b09) StakeCancelUpgrade {
+    queryId: uint64
+}
+
 // Getter shapes
 struct VaultState {
     staked: coins
@@ -186,6 +247,18 @@ struct VaultState {
     unbondingAt: uint32
     totalSupply: coins
     eligible: bool // staked >= minStake AND no unbonding in progress
+}
+
+// Getter shape for `get_pending_upgrade` (§8.6). `pendingCodeHash`/`pendingAt`
+// are 0 when nothing is announced; `readyAt` is the unix ts the announced
+// upgrade becomes applyable (`pendingAt + unbondingPeriod`, 0 when none) — so a
+// staker can read whether a code change is pending and how long they have to
+// exit before it can take effect.
+struct VaultUpgradeView {
+    codeVersion: uint32
+    pendingCodeHash: uint256
+    pendingAt: uint32
+    readyAt: uint32
 }
 
 // TEP-74 `get_jetton_data` shape for the stake-receipt jetton (the vault is the

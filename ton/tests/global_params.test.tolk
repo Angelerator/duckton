@@ -49,6 +49,7 @@ fun deployGlobalParams(admin: address, feeRecipient: address): GlobalParams {
         params: validParams().toCell(),
         blocklist: createEmptyMap(),
         paramsVersion: 1,
+        codeVersion: 0,
     };
     val gp = GlobalParams.fromStorage(storage);
     val res = gp.deploy(admin, { value: ton("1") });

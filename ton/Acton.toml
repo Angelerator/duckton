@@ -20,6 +20,11 @@ display-name = "StakeVault"
 src = "contracts/StakeVault.tolk"
 depends = ["StakeReceiptWallet"]
 
+[contracts.StakeVaultV2]
+display-name = "StakeVaultV2"
+src = "contracts/StakeVaultV2.tolk"
+depends = ["StakeReceiptWallet"]
+
 [contracts.JobEscrow]
 display-name = "JobEscrow"
 src = "contracts/JobEscrow.tolk"
@@ -30,9 +35,23 @@ display-name = "RecordAnchor"
 src = "contracts/RecordAnchor.tolk"
 depends = []
 
+[contracts.RecordAnchorV2]
+display-name = "RecordAnchorV2"
+src = "contracts/RecordAnchorV2.tolk"
+depends = []
+
 [contracts.GlobalParams]
 display-name = "GlobalParams"
 src = "contracts/GlobalParams.tolk"
+depends = []
+
+# In-place upgrade TARGETS (BLOCKCHAIN_ECONOMICS §12.1): faithful successors used
+# to prove address-stable code upgradeability (TVM SETCODE). Each shares its v1's
+# storage layout and adds one new getter that proves the new code is live after
+# an in-place `upgrade_code` (no redeploy, address unchanged).
+[contracts.GlobalParamsV2]
+display-name = "GlobalParamsV2"
+src = "contracts/GlobalParamsV2.tolk"
 depends = []
 
 [test]
@@ -60,6 +79,8 @@ deploy-escrow-emulation = "acton script scripts/deploy_escrow.tolk"
 deploy-escrow-testnet = "acton script scripts/deploy_escrow.tolk --net testnet"
 deploy-global-params-emulation = "acton script scripts/deploy_global_params.tolk"
 deploy-global-params-testnet = "acton script scripts/deploy_global_params.tolk --net testnet"
+upgrade-global-params-emulation = "acton script scripts/upgrade_global_params.tolk"
+upgrade-global-params-testnet = "acton script scripts/upgrade_global_params.tolk --net testnet"
 e2e-emulation = "acton script scripts/e2e_testnet.tolk"
 e2e-testnet = "acton script scripts/e2e_testnet.tolk --net testnet"
 

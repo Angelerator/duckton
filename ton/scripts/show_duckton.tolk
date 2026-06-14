@@ -98,6 +98,7 @@ fun main() {
         totalSupply: 0,
         bindingHash: env<int>("STAKE_BINDING_HASH") ?? 0,
         config: cfg.toCell(),
+        upgrade: freshVaultUpgrade(),
     };
 
     val vault = StakeVault.fromStorage(storage);

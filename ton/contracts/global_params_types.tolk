@@ -20,6 +20,11 @@ import "common"
 const OP_UPDATE_PARAMS = 0x47504101 // "GPA" 01
 const OP_UPDATE_ADMIN = 0x47504102  // "GPA" 02
 const OP_SET_BLOCKLISTED = 0x47504103 // "GPA" 03 — governance blocklist (anti-abuse)
+const OP_UPGRADE_CODE = 0x47504104  // "GPA" 04 — admin-gated in-place SETCODE upgrade
+
+// Log topic for the emitted "code upgraded" event (external-out message), so
+// off-chain indexers can watch in-place code upgrades without parsing internals.
+const EVENT_CODE_UPGRADED = 0x6770_7570 + 1 // "gpup"+1
 
 // Log topic for the emitted "params updated" event (external-out message), so
 // off-chain indexers can watch parameter changes without parsing internals.
@@ -92,6 +97,18 @@ struct GlobalParamsStorage {
     // can pin the EXACT params set it ran under for settlement / dispute
     // resolution. Appended last → additive, address-stable layout change.
     paramsVersion: uint32
+    // Monotonic CODE version/seqno (separate from `paramsVersion`). Bumped by the
+    // contract on EVERY successful in-place `upgrade_code` (admin never sets it
+    // directly). This is the in-place upgradeability win (§12.1): the CODE can be
+    // replaced via TVM `SETCODE` WITHOUT changing the contract address or losing
+    // storage, so adding a field/getter no longer forces a redeploy to a new
+    // address. Appended last (additive). 0 = original deployed code (never
+    // upgraded). Storage-migration rule: keep storage changes additive and
+    // append new fields LAST; new code reads the existing layout (older fields
+    // unchanged), and a real layout migration would be staged inside the
+    // `upgrade_code` handler (the OLD code can `setData()` the migrated layout in
+    // the same tx, because `SETCODE` is postponed to after this run completes).
+    codeVersion: uint32
 }
 
 fun GlobalParamsStorage.load(): GlobalParamsStorage {
@@ -122,6 +139,26 @@ struct (0x47504103) SetBlocklisted {
     queryId: uint64
     subject: uint256
     blocked: bool
+}
+
+// Admin-gated IN-PLACE code upgrade (§12.1). Replaces this contract's CODE via
+// TVM `SETCODE` (postponed to after this run) WITHOUT changing the address or
+// touching storage — so e.g. a newly added EcoParams getter/field ships without
+// a redeploy to a new address. `newCode` is the compiled successor code cell
+// (carried as a ^ref). Only the configured `admin` may send it; `codeVersion`
+// is bumped by the contract (the admin never sets it directly).
+struct (0x47504104) UpgradeCode {
+    queryId: uint64
+    newCode: cell
+}
+
+// Emitted as an external-out log on every successful in-place code upgrade.
+// Carries the new monotonic `codeVersion` + the upgraded code's cell hash so
+// off-chain indexers can track which code is now live at this (stable) address.
+struct CodeUpgraded {
+    queryId: uint64
+    codeVersion: uint32
+    codeHash: uint256
 }
 
 // Emitted as an external-out log on every successful update. Carries the new

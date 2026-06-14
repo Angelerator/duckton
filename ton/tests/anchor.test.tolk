@@ -100,6 +100,7 @@ fun deployAnchor(authority: address, treasury: address): RecordAnchor {
         nextDisputeId: 0,
         disputes: createEmptyMap(),
         config: cfg.toCell(),
+        codeVersion: 0,
     };
     val deployer = testing.treasury("deployer");
     val anchor = RecordAnchor.fromStorage(storage);
