@@ -44,30 +44,43 @@ fun proofForM5(): Cell<MerkleStep>? {
 fun main() {
     val deployer = scripts.wallet("deployer");
 
-    val cfg: AnchorConfig = {
-        minStakeWeight: env<coins>("ANCHOR_MIN_WEIGHT") ?? ton("0"),
-        disputeBondMin: env<coins>("ANCHOR_BOND_MIN") ?? ton("0.05"),
-        verdictAuthority: env<address>("ANCHOR_AUTHORITY") ?? deployer.address,
-        treasury: env<address>("ANCHOR_TREASURY") ?? deployer.address,
-    };
-    val storage: AnchorStorage = {
-        currentEpoch: 0,
-        lastRoot: 0,
-        nextDisputeId: 0,
-        disputes: createEmptyMap(),
-        config: cfg.toCell(),
-    };
-
-    val anchor = RecordAnchor.fromStorage(storage);
-    anchor.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();
-    println("Deployed RecordAnchor to {}", anchor.address);
+    // ADDRESS STABILITY: a TON address is a pure function of (code, initial
+    // data) — deterministic, not random. Pin ANCHOR_ADDR to reuse ONE canonical
+    // anchor across runs (epochs simply continue from its current state):
+    //     ANCHOR_ADDR=kQ... acton script scripts/show_anchor.tolk --net testnet
+    val pinned = env<address>("ANCHOR_ADDR");
+    var anchor: RecordAnchor;
+    if (pinned != null) {
+        anchor = RecordAnchor.fromAddress(pinned!);
+        println("Reusing pinned RecordAnchor at {}", anchor.address);
+    } else {
+        val cfg: AnchorConfig = {
+            minStakeWeight: env<coins>("ANCHOR_MIN_WEIGHT") ?? ton("0"),
+            disputeBondMin: env<coins>("ANCHOR_BOND_MIN") ?? ton("0.05"),
+            verdictAuthority: env<address>("ANCHOR_AUTHORITY") ?? deployer.address,
+            treasury: env<address>("ANCHOR_TREASURY") ?? deployer.address,
+        };
+        val storage: AnchorStorage = {
+            currentEpoch: 0,
+            lastRoot: 0,
+            nextDisputeId: 0,
+            disputes: createEmptyMap(),
+            config: cfg.toCell(),
+        };
+        anchor = RecordAnchor.fromStorage(storage);
+        anchor.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();
+        println("Deployed RecordAnchor to {}", anchor.address);
+    }
 
     val stakeWeight = env<coins>("ANCHOR_STAKE_WEIGHT") ?? ton("1");
 
     // -- 1. Single-leaf epoch: root == leaf, inclusion with null proof. ------
+    // Epochs/prevRoot are taken from the live state so this is reuse-safe.
+    val s0 = anchor.getAnchorState();
     val leaf = 0xABCDEF;
     val root = leaf;
-    anchor.sendAnchorSubmitRoot(deployer.address, 1, 1, root, 0, stakeWeight, { value: ton("0.1") }).waitForTrace();
+    val e1 = (s0.currentEpoch + 1) as uint32;
+    anchor.sendAnchorSubmitRoot(deployer.address, 1, e1, root, s0.lastRoot, stakeWeight, { value: ton("0.1") }).waitForTrace();
     val s1 = anchor.getAnchorState();
     val inc1 = anchor.verifyInclusion(leaf, root, null);
     println("::ANCHOR::single::epoch={}::included={}", s1.currentEpoch, inc1);

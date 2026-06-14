@@ -41,6 +41,27 @@ acton script scripts/show_duckton.tolk --net testnet   # deploy vault + mint a v
 acton script scripts/show_anchor.tolk  --net testnet    # anchor roots + inclusion proofs + dispute
 ```
 
+**Address stability / pinning.** A TON address is a pure function of
+`(code, initial data)` — deterministic, not random. To keep ONE canonical,
+stable instance across runs, pin its address (the scripts then *reuse* it
+instead of deploying a new one):
+
+```bash
+VAULT_ADDR=kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp \
+  acton script scripts/show_duckton.tolk --net testnet     # mints into the SAME Duckton master
+ANCHOR_ADDR=kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3 \
+  acton script scripts/show_anchor.tolk  --net testnet     # anchors the next epoch on the SAME contract
+```
+
+The running grid pins the same way via `[economics.<net>.contracts]` (or
+`p2p_contracts(...)` from SQL), so the extension/coordinator always reference
+the deployed contracts. **`GlobalParams` is a singleton — deploy it once and
+edit it in place via `update_params` (its address is stable); redeploying it
+mints a brand-new instance with reset state.** A per-job `JobEscrow` address is
+*intended* to differ per job (it deterministically commits to that job's
+`expected_hash` + `params_version` + bid); a per-node `StakeVault` is one per
+node owner.
+
 > **Coverage.** Beyond the live runs above, the full scenario set is also
 > validated in Acton's **local emulator** against the real compiled contracts —
 > GlobalParams admin update/non-admin rejection/blocklist + monotonic version,
