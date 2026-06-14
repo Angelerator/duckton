@@ -62,6 +62,34 @@ mints a brand-new instance with reset state.** A per-job `JobEscrow` address is
 `expected_hash` + `params_version` + bid); a per-node `StakeVault` is one per
 node owner.
 
+### In-place code upgrades (SETCODE) — verified live
+
+Beyond editing data, the long-lived contracts support **in-place CODE upgrades**
+via the TVM `SETCODE` primitive, so the logic can change WITHOUT moving the
+address or losing state (a monotonic `codeVersion` bumps on each upgrade):
+
+- **GlobalParams** — admin-gated `upgrade_code`.
+- **RecordAnchor** — verdict-authority-gated `upgrade_code`.
+- **StakeVault** — governance-gated **timelocked** upgrade (announce → apply only
+  after ≥ the unbonding/challenge window) so bonded stakers can exit first; this
+  preserves the non-custodial guarantee. `JobEscrow` is intentionally *not*
+  upgradable while live (it would break in-flight HTLC commitments); new jobs
+  pick up the current template code at deploy.
+
+**Verified live on testnet:** a GlobalParams at
+[`kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF`](https://testnet.tonviewer.com/kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF)
+had its code swapped to `GlobalParamsV2` in place — **address unchanged**,
+`codeVersion` bumped (1 → 2), `params_version`/fee/admin preserved, and a getter
+that exists only in v2 (`get_surcharge_bps` → 500) went live at the same address.
+
+```bash
+cd ton
+# self-contained proof: deploy a fresh GlobalParams, then upgrade its code in place
+acton script scripts/upgrade_global_params.tolk --net testnet
+# or upgrade an already-deployed instance (admin-signed):
+GLOBAL_PARAMS_ADDR=kQ... acton script scripts/upgrade_global_params.tolk --net testnet
+```
+
 > **Coverage.** Beyond the live runs above, the full scenario set is also
 > validated in Acton's **local emulator** against the real compiled contracts —
 > GlobalParams admin update/non-admin rejection/blocklist + monotonic version,
