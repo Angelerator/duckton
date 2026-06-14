@@ -457,6 +457,96 @@ async fn paid_job_drives_coordinator_open_settle_anchor() {
     assert!(st.reputation(&winner, now_ts()).is_some());
 }
 
+/// A settlement that records the FULL `SettlementOutcome` each settle carries
+/// (winner + every participation commission + fee), so a test can assert the
+/// multi-participant payout split the coordinator actually directs at the escrow.
+struct CapturingSettlement {
+    opened: std::sync::Mutex<Vec<Amount>>,
+    settled: std::sync::Mutex<Vec<(Amount, SettlementOutcome)>>,
+}
+impl CapturingSettlement {
+    fn new() -> Self {
+        Self { opened: std::sync::Mutex::new(Vec::new()), settled: std::sync::Mutex::new(Vec::new()) }
+    }
+}
+impl Settlement for CapturingSettlement {
+    fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError> {
+        self.opened.lock().unwrap().push(max_bid);
+        Ok(EscrowHandle { job: job.clone(), address: wallet(0xEE), max_bid })
+    }
+    fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
+        if outcome.total() > h.max_bid {
+            return Err(SettleError::PayoutExceedsEscrow { payout: outcome.total(), escrow: h.max_bid });
+        }
+        self.settled.lock().unwrap().push((h.max_bid, outcome.clone()));
+        Ok(())
+    }
+    fn refund(&self, _: &EscrowHandle) -> Result<(), SettleError> {
+        Ok(())
+    }
+    fn is_onchain(&self) -> bool {
+        true
+    }
+}
+
+/// A 3-replica PAID job: the winner plus TWO agreeing non-winners. The
+/// coordinator must settle a payout split that pays the winner (base + bonus),
+/// a fixed participation commission to EACH of the two agreeing runners, and the
+/// platform fee — all bounded by the escrowed `B` (winner takes the remainder so
+/// the total spends exactly `B`). This is the multi-participant commission path
+/// the on-chain `participants` dict carries.
+#[tokio::test]
+async fn paid_job_settles_two_agreeing_participant_commissions() {
+    let w1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w3 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let cfg = paid_cfg(3, 3);
+
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    for w in [&w1, &w2, &w3] {
+        reg.set_stake(&w.node_id, 1_000 * TON);
+    }
+    let settlement = Arc::new(CapturingSettlement::new());
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+
+    let coord = coordinator(&[&w1, &w2, &w3], cfg.clone(), st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_stake_registry(reg)
+        .with_settlement(settlement.clone())
+        .with_record_anchor(anchor.clone());
+
+    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    assert!(outcome.verified);
+    let winner = outcome.winner.clone().unwrap();
+    let agreeing: Vec<NodeId> =
+        outcome.participants.iter().filter(|p| **p != winner).cloned().collect();
+    assert_eq!(agreeing.len(), 2, "two agreeing non-winners beside the winner");
+
+    let max_bid = 100 * TON;
+    let opened = settlement.opened.lock().unwrap().clone();
+    assert_eq!(opened, vec![max_bid], "escrow opened once for B before dispatch");
+
+    let settled = settlement.settled.lock().unwrap().clone();
+    assert_eq!(settled.len(), 1, "settled exactly once");
+    let (b, split) = &settled[0];
+    assert_eq!(*b, max_bid);
+    // Two participation commissions, each the same fixed κ·B, both > 0.
+    assert_eq!(split.participants.len(), 2, "two participant commissions in the split");
+    let c0 = split.participants[0].amount;
+    let c1 = split.participants[1].amount;
+    assert!(c0 > 0 && c0 == c1, "each agreeing non-winner earns the same fixed commission");
+    // Distinct payout wallets for the two participants.
+    assert_ne!(split.participants[0].to, split.participants[1].to);
+    // Winner takes the remainder; the whole split is bounded by B and spends it.
+    assert!(split.total() <= max_bid, "payout split must not exceed the escrow B");
+    assert_eq!(split.total(), max_bid, "winner takes the remainder ⇒ total spends all of B");
+    assert_eq!(split.winner.amount, max_bid - split.platform_fee - c0 - c1);
+
+    // The settled paid job anchored exactly one record.
+    assert_eq!(anchor.len(), 1);
+}
+
 /// A FREE job, even with a settlement that PANICS on any call wired into the
 /// coordinator, must complete the full grid path WITHOUT engaging the rail.
 #[tokio::test]

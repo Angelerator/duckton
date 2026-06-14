@@ -302,6 +302,35 @@ pub fn base64_encode(data: &[u8]) -> String {
     out
 }
 
+/// Decode standard or url-safe base64 (padding optional), the inverse of
+/// [`base64_encode`]. Returns `None` on any invalid character. Used to load a
+/// contract code BoC from an Acton build artifact's `code_boc64` field.
+pub fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' | b'-' => Some(62),
+            b'/' | b'_' => Some(63),
+            _ => None,
+        }
+    }
+    let s = s.trim().trim_end_matches('=');
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for &c in s.as_bytes() {
+        let v = val(c)? as u32;
+        buf = (buf << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+
 /// Verify an Ed25519 signature over `msg` with `public_key` (test helper).
 pub fn verify_sig(public_key: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
     let Ok(vk) = VerifyingKey::from_bytes(public_key) else {

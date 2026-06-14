@@ -19,11 +19,13 @@ use std::collections::HashMap;
 use p2p_config::DataClassCfg;
 use p2p_proto::{JobId, NodeId};
 
-use crate::cell::{state_init_cell, Cell, CellBuilder, BASECHAIN};
+use crate::cell::{
+    address_key_bits, state_init_cell, Cell, CellBuilder, DictEntry, ADDRESS_KEY_BITS, BASECHAIN,
+};
 use crate::traits::{RecordAnchor, Settlement, StakeRegistry};
 use crate::types::{
-    Amount, EscrowHandle, Hash32, InclusionProof, JobRecord, SettleError, SettlementOutcome,
-    SlashError, SlashReason, WalletAddress,
+    Amount, EscrowHandle, Hash32, InclusionProof, JobRecord, Payout, SettleError,
+    SettlementOutcome, SlashError, SlashReason, WalletAddress,
 };
 
 // Opcodes — MUST match `ton/contracts/*` (see stake_types.tolk / escrow_types.tolk / anchor_types.tolk).
@@ -108,10 +110,11 @@ impl MessageBody {
         self.cb = self.cb.store_ref(c);
         self
     }
-    /// Append a single bit to the cell ONLY (e.g. an empty `HashmapE`/`map`
-    /// terminator, which the flat ABI omits).
-    fn cell_bit(mut self, bit: bool) -> Self {
-        self.cb = self.cb.store_uint(bit as u128, 1);
+    /// Append a TL-B `HashmapE key_bits X` (a Tolk `map<K, V>` field) to the live
+    /// cell ONLY. The flat byte ABI omits dictionaries (like `cell_ref`), so the
+    /// dict layout is pinned via the live cell's repr-hash in the tests.
+    fn dict(mut self, key_bits: usize, entries: &[DictEntry]) -> Self {
+        self.cb = self.cb.store_dict(key_bits, entries);
         self
     }
     /// Finalize: snapshot the accumulated cell builder into `cell`.
@@ -141,26 +144,54 @@ pub fn build_stake_unbond(query_id: u64, amount: Amount) -> MessageBody {
     MessageBody::new(OP_STAKE_UNBOND).u64(query_id).coins(amount).finish()
 }
 
-/// Build the `EscrowSettle` body. The HTLC scalar fields are encoded inline; the
-/// `participants: map<address, coins>` is emitted as an **empty** `HashmapE`
-/// (live multi-participant commission dicts are a documented follow-up — see the
-/// report caveats), so the on-chain contract pays the winner + platform fee and
-/// refunds the remainder to the requester.
+/// Build the `EscrowSettle` body (mirrors `escrow_types.tolk::EscrowSettle`). The
+/// HTLC scalar fields are encoded inline; `participants: map<address, coins>` is
+/// emitted as a real `HashmapE` (267-bit `addr_std` keys → commission `coins`)
+/// that the contract iterates to pay each agreeing non-winner κ·payout_win. An
+/// empty slice ⇒ the empty-dict `0` bit (winner + fee only, slack refunded).
+///
+/// Participants sharing a payout wallet are merged (their commissions summed) so
+/// the on-chain map — which cannot hold duplicate keys — stays well-formed.
 pub fn build_escrow_settle(
     query_id: u64,
     result_hash: &[u8; 32],
     winner: &WalletAddress,
     winner_amount: Amount,
     platform_fee: Amount,
+    participants: &[Payout],
 ) -> MessageBody {
+    let entries = participants_dict_entries(participants);
     MessageBody::new(OP_ESCROW_SETTLE)
         .u64(query_id)
         .hash(result_hash)
         .addr(winner)
         .coins(winner_amount)
         .coins(platform_fee)
-        .cell_bit(false) // empty participants HashmapE
+        .dict(ADDRESS_KEY_BITS, &entries)
         .finish()
+}
+
+/// Encode participant payouts as TON dictionary entries (`addr_std` key bits →
+/// a `coins` value cell), merging any duplicate payout wallets by summing their
+/// commissions (a `map` key is unique) and skipping zero-amount entries.
+fn participants_dict_entries(participants: &[Payout]) -> Vec<DictEntry> {
+    let mut merged: Vec<(WalletAddress, Amount)> = Vec::new();
+    for p in participants {
+        if p.amount == 0 {
+            continue;
+        }
+        match merged.iter_mut().find(|(w, _)| *w == p.to) {
+            Some((_, amt)) => *amt = amt.saturating_add(p.amount),
+            None => merged.push((p.to, p.amount)),
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(to, amount)| DictEntry {
+            key: address_key_bits(&to),
+            value: CellBuilder::new().store_coins(amount).build(),
+        })
+        .collect()
 }
 
 /// Build the `EscrowRefund` body (`queryId`).
@@ -391,6 +422,26 @@ pub struct EscrowInit {
     pub deadline: u32,
 }
 
+/// Build the per-job `EscrowTerms` child cell (mirrors `escrow_types.tolk`:
+/// `treasury: address, expectedHash: uint256`). `expected_hash` is the HTLC lock
+/// — settle must later present exactly this agreed quorum result hash. This is
+/// the `terms` cell fed to [`TonSettlement::with_escrow_code`] / address
+/// derivation, so the per-job escrow address commits to the lock up front.
+pub fn build_escrow_terms(treasury: &WalletAddress, expected_hash: &[u8; 32]) -> Cell {
+    CellBuilder::new().store_address(treasury).store_u256(expected_hash).build()
+}
+
+/// Decode a contract **code** cell from a base64 BoC — e.g. the `code_boc64`
+/// field of an Acton `ton/build/<Contract>.json` artifact (the compiled
+/// `JobEscrow` code). This is how the live `JobEscrow` code is wired into
+/// [`TonSettlement::with_escrow_code`] for deterministic address derivation +
+/// funded deploy, without an Acton-runtime `build("JobEscrow")` call.
+pub fn escrow_code_from_boc_base64(code_boc64: &str) -> Result<Cell, SettleError> {
+    let bytes = crate::wallet::base64_decode(code_boc64.trim())
+        .ok_or_else(|| SettleError::Backend("escrow code: invalid base64 BoC".into()))?;
+    Cell::from_boc(&bytes).ok_or_else(|| SettleError::Backend("escrow code: BoC failed to parse".into()))
+}
+
 /// Build the per-job `JobEscrow` init **data** cell, matching `EscrowStorage`:
 /// `requester, arbiter, escrowAmount, deadline, settled, terms(ref)`.
 pub fn build_escrow_data(init: &EscrowInit, terms: Cell) -> Cell {
@@ -542,6 +593,7 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
             &outcome.winner.to,
             outcome.winner.amount,
             outcome.platform_fee,
+            &outcome.participants,
         );
         self.rpc.send_internal(&h.address, 0, &body).map(|_| ())
     }
@@ -914,10 +966,107 @@ mod tests {
     #[test]
     fn escrow_settle_body_layout_is_stable() {
         let winner = WalletAddress::new(0, [2u8; 32]);
-        let b = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2);
+        let b = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[]);
         assert_eq!(b.opcode, OP_ESCROW_SETTLE);
-        // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16)
+        // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16) — the flat
+        // ABI omits the participants dict (it lives only in the live cell).
         assert_eq!(b.bytes.len(), 4 + 8 + 32 + 36 + 16 + 16);
+    }
+
+    // -- participants dict, pinned to the Acton emulator --------------------
+    // Reference body-cell hashes come from `ton/scripts/_probe_dict.tolk`, which
+    // builds the IDENTICAL `EscrowSettle { ..., participants: map<address,coins> }`
+    // on-chain (Tolk `.toCell()`) and prints `cell.hash()`. If the off-chain
+    // HashmapE encoding (267-bit addr keys, hml labels, coins leaves) drifts from
+    // TON's, these break — so the dict the contract iterates is byte-identical.
+
+    fn probe_result_hash() -> [u8; 32] {
+        let mut rh = [0u8; 32];
+        rh[24..32].copy_from_slice(&0xABCDEF0123456789u64.to_be_bytes());
+        rh
+    }
+    fn probe_winner() -> WalletAddress {
+        WalletAddress::new(0, [0x02u8; 32])
+    }
+
+    #[test]
+    fn escrow_settle_participants_dict_matches_onchain_hashmap() {
+        let rh = probe_result_hash();
+        let w = probe_winner();
+        let p = |b: u8, amt: Amount| Payout { to: WalletAddress::new(0, [b; 32]), amount: amt };
+
+        // queryId=1, winnerAmount=60, platformFee=2 — same scalars as the probe.
+        let empty = build_escrow_settle(1, &rh, &w, 60, 2, &[]);
+        assert_eq!(
+            hex::encode(empty.cell.repr_hash()),
+            "e6cbdb6e35d80b2b4e81e6c4c22d3d2fa69fd6e0bb3c57ef2cdc706e6a6c6756"
+        );
+
+        let one = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1)]);
+        assert_eq!(
+            hex::encode(one.cell.repr_hash()),
+            "f8ecc70fa0fbd9698ef1a52bb6f928e8e226fc6afa202bb66e69b4792281d6cb"
+        );
+
+        let two = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256)]);
+        assert_eq!(
+            hex::encode(two.cell.repr_hash()),
+            "68c9b40f464036a8b7b4c761253e050361d6095ed2a93cc05270a9c62450b647"
+        );
+
+        let three =
+            build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256), p(0x33, 0xDEAD)]);
+        assert_eq!(
+            hex::encode(three.cell.repr_hash()),
+            "158c1fdc544a0fd5d328f0718fe5e94b02b31c30d9db16b70bd62b727d67f97e"
+        );
+    }
+
+    #[test]
+    fn escrow_settle_dict_is_order_independent_and_merges_dupes() {
+        let rh = probe_result_hash();
+        let w = probe_winner();
+        let p = |b: u8, amt: Amount| Payout { to: WalletAddress::new(0, [b; 32]), amount: amt };
+        // Entry order does not change the canonical dict (hence the cell hash).
+        let ab = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256)]);
+        let ba = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x22, 256), p(0x11, 1)]);
+        assert_eq!(ab.cell.repr_hash(), ba.cell.repr_hash());
+        // Duplicate payout wallets merge (summed) — a map key is unique. Two
+        // 0x11→128 entries equal one 0x11→256 entry.
+        let dup = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 128), p(0x11, 128)]);
+        let single = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 256)]);
+        assert_eq!(dup.cell.repr_hash(), single.cell.repr_hash());
+        // Zero-amount participants are dropped (no leaf), matching an empty dict.
+        let zero = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x44, 0)]);
+        let empty = build_escrow_settle(1, &rh, &w, 60, 2, &[]);
+        assert_eq!(zero.cell.repr_hash(), empty.cell.repr_hash());
+    }
+
+    /// The compiled `JobEscrow` code BoC (`code_boc64`) from
+    /// `ton/build/JobEscrow.json`, with its expected code-cell repr-hash. Loading
+    /// it proves the live escrow-code wiring consumes the REAL compiled contract
+    /// (multi-cell BoC), and pins the StateInit derivation to the deployed code.
+    const JOB_ESCROW_CODE_B64: &str = "te6ccgECCwEAAbcAART/APSkE/S88sgLAQIBYgIDAc7Q+JGRMOAg1ywiKpoYFOMC1ywiKpoYHI47W+1E0PpI+kj6ANMf0gAB8tDg+CMivvLg4STI+lIU+lJY+gLLH8+DzsntVMjPhQj6UnDPC27JgQCC+wDg1ywiKpoYBDGRMOCEDwHHAPL0BAIBIAcIAvgx7UTQ+kj6SPoA1h/SACDXTPiSJscF8uDeAvLQ4AHQ+kjT/9EH0z8x0//6SPoA+gD0BVBLuvLg33AqgQEL9IJvpZCfAfoA0RKgURuBAQv0dG+l6FtTE6CgUwe78uDiKcj6Uhn6Uif6AhbOz4MUzsntVCPCAJJsIuMNIMIABQYAJsjPhQgT+lJQA/oCcM8Laslz+wAA0o4SyM+FCBL6UgH6AnDPC2rJc/sAkVviI4EBC/SCb6WQjihSAvoA0SDCAI4SyM+FCBP6Ulj6AnDPC2rJc/sAkjAx4iSBAQv0dG+l6FszEqEgwgCOEsjPhQgS+lIB+gJwzwtqyXP7AJFb4gAdvJ7HaiaGumaH0kGOn/6MAgFiCQoAEbF3u1E0PpIMIAAlsp07UTQ+kgx+kgx+gDTH9cKAIA==";
+
+    #[test]
+    fn job_escrow_code_boc_parses_and_matches_artifact_hash() {
+        let code = escrow_code_from_boc_base64(JOB_ESCROW_CODE_B64).expect("artifact code BoC parses");
+        assert_eq!(
+            hex::encode_upper(code.repr_hash()),
+            "60C9F21AA3146CFA0A77B28098865118080B67F9CDF700F7C5DEDC984BD77E71"
+        );
+    }
+
+    #[test]
+    fn escrow_terms_cell_layout() {
+        // EscrowTerms = treasury(addr 267) + expectedHash(uint256). The expected
+        // hash round-trips and the address parses back out.
+        let treasury = WalletAddress::new(0, [0x7eu8; 32]);
+        let expected = [0xABu8; 32];
+        let terms = build_escrow_terms(&treasury, &expected);
+        let mut p = terms.parser();
+        assert_eq!(p.load_address(), Some(treasury));
+        assert_eq!(p.load_bits(256).unwrap(), expected.to_vec());
     }
 
     /// Recording fake transport for unit tests (no network).
@@ -966,7 +1115,7 @@ mod tests {
             build_stake_deposit(1, 100),
             build_stake_slash(2, 50, SlashReason::Cheat, &WalletAddress::new(0, [7u8; 32])),
             build_stake_unbond(3, 10),
-            build_escrow_settle(4, &[3u8; 32], &WalletAddress::new(0, [2u8; 32]), 60, 2),
+            build_escrow_settle(4, &[3u8; 32], &WalletAddress::new(0, [2u8; 32]), 60, 2, &[]),
             build_escrow_refund(5),
             build_escrow_topup(6),
             build_anchor_submit(7, 9, &[1u8; 32], &[0u8; 32], 1000),
@@ -978,10 +1127,20 @@ mod tests {
             assert_eq!(&mb.bytes[0..4], &mb.opcode.to_be_bytes());
             assert!(mb.cell.bit_len() >= 32);
         }
-        // EscrowSettle's live cell appends the empty participants HashmapE bit, so
+        // An empty-participants EscrowSettle appends the empty HashmapE `0` bit, so
         // it has one more bit than the scalar prefix implies (and no extra ref).
-        let settle = build_escrow_settle(0, &[0u8; 32], &WalletAddress::new(0, [0u8; 32]), 1, 1);
+        let settle = build_escrow_settle(0, &[0u8; 32], &WalletAddress::new(0, [0u8; 32]), 1, 1, &[]);
         assert!(settle.cell.refs().is_empty());
+        // A non-empty participants dict adds the `1` bit + the dictionary root ref.
+        let settle_p = build_escrow_settle(
+            0,
+            &[0u8; 32],
+            &WalletAddress::new(0, [0u8; 32]),
+            1,
+            1,
+            &[Payout { to: WalletAddress::new(0, [9u8; 32]), amount: 3 }],
+        );
+        assert_eq!(settle_p.cell.refs().len(), 1, "non-empty participants live in a ^dict root");
         // UpdateParams's live cell puts EcoParams in a child ref (flat ABI inlines).
         let p = sample_params();
         let up = build_update_params(0, &WalletAddress::new(0, [0u8; 32]), &p);

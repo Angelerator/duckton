@@ -195,6 +195,20 @@ impl CellBuilder {
         }
     }
 
+    /// Store a TL-B `HashmapE n X` (`hme_empty$0` / `hme_root$1 root:^(Hashmap n X)`)
+    /// — the on-chain representation of a Tolk `map<K, V>` field. `entries` are
+    /// `(key_bits, value_cell)` where every `key_bits` is exactly `n` bits
+    /// (MSB-first) and the value cell's bits+refs are spliced inline at the leaf.
+    /// Empty ⇒ a single `0` bit; non-empty ⇒ a `1` bit + the dictionary root ref
+    /// built by [`build_hashmap_root`].
+    pub fn store_dict(self, key_bits: usize, entries: &[DictEntry]) -> Self {
+        if entries.is_empty() {
+            self.store_uint(0, 1)
+        } else {
+            self.store_uint(1, 1).store_ref(build_hashmap_root(key_bits, entries))
+        }
+    }
+
     /// Append all of `other`'s bits AND its child refs inline (TON `storeBuilder`),
     /// used to splice the v5 signing message into the final signed body.
     pub fn store_cell_inline(mut self, other: &Cell) -> Self {
@@ -313,6 +327,141 @@ impl<'a> CellParser<'a> {
         self.next_ref += 1;
         Some(r)
     }
+}
+
+/// Bit width of a TON `MsgAddressInt` (`addr_std$10`, no anycast): tag(3) +
+/// workchain(8) + account(256). This is the fixed key length a Tolk
+/// `map<address, V>` uses for its on-chain `HashmapE` (cross-checked against the
+/// Acton emulator in the unit tests).
+pub const ADDRESS_KEY_BITS: usize = 267;
+
+/// One entry of a TON dictionary: a fixed-width `key` (MSB-first bits) and the
+/// `value` cell whose bits + child refs are spliced inline at the leaf.
+#[derive(Debug, Clone)]
+pub struct DictEntry {
+    pub key: Vec<bool>,
+    pub value: Cell,
+}
+
+/// The 267-bit `addr_std` key bits for `addr` (the dictionary key a Tolk
+/// `map<address, V>` stores), identical to `store_address`'s bit layout.
+pub fn address_key_bits(addr: &WalletAddress) -> Vec<bool> {
+    cell_bits(&CellBuilder::new().store_address(addr).build())
+}
+
+/// All `bit_len` bits of `c` as an MSB-first boolean vector.
+fn cell_bits(c: &Cell) -> Vec<bool> {
+    (0..c.bit_len).map(|i| (c.data[i / 8] >> (7 - (i % 8))) & 1 == 1).collect()
+}
+
+/// Bits needed to encode a label length in `[0, max_n]` (`ceil(log2(max_n+1))`),
+/// the width of the `len` field in a long/same HmLabel.
+fn label_len_bits(max_n: usize) -> u32 {
+    if max_n == 0 {
+        0
+    } else {
+        usize::BITS - max_n.leading_zeros()
+    }
+}
+
+/// Append the shortest TL-B `HmLabel ~l n` for `bits` (the edge label), choosing
+/// among `hml_short$0`, `hml_long$10`, `hml_same$11` exactly as TON's canonical
+/// dictionary serializer does (shortest wins; short beats long on a tie, long
+/// beats same), so the resulting cells hash identically to the on-chain dict.
+fn store_label(cb: CellBuilder, bits: &[bool], max_n: usize) -> CellBuilder {
+    let l = bits.len();
+    let k = label_len_bits(max_n);
+    let short_len = 2 * l + 2;
+    let long_len = 2 + k as usize + l;
+    let all_same = l > 0 && bits.iter().all(|&b| b == bits[0]);
+    let same_len = if all_same { 3 + k as usize } else { usize::MAX };
+
+    if short_len <= long_len && short_len <= same_len {
+        // hml_short$0: `0`, unary len (`l` ones + a terminating `0`), then l bits.
+        let mut cb = cb.store_uint(0, 1);
+        for _ in 0..l {
+            cb = cb.store_uint(1, 1);
+        }
+        cb = cb.store_uint(0, 1);
+        for &b in bits {
+            cb = cb.store_uint(b as u128, 1);
+        }
+        cb
+    } else if long_len <= same_len {
+        // hml_long$10: `10`, len in k bits, then l bits.
+        let mut cb = cb.store_uint(0b10, 2).store_uint(l as u128, k);
+        for &b in bits {
+            cb = cb.store_uint(b as u128, 1);
+        }
+        cb
+    } else {
+        // hml_same$11: `11`, the repeated bit, len in k bits (no label bits).
+        cb.store_uint(0b11, 2).store_uint(bits[0] as u128, 1).store_uint(l as u128, k)
+    }
+}
+
+/// Longest common prefix length shared by ALL of `entries`' (equal-length) keys.
+fn common_prefix_len(entries: &[(&[bool], &Cell)]) -> usize {
+    let first = entries[0].0;
+    let mut l = first.len();
+    for (key, _) in &entries[1..] {
+        let mut i = 0;
+        while i < l && key[i] == first[i] {
+            i += 1;
+        }
+        l = i;
+        if l == 0 {
+            break;
+        }
+    }
+    l
+}
+
+/// Recursively build a `Hashmap n X` cell: a single entry becomes a leaf whose
+/// label is the entire remaining key; multiple entries become a fork edge
+/// (common-prefix label + the two `^(Hashmap (n-l-1) X)` branch refs).
+fn build_hashmap_node(entries: &[(&[bool], &Cell)], n: usize) -> Cell {
+    if entries.len() == 1 {
+        let (key, val) = entries[0];
+        debug_assert_eq!(key.len(), n, "leaf key must consume the full remaining width");
+        let cb = store_label(CellBuilder::new(), key, n);
+        return cb.store_cell_inline(val).build();
+    }
+    let l = common_prefix_len(entries);
+    debug_assert!(l < n, "a fork must branch within the key width (distinct keys)");
+    let mut cb = store_label(CellBuilder::new(), &entries[0].0[..l], n);
+    let child_n = n - l - 1;
+    let mut left: Vec<(&[bool], &Cell)> = Vec::new();
+    let mut right: Vec<(&[bool], &Cell)> = Vec::new();
+    for (key, val) in entries {
+        let rest = &key[l + 1..];
+        if key[l] {
+            right.push((rest, *val));
+        } else {
+            left.push((rest, *val));
+        }
+    }
+    debug_assert!(!left.is_empty() && !right.is_empty(), "common-prefix split is non-trivial");
+    cb = cb.store_ref(build_hashmap_node(&left, child_n));
+    cb = cb.store_ref(build_hashmap_node(&right, child_n));
+    cb.build()
+}
+
+/// Build the root `Hashmap n X` cell for a NON-EMPTY dictionary over `n`-bit
+/// keys (the `^Cell` a non-empty [`CellBuilder::store_dict`] references).
+///
+/// Entries may be in any order (the resulting tree is canonical, so the cell
+/// hash is order-independent); duplicate keys must be merged by the caller.
+pub fn build_hashmap_root(n: usize, entries: &[DictEntry]) -> Cell {
+    assert!(!entries.is_empty(), "build_hashmap_root requires at least one entry");
+    let refs: Vec<(&[bool], &Cell)> = entries
+        .iter()
+        .map(|e| {
+            assert_eq!(e.key.len(), n, "every dict key must be exactly n bits");
+            (e.key.as_slice(), &e.value)
+        })
+        .collect();
+    build_hashmap_node(&refs, n)
 }
 
 /// Compute a `StateInit` cell carrying only `code` + `data` (the common case),

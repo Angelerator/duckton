@@ -34,18 +34,20 @@ pub mod types;
 pub mod wallet;
 pub mod wiring;
 
-pub use cell::{Cell, CellBuilder, BASECHAIN};
+pub use cell::{
+    address_key_bits, build_hashmap_root, Cell, CellBuilder, DictEntry, ADDRESS_KEY_BITS, BASECHAIN,
+};
 pub use engagement::settle_if_paid;
 pub use wallet::{
-    build_signed_external_v5r1, InternalMessage, WalletKey, WalletV5R1, GLOBAL_ID_MAINNET,
-    GLOBAL_ID_TESTNET,
+    base64_decode, base64_encode, build_signed_external_v5r1, InternalMessage, WalletKey,
+    WalletV5R1, GLOBAL_ID_MAINNET, GLOBAL_ID_TESTNET,
 };
 pub use quality::{latency_score, quality_score, throughput_score, QualitySample};
 pub use ton::{
-    build_anchor_submit, build_escrow_refund, build_escrow_settle, build_escrow_topup,
-    build_stake_deposit, build_stake_slash, build_stake_unbond, build_update_admin,
-    build_update_params, GlobalParams, MessageBody, TonRecordAnchor, TonRpc, TonSettlement,
-    TonStakeRegistry, VaultInit,
+    build_anchor_submit, build_escrow_refund, build_escrow_settle, build_escrow_terms,
+    build_escrow_topup, build_stake_deposit, build_stake_slash, build_stake_unbond,
+    build_update_admin, build_update_params, escrow_code_from_boc_base64, GlobalParams, MessageBody,
+    TonRecordAnchor, TonRpc, TonSettlement, TonStakeRegistry, VaultInit,
 };
 #[cfg(feature = "ton-live")]
 pub use ton::ToncenterRpc;
