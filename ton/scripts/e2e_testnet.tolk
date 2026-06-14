@@ -1,11 +1,15 @@
 // Live end-to-end scenario over the FOUR already-deployed contracts, run in a
 // single broadcast session:
 //
-//   0. GlobalParams           -> admin update_params (persisted, address stable),
-//                                  non-admin update_params rejected, governance
-//                                  blocklist round-trip (set -> clear)
+//   0. GlobalParams           -> admin update_params (persisted, address stable)
+//                                  + governance blocklist round-trip (set -> clear)
 //   1. stake deposit          -> StakeVault.StakeDeposit   (bond + mint receipt)
-//   1b. receipt jetton         -> minted 1:1 + transfer-locked (anti-exit)
+//   1b. receipt jetton         -> minted 1:1 + transfer-locked status read
+//
+// NEGATIVE checks (a receipt transfer rejected with 138, a non-admin
+// update_params rejected with 260) are deliberately NOT broadcast: they are
+// covered in the Acton emulator suite (stake.test.tolk, global_params.test.tolk)
+// so a funded testnet run leaves NO failed transactions and wastes no TON.
 //   1c. Duckton metadata       -> StakeVault.get_jetton_data (TEP-64 name/symbol/dec)
 //   2. open-escrow settle      -> JobEscrow.EscrowSettle     (HTLC release on the
 //                                  agreed result hash: winner + platform fee +
@@ -58,39 +62,6 @@ fun requireAddr(name: string): address {
         Assert.fail(format("required env address {} is missing", name));
     }
     return a!;
-}
-
-// A valid platform-wide parameter set (mirrors the §12 defaults / the emulator
-// `global_params.test.tolk::validParams`). Used to seed the throwaway non-admin
-// GlobalParams and as the base for the admin in-place update.
-fun validParams(): EcoParams {
-    return {
-        platformFeeBps: 200,
-        surchargeBps: 500,
-        participationCommissionBps: 200,
-        slashWrongBps: 1500,
-        slashCheatBps: 10000,
-        slashDowntimeBps: 200,
-        slashEquivocationBps: 5000,
-        splitChallengerBps: 4000,
-        splitRedundancyBps: 3000,
-        splitBurnBps: 2000,
-        splitTreasuryBps: 1000,
-        minStake: ton("0"),
-        minStakeInternal: ton("100"),
-        minStakeSensitive: ton("1000"),
-        stakeCap: ton("100000"),
-        unbondingSecs: 604800,
-        challengeWindowSecs: 86400,
-        nPublic: 3,
-        nDefault: 5,
-        nMax: 10,
-        quorum: 3,
-        checksumMin: 3,
-        wQualityBps: 6000,
-        wStakeBps: 1500,
-        wPriceBps: 2500,
-    };
 }
 
 // A deterministic 8-leaf Merkle tree (3 levels) — the realistic multi-record
@@ -226,27 +197,13 @@ fun main() {
     val locked = receipt.isTransferLocked();
     println("::CHECK::jetton::minted={}::staked={}::locked={}", wd0.balance, vs.staked, locked);
 
-    // Attempt a standard TEP-74 transfer to dodge slashing -> must be rejected;
-    // re-read the balance to confirm it did not move.
-    val xferRes = receipt.sendJettonTransfer(
-        deployer.address,
-        11,
-        wd0.balance,
-        deployer.address,
-        deployer.address,
-        null,
-        ton("0"),
-        beginCell().endCell().beginParse(),
-        { value: ton("0.1") },
-    );
-    xferRes.waitForTrace();
-    val wd1 = receipt.getWalletData();
-    println(
-        "::CHECK::jetton_transfer::before={}::after={}::rejected={}",
-        wd0.balance,
-        wd1.balance,
-        wd1.balance == wd0.balance,
-    );
+    // NOTE: the NEGATIVE anti-exit check (a transfer attempt MUST be rejected with
+    // ERROR_RECEIPT_LOCKED/138) is intentionally NOT broadcast here. Broadcasting
+    // an expected-to-fail transaction on testnet leaves a scary failed tx in the
+    // explorer and wastes gas for no extra signal — it is already proven in the
+    // Acton emulator suite (tests/stake.test.tolk: "stake-receipt jetton transfer
+    // is locked (anti-exit)"). The on-chain run keeps only the positive readout
+    // above (minted 1:1 + the transfer-locked status flag).
 
     // -- 1c. Duckton TEP-64 metadata on the (freshly redeployed) vault -------
     // Assert get_jetton_data exposes the on-chain Duckton metadata: the content
@@ -398,37 +355,15 @@ fun main() {
         println("::CHECK::dispute::skipped");
     }
 
-    // -- 6. GlobalParams non-admin update_params is rejected -----------------
-    // Run LAST so a (correctly) rejected, bouncing transaction cannot disrupt the
-    // earlier happy-path checks. We only sign as the deployer, so to exercise a
-    // NON-admin sender we target a throwaway GlobalParams whose admin is the
-    // (deterministic) vault address: the deployer is not its admin, so the update
-    // must be rejected and the decoy's params must stay at the seeded default
-    // (200 bps). The decoy address is deterministic, so a re-run is a harmless
-    // top-up.
-    val decoyStorage: GlobalParamsStorage = {
-        admin: vaultAddr,
-        feeRecipient: vaultAddr,
-        params: validParams().toCell(),
-        blocklist: createEmptyMap(),
-    };
-    val decoy = GlobalParams.fromStorage(decoyStorage);
-    decoy.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();
-    var evil = validParams();
-    evil.platformFeeBps = 9999;
-    decoy.sendUpdateParams(
-        deployer.address,
-        101,
-        deployer.address,
-        evil,
-        { value: ton("0.1") },
-    ).waitForTrace();
-    val decoyFeeBps = GlobalParams.fromAddress(decoy.address).getParams().params.load().platformFeeBps;
-    println(
-        "::CHECK::globalparams_nonadmin::{}::decoy_fee_bps={}",
-        decoyFeeBps == 200 ? "PASS" : "FAIL",
-        decoyFeeBps,
-    );
+    // -- 6. GlobalParams non-admin update_params rejection -------------------
+    // NOTE: the NEGATIVE authorization check (a non-admin update_params MUST be
+    // rejected with ERROR_NOT_ADMIN/260) is intentionally NOT broadcast here. It
+    // previously deployed a throwaway "decoy" contract and sent it an
+    // expected-to-fail update, which left a deliberate failed tx on testnet and
+    // burned gas/storage for no extra signal. The rule is fully proven in the
+    // Acton emulator suite (tests/global_params.test.tolk: "non-admin
+    // update_params is rejected"). The on-chain run keeps only the positive admin
+    // update + governance-blocklist round-trip (section 0).
 
     println("::CHECK::done");
 }

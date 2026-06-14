@@ -25,12 +25,12 @@ fun onInternalMessage(in: InMessage) {
     match (msg) {
         EscrowSettle => {
             var storage = lazy EscrowStorage.load();
-            assert (in.senderAddress == storage.arbiter) throw ERROR_NOT_ARBITER;
-            assert (!storage.settled) throw ERROR_ALREADY_SETTLED;
+            assert (in.senderAddress == storage.arbiter) throw ErrCode.NOT_ARBITER;
+            assert (!storage.settled) throw ErrCode.ALREADY_SETTLED;
 
             val terms = storage.terms.load();
             // HTLC lock: funds only unlock for the agreed quorum result hash.
-            assert (msg.resultHash == terms.expectedHash) throw ERROR_HASH_MISMATCH;
+            assert (msg.resultHash == terms.expectedHash) throw ErrCode.HASH_MISMATCH;
 
             // Sum participation commissions.
             var participantsTotal: coins = 0;
@@ -41,7 +41,7 @@ fun onInternalMessage(in: InMessage) {
             }
 
             val total = msg.winnerAmount + msg.platformFee + participantsTotal;
-            assert (total <= storage.escrowAmount) throw ERROR_PAYOUT_EXCEEDS_ESCROW;
+            assert (total <= storage.escrowAmount) throw ErrCode.PAYOUT_EXCEEDS_ESCROW;
 
             storage.settled = true;
             storage.save();
@@ -75,8 +75,8 @@ fun onInternalMessage(in: InMessage) {
         // trigger a full refund to the requester (funds always go to the requester).
         EscrowRefund => {
             var storage = lazy EscrowStorage.load();
-            assert (!storage.settled) throw ERROR_ALREADY_SETTLED;
-            assert (blockchain.now() >= storage.deadline) throw ERROR_TIMEOUT_NOT_REACHED;
+            assert (!storage.settled) throw ErrCode.ALREADY_SETTLED;
+            assert (blockchain.now() >= storage.deadline) throw ErrCode.TIMEOUT_NOT_REACHED;
 
             storage.settled = true;
             storage.save();
@@ -94,7 +94,7 @@ fun onInternalMessage(in: InMessage) {
         }
 
         else => {
-            assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
+            assert (in.body.isEmpty()) throw ErrCode.INVALID_OP;
         }
     }
 }

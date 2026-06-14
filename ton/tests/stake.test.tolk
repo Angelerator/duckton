@@ -131,7 +131,7 @@ get fun `test stake-receipt jetton transfer is locked (anti-exit)`() {
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: owner.address, to: wallet.address, exitCode: ERROR_RECEIPT_LOCKED });
+    ).toHaveFailedTx({ from: owner.address, to: wallet.address, exitCode: ErrCode.RECEIPT_LOCKED });
     // Balance unchanged.
     expect(wallet.getWalletData().balance).toEqual(ton("100"));
 }
@@ -194,7 +194,7 @@ get fun `test slash from non-slasher is rejected`() {
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: notSlasher.address, to: vault.address, exitCode: ERROR_NOT_SLASHER });
+    ).toHaveFailedTx({ from: notSlasher.address, to: vault.address, exitCode: ErrCode.NOT_SLASHER });
 }
 
 get fun `test unbonding cooldown blocks early withdraw and stays slashable`() {
@@ -225,7 +225,7 @@ get fun `test unbonding cooldown blocks early withdraw and stays slashable`() {
     val early = vault.sendStakeWithdraw(owner.address, 3);
     expect(
         early,
-    ).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ERROR_COOLDOWN_NOT_ELAPSED });
+    ).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.COOLDOWN_NOT_ELAPSED });
 
     // Slash 70 DURING cooldown: 60 from bonded + 10 from the still-slashable cooldown bucket.
     val s = vault.sendStakeSlash(
@@ -271,7 +271,7 @@ get fun `test keeper can finalize an unresponsive owner withdraw for a bounty`()
     val early = vault.sendStakeKeeperWithdraw(keeper, 3, { value: ton("1") });
     expect(
         early,
-    ).toHaveFailedTx({ from: keeper, to: vault.address, exitCode: ERROR_KEEPER_TOO_EARLY });
+    ).toHaveFailedTx({ from: keeper, to: vault.address, exitCode: ErrCode.KEEPER_TOO_EARLY });
 
     // After cooldown + grace, anyone can finalize; the keeper earns a 2% bounty.
     testing.setNow(T0 + UNBONDING_PERIOD + KEEPER_GRACE);
@@ -412,7 +412,7 @@ get fun `test stake deposit mints receipt 1to1 and a transfer attempt is rejecte
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: owner.address, to: wallet.address, exitCode: ERROR_RECEIPT_LOCKED });
+    ).toHaveFailedTx({ from: owner.address, to: wallet.address, exitCode: ErrCode.RECEIPT_LOCKED });
     expect(wallet.getWalletData().balance).toEqual(ton("100"));
 }
 
@@ -439,4 +439,283 @@ get fun `test free-tier vault (min_stake = 0) is eligible with zero stake`() {
         randomAddress("r2"),
     );
     expect(paid.isEligible()).toBeFalse();
+}
+
+// ===========================================================================
+// Hardening: focused negative / boundary tests that kill surviving mutants
+// (assert removal, comparison-boundary, logical-operator, slash-split guard).
+// Each test pins a money-rule guard so a removed/weakened check fails CI.
+// ===========================================================================
+
+// Build a vault config with an explicit slash split + keeper bounty (so we can
+// exercise the split-sum guard and the zero-stake eligibility boundary).
+fun makeConfigSplit(
+    minStake: coins,
+    slasher: address,
+    treasury: address,
+    redundancy: address,
+    splitCh: uint16,
+    splitRe: uint16,
+    splitBu: uint16,
+    splitTr: uint16,
+): Cell<VaultConfig> {
+    val slash: SlashConfig = {
+        treasury: treasury,
+        redundancyPool: redundancy,
+        splitChallengerBps: splitCh,
+        splitRedundancyBps: splitRe,
+        splitBurnBps: splitBu,
+        splitTreasuryBps: splitTr,
+    };
+    val cfg: VaultConfig = {
+        minStake: minStake,
+        unbondingPeriod: UNBONDING_PERIOD,
+        challengeWindow: CHALLENGE_WINDOW,
+        keeperGrace: KEEPER_GRACE,
+        keeperBountyBps: 200,
+        slasher: slasher,
+        receiptWalletCode: build("StakeReceiptWallet"),
+        slash: slash.toCell(),
+    };
+    return cfg.toCell();
+}
+
+fun deployVaultSplit(
+    owner: address,
+    minStake: coins,
+    slasher: address,
+    treasury: address,
+    redundancy: address,
+    splitCh: uint16,
+    splitRe: uint16,
+    splitBu: uint16,
+    splitTr: uint16,
+): StakeVault {
+    val storage: VaultStorage = {
+        owner: owner,
+        staked: 0,
+        unbondingAmount: 0,
+        unbondingAt: 0,
+        totalSupply: 0,
+        bindingHash: 0xDEADBEEF,
+        config: makeConfigSplit(minStake, slasher, treasury, redundancy, splitCh, splitRe, splitBu, splitTr),
+    };
+    val vault = StakeVault.fromStorage(storage);
+    expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
+    return vault;
+}
+
+get fun `test deposit from a non-owner is rejected`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val attacker = testing.treasury("attacker");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+
+    val res = vault.sendStakeDeposit(attacker.address, 1, ton("100"), { value: ton("103") });
+    expect(res).toHaveFailedTx({ from: attacker.address, to: vault.address, exitCode: ErrCode.NOT_OWNER });
+    expect(vault.getVaultState().staked).toEqual(ton("0"));
+}
+
+get fun `test deposit gas floor: under-funded rejected, exact floor accepted`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+
+    // value == amount (no room for MIN_TONS_FOR_STORAGE) must be rejected. This
+    // also pins the `+` in `amount + MIN_TONS_FOR_STORAGE` (a `-` would accept).
+    val under = vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("100") });
+    expect(under).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.NOT_ENOUGH_GAS });
+    expect(vault.getVaultState().staked).toEqual(ton("0"));
+
+    // value == amount + MIN_TONS_FOR_STORAGE EXACTLY must be accepted (pins
+    // `>=`: a strict `>` would reject the exact floor).
+    val exact = vault.sendStakeDeposit(owner.address, 2, ton("100"), { value: ton("100") + MIN_TONS_FOR_STORAGE });
+    expect(exact).toHaveSuccessfulTx<StakeDeposit>({ from: owner.address, to: vault.address });
+    expect(vault.getVaultState().staked).toEqual(ton("100"));
+}
+
+get fun `test eligibility boundary: staked == min_stake is eligible`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+
+    // Bond EXACTLY the minimum: get_vault_state.eligible must be true (pins the
+    // `>=` in `staked >= minStake`; a `>` would report not-eligible at the floor).
+    vault.sendStakeDeposit(owner.address, 1, ton("10"), { value: ton("10.1") });
+    val state = vault.getVaultState();
+    expect(state.staked).toEqual(ton("10"));
+    expect(state.eligible).toBeTrue();
+}
+
+get fun `test unbond guards: non-owner, zero, over-staked, and double unbond`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val attacker = testing.treasury("attacker");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+
+    // Non-owner cannot unbond.
+    val notOwner = vault.sendStakeRequestUnbond(attacker.address, 2, ton("10"));
+    expect(notOwner).toHaveFailedTx({ from: attacker.address, to: vault.address, exitCode: ErrCode.NOT_OWNER });
+
+    // amount == 0 rejected (pins `amount > 0`: `>=` or `&&`->`||` would accept).
+    val zero = vault.sendStakeRequestUnbond(owner.address, 3, ton("0"));
+    expect(zero).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.NOTHING_TO_UNBOND });
+
+    // amount > staked rejected (pins `amount <= staked`).
+    val over = vault.sendStakeRequestUnbond(owner.address, 4, ton("101"));
+    expect(over).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.NOTHING_TO_UNBOND });
+
+    // A second unbond while one is in progress is rejected (pins unbondingAt==0).
+    val first = vault.sendStakeRequestUnbond(owner.address, 5, ton("40"));
+    expect(first).toHaveSuccessfulTx<StakeRequestUnbond>({ from: owner.address, to: vault.address });
+    val second = vault.sendStakeRequestUnbond(owner.address, 6, ton("10"));
+    expect(second).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.UNBOND_IN_PROGRESS });
+}
+
+get fun `test withdraw guards: non-owner and nothing-unbonding rejected`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val attacker = testing.treasury("attacker");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+
+    // Withdraw with nothing unbonding is rejected (pins `unbondingAmount > 0`;
+    // a `>=` would pass with 0).
+    val nothing = vault.sendStakeWithdraw(owner.address, 2);
+    expect(nothing).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.NO_UNBONDING });
+
+    // With an unbond in progress, a non-owner withdraw is still rejected (owner
+    // gate is checked first).
+    vault.sendStakeRequestUnbond(owner.address, 3, ton("40"));
+    val notOwner = vault.sendStakeWithdraw(attacker.address, 4);
+    expect(notOwner).toHaveFailedTx({ from: attacker.address, to: vault.address, exitCode: ErrCode.NOT_OWNER });
+}
+
+get fun `test keeper withdraw with nothing unbonding is rejected`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val keeper = randomAddress("keeper");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("103") });
+
+    // No unbonding bucket: keeper is rejected with NO_UNBONDING (checked before
+    // the time gate), pinning `unbondingAmount > 0`.
+    testing.setNow(T0 + UNBONDING_PERIOD + KEEPER_GRACE + 1);
+    val res = vault.sendStakeKeeperWithdraw(keeper, 2, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: keeper, to: vault.address, exitCode: ErrCode.NO_UNBONDING });
+}
+
+get fun `test slash guards: zero, over-slashable rejected; full slash accepted`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val challenger = randomAddress("challenger");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
+
+    // amount == 0 rejected (pins `amount > 0` and the `&&`).
+    val zero = vault.sendStakeSlash(slasher.address, 2, ton("0"), 1, challenger, { value: ton("1") });
+    expect(zero).toHaveFailedTx({ from: slasher.address, to: vault.address, exitCode: ErrCode.SLASH_EXCEEDS_STAKE });
+
+    // amount > slashable rejected (pins `amount <= slashable`).
+    val over = vault.sendStakeSlash(slasher.address, 3, ton("101"), 1, challenger, { value: ton("1") });
+    expect(over).toHaveFailedTx({ from: slasher.address, to: vault.address, exitCode: ErrCode.SLASH_EXCEEDS_STAKE });
+
+    // amount == slashable EXACTLY is accepted (pins `<=`: a strict `<` would
+    // reject slashing the whole stake).
+    val full = vault.sendStakeSlash(slasher.address, 4, ton("100"), 1, challenger, { value: ton("1") });
+    expect(full).toHaveSuccessfulTx<StakeSlash>({ from: slasher.address, to: vault.address });
+    val state = vault.getVaultState();
+    expect(state.staked).toEqual(ton("0"));
+    expect(state.totalSupply).toEqual(ton("0"));
+}
+
+get fun `test slash with a split that does not sum to 100% is rejected`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val challenger = randomAddress("challenger");
+    // Split sums to 9000 bps, not 10000 -> the slash-split guard must reject.
+    val vault = deployVaultSplit(
+        owner.address,
+        ton("10"),
+        slasher.address,
+        randomAddress("t"),
+        randomAddress("r"),
+        4000,
+        3000,
+        1000,
+        1000,
+    );
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
+
+    val res = vault.sendStakeSlash(slasher.address, 2, ton("50"), 1, challenger, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: slasher.address, to: vault.address, exitCode: ErrCode.INVALID_SPLIT });
+    // Slash rolled back: stake untouched.
+    expect(vault.getVaultState().staked).toEqual(ton("100"));
+}
+
+get fun `test keeper bounty math: owner receives amount minus bounty`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val keeper = randomAddress("keeper");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
+    vault.sendStakeRequestUnbond(owner.address, 2, ton("100"));
+
+    testing.setNow(T0 + UNBONDING_PERIOD + KEEPER_GRACE);
+    val ownerBefore = testing.getAccountBalance(owner.address);
+    val res = vault.sendStakeKeeperWithdraw(keeper, 3, { value: ton("1") });
+    expect(res).toHaveSuccessfulTx<StakeKeeperWithdraw>({ from: keeper, to: vault.address });
+
+    // bounty = 2% of 100 = 2 TON; owner must receive amount - bounty = 98 TON
+    // (minus negligible message fees). This pins the `-` in `amount - bounty`:
+    // a `+` would pay ~102 (> 99) and a removed bounty deduction would pay ~100.
+    val ownerDelta = testing.getAccountBalance(owner.address) - ownerBefore;
+    expect(ownerDelta).toBeGreaterOrEqual(ton("97.5"));
+    expect(ownerDelta).toBeLessOrEqual(ton("99"));
+    expect(testing.getAccountBalance(keeper)).toBeGreaterOrEqual(ton("2"));
+}
+
+get fun `test unknown opcode (non-empty body) is rejected with INVALID_OP`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+
+    // A non-empty body with an unrecognized 32-bit opcode hits the `else` arm,
+    // which asserts the body is empty -> ErrCode.INVALID_OP (pins that guard).
+    val body = beginCell().storeUint(0xDEADBEEF, 32).endCell();
+    val res = vault.sendAny(owner.address, body, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.INVALID_OP });
+}
+
+get fun `test vault getters, top-up and provide-without-include cover read paths`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
+
+    // Read-only getters (owner, binding hash, deterministic receipt address).
+    expect(vault.getOwner()).toEqual(owner.address);
+    expect(vault.getBindingHash()).toEqual(0xDEADBEEF);
+    expect(vault.getReceiptWalletAddress(owner.address)).toEqual(vault.getWalletAddress(owner.address));
+
+    // A plain top-up for storage rent is accepted.
+    val top = vault.sendReceiptTopUp(owner.address, 1, { value: ton("0.1") });
+    expect(top).toHaveSuccessfulTx<ReceiptTopUp>({ from: owner.address, to: vault.address });
+
+    // provide_wallet_address WITHOUT include_address still answers (covers the
+    // `ownerRef = null` branch of the TEP-89 reply).
+    val res = vault.sendProvideWalletAddress(owner.address, 2, owner.address, false, { value: ton("0.1") });
+    expect(res).toHaveSuccessfulTx<ProvideWalletAddress>({ from: owner.address, to: vault.address });
+    expect(res.findTransaction<TakeWalletAddress>({ from: vault.address })).toBeNotNull();
 }

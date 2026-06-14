@@ -36,7 +36,7 @@ fun onInternalMessage(in: InMessage) {
         // op is locked below), so we still gate this on the master.
         JettonInternalTransfer => {
             var storage = lazy ReceiptWalletStorage.load();
-            assert (in.senderAddress == storage.master) throw ERROR_NOT_FROM_MASTER;
+            assert (in.senderAddress == storage.master) throw ErrCode.NOT_FROM_MASTER;
             storage.balance += msg.amount;
             storage.save();
 
@@ -61,15 +61,15 @@ fun onInternalMessage(in: InMessage) {
 
         // Transfer path: hard-locked. This is the core anti-exit guarantee.
         JettonTransfer => {
-            throw ERROR_RECEIPT_LOCKED;
+            throw ErrCode.RECEIPT_LOCKED;
         }
 
         // Burn path: only the master may reduce the receipt balance.
         ReceiptBurn => {
             var storage = lazy ReceiptWalletStorage.load();
-            assert (in.senderAddress == storage.master) throw ERROR_NOT_FROM_MASTER;
+            assert (in.senderAddress == storage.master) throw ErrCode.NOT_FROM_MASTER;
             storage.balance -= msg.amount;
-            assert (storage.balance >= 0) throw ERROR_BALANCE_NEGATIVE;
+            assert (storage.balance >= 0) throw ErrCode.BALANCE_NEGATIVE;
             storage.save();
         }
 
@@ -78,7 +78,7 @@ fun onInternalMessage(in: InMessage) {
         }
 
         else => {
-            assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
+            assert (in.body.isEmpty()) throw ErrCode.INVALID_OP;
         }
     }
 }

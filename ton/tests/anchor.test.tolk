@@ -170,7 +170,7 @@ get fun `test anchor rejects bad prev_root, low stake-weight and epoch regressio
     );
     expect(
         badPrev,
-    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ERROR_BAD_PREV_ROOT });
+    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ErrCode.BAD_PREV_ROOT });
 
     // Below stake-weight threshold.
     val lowWeight = anchor.sendAnchorSubmitRoot(
@@ -184,7 +184,7 @@ get fun `test anchor rejects bad prev_root, low stake-weight and epoch regressio
     );
     expect(
         lowWeight,
-    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ERROR_INSUFFICIENT_ANCHOR_STAKE });
+    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ErrCode.INSUFFICIENT_ANCHOR_STAKE });
 
     // Epoch must advance by exactly one.
     val regress = anchor.sendAnchorSubmitRoot(
@@ -198,7 +198,7 @@ get fun `test anchor rejects bad prev_root, low stake-weight and epoch regressio
     );
     expect(
         regress,
-    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ERROR_EPOCH_REGRESSION });
+    ).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ErrCode.EPOCH_REGRESSION });
 }
 
 get fun `test merkle inclusion proof verification`() {
@@ -245,7 +245,7 @@ get fun `test multi-leaf (8) inclusion proof folds to the anchored root on-chain
     expect(anchor.verifyInclusion(M5 + 1, root, proofForM5())).toBeFalse();
 
     // ...and a real bonded dispute carrying the genuine proof opens, while one
-    // carrying a tampered claimed root is rejected on-chain (ERROR_BAD_INCLUSION_PROOF).
+    // carrying a tampered claimed root is rejected on-chain (ErrCode.BAD_INCLUSION_PROOF).
     val good = anchor.sendAnchorOpenDispute(
         challenger,
         1,
@@ -268,7 +268,7 @@ get fun `test multi-leaf (8) inclusion proof folds to the anchored root on-chain
     );
     expect(
         tampered,
-    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ERROR_BAD_INCLUSION_PROOF });
+    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ErrCode.BAD_INCLUSION_PROOF });
 }
 
 get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verdicts`() {
@@ -300,7 +300,7 @@ get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verd
     );
     expect(
         lowBond,
-    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ERROR_DISPUTE_BOND_TOO_LOW });
+    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ErrCode.DISPUTE_BOND_TOO_LOW });
 
     // A bad inclusion proof (wrong claimed root) is rejected.
     val badProof = anchor.sendAnchorOpenDispute(
@@ -314,7 +314,7 @@ get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verd
     );
     expect(
         badProof,
-    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ERROR_BAD_INCLUSION_PROOF });
+    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ErrCode.BAD_INCLUSION_PROOF });
 
     // A well-formed, bonded dispute opens (id 0).
     val open = anchor.sendAnchorOpenDispute(
@@ -335,7 +335,7 @@ get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verd
     val notAuth = anchor.sendAnchorResolveDispute(challenger, 4, 0, true, { value: ton("1") });
     expect(
         notAuth,
-    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ERROR_NOT_VERDICT_AUTHORITY });
+    ).toHaveFailedTx({ from: challenger, to: anchor.address, exitCode: ErrCode.NOT_VERDICT_AUTHORITY });
 
     // Authority upholds: challenger bond returned, status = 1.
     val upheld = anchor.sendAnchorResolveDispute(
@@ -373,4 +373,54 @@ get fun `test dispute lifecycle: bond, inclusion proof, upheld and rejected verd
     ).toHaveSuccessfulTx<AnchorResolveDispute>({ from: authority.address, to: anchor.address });
     expect(anchor.getDispute(1)!.status).toEqual(2);
     expect(testing.getAccountBalance(treasury)).toBeGreaterOrEqual(ton("2"));
+}
+
+// ===========================================================================
+// Hardening: focused negative / boundary tests that kill surviving mutants on
+// the record-anchor money/dispute rules (bond floor, verdict guards, getters).
+// ===========================================================================
+
+get fun `test resolving an unknown dispute id is rejected`() {
+    testing.setNow(T0);
+    val authority = testing.treasury("authority");
+    val anchor = deployAnchor(authority.address, randomAddress("treasury"));
+
+    // The authority resolves a dispute id that was never opened: must be rejected
+    // with NO_SUCH_DISPUTE (pins the `found.isFound` guard before loadValue()).
+    val res = anchor.sendAnchorResolveDispute(authority.address, 1, 999, true, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: authority.address, to: anchor.address, exitCode: ErrCode.NO_SUCH_DISPUTE });
+}
+
+get fun `test dispute bond exactly at the minimum is accepted (boundary)`() {
+    testing.setNow(T0);
+    val keeper = testing.treasury("keeper");
+    val challenger = testing.treasury("challenger");
+    val anchor = deployAnchor(randomAddress("auth"), randomAddress("treasury"));
+    val root = treeRoot();
+    anchor.sendAnchorSubmitRoot(keeper.address, 1, 1, root, 0, MIN_WEIGHT, { value: ton("1") });
+
+    // A bond EXACTLY equal to disputeBondMin must open the dispute (pins the
+    // `>=` in `valueCoins >= disputeBondMin`; a strict `>` would reject the floor).
+    val res = anchor.sendAnchorOpenDispute(challenger.address, 2, 1, L0, root, proofForL0(), { value: BOND_MIN });
+    expect(res).toHaveSuccessfulTx<AnchorOpenDispute>({ from: challenger.address, to: anchor.address });
+    expect(anchor.getDispute(0)).toBeNotNull();
+}
+
+get fun `test get_dispute returns null for an unknown id`() {
+    testing.setNow(T0);
+    val anchor = deployAnchor(randomAddress("auth"), randomAddress("treasury"));
+    // No disputes opened: the getter's not-found branch must return null (pins
+    // the `if (!found.isFound) return null` guard against a load on an empty slot).
+    expect(anchor.getDispute(0)).toBeNull();
+    expect(anchor.getDispute(999)).toBeNull();
+}
+
+get fun `test anchor rejects an unknown opcode (non-empty body) with INVALID_OP`() {
+    testing.setNow(T0);
+    val keeper = testing.treasury("keeper");
+    val anchor = deployAnchor(randomAddress("auth"), randomAddress("treasury"));
+
+    val body = beginCell().storeUint(0xDEADBEEF, 32).endCell();
+    val res = anchor.sendAny(keeper.address, body, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: keeper.address, to: anchor.address, exitCode: ErrCode.INVALID_OP });
 }

@@ -86,7 +86,7 @@ get fun `test settle with wrong result hash is rejected (HTLC lock)`() {
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ERROR_HASH_MISMATCH });
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.HASH_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -109,7 +109,7 @@ get fun `test settle from non-arbiter is rejected`() {
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: requester.address, to: escrow.address, exitCode: ERROR_NOT_ARBITER });
+    ).toHaveFailedTx({ from: requester.address, to: escrow.address, exitCode: ErrCode.NOT_ARBITER });
 }
 
 get fun `test payout exceeding escrow is rejected`() {
@@ -131,7 +131,7 @@ get fun `test payout exceeding escrow is rejected`() {
     );
     expect(
         res,
-    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ERROR_PAYOUT_EXCEEDS_ESCROW });
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
 }
 
 get fun `test refund before deadline is rejected, after deadline succeeds`() {
@@ -145,7 +145,7 @@ get fun `test refund before deadline is rejected, after deadline succeeds`() {
     val early = escrow.sendEscrowRefund(keeper, 1, { value: ton("1") });
     expect(
         early,
-    ).toHaveFailedTx({ from: keeper, to: escrow.address, exitCode: ERROR_TIMEOUT_NOT_REACHED });
+    ).toHaveFailedTx({ from: keeper, to: escrow.address, exitCode: ErrCode.TIMEOUT_NOT_REACHED });
 
     // After the deadline, anyone may trigger a full refund to the requester.
     testing.setNow(DEADLINE);
@@ -167,5 +167,114 @@ get fun `test refund before deadline is rejected, after deadline succeeds`() {
     );
     expect(
         late,
-    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ERROR_ALREADY_SETTLED });
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.ALREADY_SETTLED });
+}
+
+// ===========================================================================
+// Hardening: focused negative / boundary tests that kill surviving mutants on
+// the per-job escrow money rules (payout-bound, refund slack, settle guards).
+// ===========================================================================
+
+get fun `test refund after a successful settle is rejected (already settled)`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val keeper = randomAddress("keeper");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    // Settle first.
+    var participants: map<address, coins> = createEmptyMap();
+    val settle = escrow.sendEscrowSettle(
+        arbiter.address, 1, RESULT_HASH, randomAddress("w"), ton("10"), ton("0"), participants, { value: ton("1") },
+    );
+    expect(settle).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
+
+    // A refund after the deadline must now be rejected (the settled guard is
+    // checked before the deadline gate), pinning EscrowRefund's `!settled`.
+    testing.setNow(DEADLINE);
+    val refund = escrow.sendEscrowRefund(keeper, 2, { value: ton("1") });
+    expect(refund).toHaveFailedTx({ from: keeper, to: escrow.address, exitCode: ErrCode.ALREADY_SETTLED });
+}
+
+get fun `test payout total over escrow (winner+fee+participants) is rejected`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    // winner 80 + fee 10 + participant 20 = 110 > 100. Each summand must count:
+    // this pins both `+` operators in the total and the participant-summing loop
+    // (dropping fee, participants, or the loop would let 110 slip under 100).
+    var participants: map<address, coins> = createEmptyMap();
+    participants.set(randomAddress("p1"), ton("20"));
+    val res = escrow.sendEscrowSettle(
+        arbiter.address, 1, RESULT_HASH, randomAddress("w"), ton("80"), ton("10"), participants, { value: ton("1") },
+    );
+    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
+    expect(escrow.getEscrowState().settled).toBeFalse();
+}
+
+get fun `test payout total exactly equal to escrow is accepted (boundary)`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    // winner 98 + fee 1 + participant 1 = 100 == escrow: must succeed (pins the
+    // `<=` boundary in `total <= escrowAmount`; a strict `<` would reject this).
+    var participants: map<address, coins> = createEmptyMap();
+    participants.set(randomAddress("p1"), ton("1"));
+    val res = escrow.sendEscrowSettle(
+        arbiter.address, 1, RESULT_HASH, randomAddress("w"), ton("98"), ton("1"), participants, { value: ton("1") },
+    );
+    expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
+    expect(escrow.getEscrowState().settled).toBeTrue();
+}
+
+get fun `test settle refunds the unspent slack to the requester`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    // winner 60 + fee 2 + commissions 2 = 64; the remaining 36 must refund to the
+    // requester (pins the `if (refund > 0)` refund branch — without it the
+    // requester would receive nothing).
+    var participants: map<address, coins> = createEmptyMap();
+    participants.set(randomAddress("p1"), ton("1"));
+    participants.set(randomAddress("p2"), ton("1"));
+    val before = testing.getAccountBalance(requester.address);
+    val res = escrow.sendEscrowSettle(
+        arbiter.address, 1, RESULT_HASH, randomAddress("w"), ton("60"), ton("2"), participants, { value: ton("1") },
+    );
+    expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
+    val delta = testing.getAccountBalance(requester.address) - before;
+    expect(delta).toBeGreaterOrEqual(ton("35.5"));
+    expect(delta).toBeLessOrEqual(ton("36.5"));
+}
+
+get fun `test escrow rejects an unknown opcode (non-empty body) with INVALID_OP`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    val body = beginCell().storeUint(0xDEADBEEF, 32).endCell();
+    val res = escrow.sendAny(arbiter.address, body, { value: ton("1") });
+    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.INVALID_OP });
+}
+
+get fun `test escrow getters and top-up cover read paths`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val escrow = deployEscrow(requester.address, arbiter.address, randomAddress("t"), ton("100"));
+
+    expect(escrow.getRequester()).toEqual(requester.address);
+    expect(escrow.getExpectedHash()).toEqual(RESULT_HASH);
+
+    // A plain top-up (additional funding / storage rent) is accepted.
+    val top = escrow.sendEscrowTopUp(requester.address, 1, { value: ton("0.5") });
+    expect(top).toHaveSuccessfulTx<EscrowTopUp>({ from: requester.address, to: escrow.address });
+    expect(escrow.getEscrowState().settled).toBeFalse();
 }

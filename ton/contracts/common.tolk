@@ -12,50 +12,57 @@
 //     result-hash, challenge window, unbonding cooldown), never a platform key.
 //   * defensive TON style: explicit gas floors, bounce-safe, carry-value.
 // ---------------------------------------------------------------------------
-// Error codes (numeric, cheap to assert against in tests)
+// Error codes — a typed `enum` (Tolk production guidance) instead of loose
+// `const`s, so every `throw`/`assert` is checked against a single named set and
+// a typo can't silently invent a new code. The backing type is `int32` (the TVM
+// exit-code width); the numeric values are FROZEN — they are the contract ABI
+// that off-chain code and tests assert against — so they are kept verbatim.
+// Reference members as `ErrCode.NOT_OWNER`, etc.
 // ---------------------------------------------------------------------------
 
-const ERROR_NOT_OWNER = 132 // sender is not the contract owner
-const ERROR_NOT_FROM_MASTER = 133 // sender is not the jetton master (vault)
-const ERROR_NOT_VALID_WALLET = 134 // sender is not a legitimate sibling receipt wallet
-const ERROR_UNAUTHORIZED_BURN = 135 // burn notification not from the owner's wallet
-const ERROR_BALANCE_NEGATIVE = 136 // resulting balance would be negative
-const ERROR_NOT_ENOUGH_GAS = 137 // attached value too small to cover the operation
-const ERROR_RECEIPT_LOCKED = 138 // stake-receipt jetton is non-transferable (anti-exit)
-const ERROR_WRONG_WORKCHAIN = 333 // address is not in the basechain
-const ERROR_INVALID_OP = 0xffff // unknown opcode
+enum ErrCode: int32 {
+    // Jetton / receipt wallet
+    NOT_OWNER = 132            // sender is not the contract owner
+    NOT_FROM_MASTER = 133      // sender is not the jetton master (vault)
+    NOT_VALID_WALLET = 134     // sender is not a legitimate sibling receipt wallet
+    UNAUTHORIZED_BURN = 135    // burn notification not from the owner's wallet
+    BALANCE_NEGATIVE = 136     // resulting balance would be negative
+    NOT_ENOUGH_GAS = 137       // attached value too small to cover the operation
+    RECEIPT_LOCKED = 138       // stake-receipt jetton is non-transferable (anti-exit)
+    INVALID_OP = 0xffff        // unknown opcode
 
-// Stake vault
-const ERROR_NOT_SLASHER = 200 // sender is not the authorized slasher (dispute contract)
-const ERROR_NOTHING_TO_UNBOND = 201 // unbond requested but no eligible stake
-const ERROR_UNBOND_IN_PROGRESS = 202 // a prior unbond is still cooling down
-const ERROR_COOLDOWN_NOT_ELAPSED = 203 // withdraw before the unbonding cooldown finished
-const ERROR_NO_UNBONDING = 204 // withdraw with nothing in the unbonding bucket
-const ERROR_KEEPER_TOO_EARLY = 205 // keeper withdraw before the owner-grace window
-const ERROR_SLASH_EXCEEDS_STAKE = 206 // slash amount larger than slashable stake
-const ERROR_INVALID_SPLIT = 207 // slash split bps do not sum to 10000
+    // Stake vault
+    NOT_SLASHER = 200          // sender is not the authorized slasher (dispute contract)
+    NOTHING_TO_UNBOND = 201    // unbond requested but no eligible stake
+    UNBOND_IN_PROGRESS = 202   // a prior unbond is still cooling down
+    COOLDOWN_NOT_ELAPSED = 203 // withdraw before the unbonding cooldown finished
+    NO_UNBONDING = 204         // withdraw with nothing in the unbonding bucket
+    KEEPER_TOO_EARLY = 205     // keeper withdraw before the owner-grace window
+    SLASH_EXCEEDS_STAKE = 206  // slash amount larger than slashable stake
+    INVALID_SPLIT = 207        // slash split bps do not sum to 10000
 
-// Escrow
-const ERROR_ESCROW_NOT_FUNDED = 220 // escrow opened without the requester's max-bid B
-const ERROR_NOT_REQUESTER = 221 // settle/refund by someone other than the requester
-const ERROR_NOT_ARBITER = 222 // settle by someone other than the bound arbiter
-const ERROR_HASH_MISMATCH = 223 // provided result hash != the committed quorum hash
-const ERROR_ALREADY_SETTLED = 224 // escrow already released
-const ERROR_TIMEOUT_NOT_REACHED = 225 // refund-on-timeout before the deadline
-const ERROR_PAYOUT_EXCEEDS_ESCROW = 226 // requested payout exceeds the locked escrow B
+    // Escrow
+    ESCROW_NOT_FUNDED = 220    // escrow opened without the requester's max-bid B
+    NOT_REQUESTER = 221        // settle/refund by someone other than the requester
+    NOT_ARBITER = 222          // settle by someone other than the bound arbiter
+    HASH_MISMATCH = 223        // provided result hash != the committed quorum hash
+    ALREADY_SETTLED = 224      // escrow already released
+    TIMEOUT_NOT_REACHED = 225  // refund-on-timeout before the deadline
+    PAYOUT_EXCEEDS_ESCROW = 226 // requested payout exceeds the locked escrow B
 
-// Global params (platform-wide config)
-const ERROR_NOT_ADMIN = 260 // sender is not the configured admin (or multisig)
-const ERROR_PARAMS_OUT_OF_BOUNDS = 261 // proposed params violate a §12 invariant
+    // Record anchor / dispute
+    BAD_PREV_ROOT = 240        // submitted root does not chain to the stored prev_root
+    EPOCH_REGRESSION = 241     // epoch did not advance monotonically
+    INSUFFICIENT_ANCHOR_STAKE = 242 // keeper stake-weight below the acceptance threshold
+    BAD_INCLUSION_PROOF = 243  // Merkle inclusion proof does not reproduce the root
+    DISPUTE_BOND_TOO_LOW = 244 // challenger bond below the configured minimum
+    NO_SUCH_DISPUTE = 245      // verdict for an unknown dispute id
+    NOT_VERDICT_AUTHORITY = 246 // verdict from a non-authoritative source
 
-// Record anchor / dispute
-const ERROR_BAD_PREV_ROOT = 240 // submitted root does not chain to the stored prev_root
-const ERROR_EPOCH_REGRESSION = 241 // epoch did not advance monotonically
-const ERROR_INSUFFICIENT_ANCHOR_STAKE = 242 // keeper stake-weight below the acceptance threshold
-const ERROR_BAD_INCLUSION_PROOF = 243 // Merkle inclusion proof does not reproduce the root
-const ERROR_DISPUTE_BOND_TOO_LOW = 244 // challenger bond below the configured minimum
-const ERROR_NO_SUCH_DISPUTE = 245 // verdict for an unknown dispute id
-const ERROR_NOT_VERDICT_AUTHORITY = 246 // verdict from a non-authoritative source
+    // Global params (platform-wide config)
+    NOT_ADMIN = 260            // sender is not the configured admin (or multisig)
+    PARAMS_OUT_OF_BOUNDS = 261 // proposed params violate a §12 invariant
+}
 
 // ---------------------------------------------------------------------------
 // Opcodes — keep TEP-74 standard values verbatim for ecosystem interop.
@@ -80,7 +87,3 @@ const BPS_DENOM = 10000 // basis-points denominator for splits/fractions
 
 // Status bit flags for the stake-receipt wallet.
 const RECEIPT_STATUS_LOCKED = 1 // bit 0: outgoing transfers locked (default)
-
-fun assertBasechain(addr: address) {
-    assert (addr.getWorkchain() == BASECHAIN) throw ERROR_WRONG_WORKCHAIN;
-}

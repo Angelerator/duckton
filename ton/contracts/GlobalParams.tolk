@@ -30,7 +30,7 @@ fun onInternalMessage(in: InMessage) {
         // setData (mutate) rather than redeploy.
         UpdateParams => {
             var storage = lazy GlobalParamsStorage.load();
-            assert (in.senderAddress == storage.admin) throw ERROR_NOT_ADMIN;
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
 
             // Bounds-validate on-chain BEFORE persisting (reject bad updates).
             val newParams = msg.params.load();
@@ -55,7 +55,7 @@ fun onInternalMessage(in: InMessage) {
         // Admin rotation (single key -> multisig handoff). Admin-gated.
         UpdateAdmin => {
             var storage = lazy GlobalParamsStorage.load();
-            assert (in.senderAddress == storage.admin) throw ERROR_NOT_ADMIN;
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
             storage.admin = msg.newAdmin;
             storage.save();
         }
@@ -64,13 +64,13 @@ fun onInternalMessage(in: InMessage) {
         // in place. Sets the subject blocked (1) or clears it (0).
         SetBlocklisted => {
             var storage = lazy GlobalParamsStorage.load();
-            assert (in.senderAddress == storage.admin) throw ERROR_NOT_ADMIN;
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
             storage.blocklist.set(msg.subject, (msg.blocked ? 1 : 0) as uint1);
             storage.save();
         }
 
         else => {
-            assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
+            assert (in.body.isEmpty()) throw ErrCode.INVALID_OP;
         }
     }
 }

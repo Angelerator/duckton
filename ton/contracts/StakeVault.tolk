@@ -34,8 +34,8 @@ fun onInternalMessage(in: InMessage) {
         // an equal amount of the transfer-locked stake-receipt jetton to the owner.
         StakeDeposit => {
             var storage = lazy VaultStorage.load();
-            assert (in.senderAddress == storage.owner) throw ERROR_NOT_OWNER;
-            assert (in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE) throw ERROR_NOT_ENOUGH_GAS;
+            assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
+            assert (in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE) throw ErrCode.NOT_ENOUGH_GAS;
 
             storage.staked += msg.amount;
             storage.totalSupply += msg.amount;
@@ -56,9 +56,9 @@ fun onInternalMessage(in: InMessage) {
         // locked until withdrawal completes.
         StakeRequestUnbond => {
             var storage = lazy VaultStorage.load();
-            assert (in.senderAddress == storage.owner) throw ERROR_NOT_OWNER;
-            assert (storage.unbondingAt == 0) throw ERROR_UNBOND_IN_PROGRESS;
-            assert (msg.amount > 0 && msg.amount <= storage.staked) throw ERROR_NOTHING_TO_UNBOND;
+            assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
+            assert (storage.unbondingAt == 0) throw ErrCode.UNBOND_IN_PROGRESS;
+            assert (msg.amount > 0 && msg.amount <= storage.staked) throw ErrCode.NOTHING_TO_UNBOND;
 
             storage.staked -= msg.amount;
             storage.unbondingAmount = msg.amount;
@@ -70,11 +70,11 @@ fun onInternalMessage(in: InMessage) {
         // burn the matching receipts.
         StakeWithdraw => {
             var storage = lazy VaultStorage.load();
-            assert (in.senderAddress == storage.owner) throw ERROR_NOT_OWNER;
-            assert (storage.unbondingAmount > 0) throw ERROR_NO_UNBONDING;
+            assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
+            assert (storage.unbondingAmount > 0) throw ErrCode.NO_UNBONDING;
             val cfg = storage.config.load();
             val readyAt = storage.unbondingAt + cfg.unbondingPeriod;
-            assert (blockchain.now() >= readyAt) throw ERROR_COOLDOWN_NOT_ELAPSED;
+            assert (blockchain.now() >= readyAt) throw ErrCode.COOLDOWN_NOT_ELAPSED;
 
             val amount = storage.unbondingAmount;
             storage.unbondingAmount = 0;
@@ -96,10 +96,10 @@ fun onInternalMessage(in: InMessage) {
         // can finalize an unresponsive owner's withdrawal and earn a small bounty.
         StakeKeeperWithdraw => {
             var storage = lazy VaultStorage.load();
-            assert (storage.unbondingAmount > 0) throw ERROR_NO_UNBONDING;
+            assert (storage.unbondingAmount > 0) throw ErrCode.NO_UNBONDING;
             val cfg = storage.config.load();
             val keeperAt = storage.unbondingAt + cfg.unbondingPeriod + cfg.keeperGrace;
-            assert (blockchain.now() >= keeperAt) throw ERROR_KEEPER_TOO_EARLY;
+            assert (blockchain.now() >= keeperAt) throw ErrCode.KEEPER_TOO_EARLY;
 
             val amount = storage.unbondingAmount;
             storage.unbondingAmount = 0;
@@ -127,9 +127,9 @@ fun onInternalMessage(in: InMessage) {
         StakeSlash => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.slasher) throw ERROR_NOT_SLASHER;
+            assert (in.senderAddress == cfg.slasher) throw ErrCode.NOT_SLASHER;
             val slashable = storage.staked + storage.unbondingAmount;
-            assert (msg.amount > 0 && msg.amount <= slashable) throw ERROR_SLASH_EXCEEDS_STAKE;
+            assert (msg.amount > 0 && msg.amount <= slashable) throw ErrCode.SLASH_EXCEEDS_STAKE;
 
             val fromStaked = min(msg.amount, storage.staked);
             storage.staked -= fromStaked;
@@ -179,7 +179,7 @@ fun onInternalMessage(in: InMessage) {
         }
 
         else => {
-            assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
+            assert (in.body.isEmpty()) throw ErrCode.INVALID_OP;
         }
     }
 }
@@ -238,7 +238,7 @@ fun payout(to: address, amount: coins) {
 // can release it), which removes it from circulation.
 fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
     val sum = sc.splitChallengerBps + sc.splitRedundancyBps + sc.splitBurnBps + sc.splitTreasuryBps;
-    assert (sum == BPS_DENOM) throw ERROR_INVALID_SPLIT;
+    assert (sum == BPS_DENOM) throw ErrCode.INVALID_SPLIT;
 
     val challengerAmt = mulDivFloor(amount, sc.splitChallengerBps, BPS_DENOM);
     val redundancyAmt = mulDivFloor(amount, sc.splitRedundancyBps, BPS_DENOM);

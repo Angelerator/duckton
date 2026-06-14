@@ -113,40 +113,40 @@ struct GlobalParamsView {
 }
 
 // On-chain bounds validation, mirroring the §12 cross-field invariants enforced
-// off-chain by `EconomicsConfig::validate`. Throws ERROR_PARAMS_OUT_OF_BOUNDS on
+// off-chain by `EconomicsConfig::validate`. Throws ErrCode.PARAMS_OUT_OF_BOUNDS on
 // any violation so a bad admin update is rejected and storage stays consistent.
 fun validateEcoParams(p: EcoParams) {
     // All bps fractions within [0, 10000].
-    assert (p.platformFeeBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.surchargeBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.slashWrongBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.slashCheatBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.slashDowntimeBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.slashEquivocationBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.wQualityBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.wStakeBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.wPriceBps <= BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (p.platformFeeBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.surchargeBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.slashWrongBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.slashCheatBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.slashDowntimeBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.slashEquivocationBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.wQualityBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.wStakeBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.wPriceBps <= BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // κ (participation commission) must be small: <= 10% (§4.2).
-    assert (p.participationCommissionBps <= 1000) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (p.participationCommissionBps <= 1000) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // Slash split must sum to exactly 100%.
     val splitSum = p.splitChallengerBps + p.splitRedundancyBps + p.splitBurnBps + p.splitTreasuryBps;
-    assert (splitSum == BPS_DENOM) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (splitSum == BPS_DENOM) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // Per-class min-stake monotonicity + cap >= min.
-    assert (p.minStakeSensitive >= p.minStakeInternal) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.minStakeInternal >= p.minStake) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.stakeCap >= p.minStake) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (p.minStakeSensitive >= p.minStakeInternal) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.minStakeInternal >= p.minStake) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.stakeCap >= p.minStake) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // Unbonding must outlast the challenge window (§8.4).
-    assert (p.unbondingSecs >= p.challengeWindowSecs) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (p.unbondingSecs >= p.challengeWindowSecs) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 
     // Selection ordering: n_max >= n_default >= n_public >= checksum_min >= 1, and
     // a sane quorum (1 <= quorum <= n_default).
-    assert (p.checksumMin >= 1) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.nPublic >= p.checksumMin) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.nDefault >= p.nPublic) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.nMax >= p.nDefault) throw ERROR_PARAMS_OUT_OF_BOUNDS;
-    assert (p.quorum >= 1 && p.quorum <= p.nDefault) throw ERROR_PARAMS_OUT_OF_BOUNDS;
+    assert (p.checksumMin >= 1) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.nPublic >= p.checksumMin) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.nDefault >= p.nPublic) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.nMax >= p.nDefault) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    assert (p.quorum >= 1 && p.quorum <= p.nDefault) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
 }

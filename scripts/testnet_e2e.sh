@@ -13,8 +13,10 @@
 #   3. deploy the FOUR contracts (StakeVault, RecordAnchor, JobEscrow, GlobalParams)
 #   4. `acton verify` the published bytecode against source
 #   5. record the deployed addresses into a generated config file
-#   6. run the live scenario: GlobalParams admin update / non-admin rejection /
-#      governance blocklist -> stake deposit -> 1:1 transfer-locked receipt +
+#   6. run the live scenario: GlobalParams admin update / governance blocklist
+#      (the negative non-admin-rejection + receipt-transfer-lock checks are
+#      covered in the Acton emulator suite, not broadcast on-chain)
+#      -> stake deposit -> 1:1 transfer-locked receipt +
 #      Duckton TEP-64 metadata -> wallet-bind anchor -> open escrow -> settle
 #      (winner + platform fee + participation commissions) -> anchor epoch root +
 #      single- and multi-leaf inclusion proofs -> optional bonded dispute
@@ -442,9 +444,10 @@ else
   checkmark "stake-receipt jetton minted 1:1 + transfer-locked" 0
 fi
 
-# A transfer attempt must be rejected (balance unchanged afterwards).
-XFER="$(grep -oE '::CHECK::jetton_transfer::before=[0-9]+::after=[0-9]+::rejected=(true|false)' "$E2E_LOG" | tail -1 || true)"
-[[ "$XFER" == *"rejected=true" ]] && checkmark "stake-receipt jetton transfer rejected (anti-exit)" 1 || checkmark "stake-receipt jetton transfer rejected" 0
+# NOTE: the anti-exit transfer-rejection check is proven in the Acton emulator
+# suite (tests/stake.test.tolk) and is intentionally NOT broadcast on testnet, so
+# there is no ::CHECK::jetton_transfer:: marker to parse here (no deliberate
+# failed tx is sent on-chain).
 
 SETTLED="$(grep -oE '::CHECK::escrow_settle::settled=(true|false)' "$E2E_LOG" | tail -1 || true)"
 [[ "$SETTLED" == *"=true" ]] && checkmark "escrow settle (HTLC release)" 1 || checkmark "escrow settle" 0
@@ -464,8 +467,11 @@ check_passfail() {  # check_passfail <marker_name> <summary_label>
   line="$(grep -oE "::CHECK::${marker}::(PASS|FAIL)" "$E2E_LOG" | tail -1 || true)"
   if [[ "$line" == *"::PASS" ]]; then checkmark "$label" 1; else checkmark "$label" 0; fi
 }
+# NOTE: the non-admin update_params rejection is proven in the Acton emulator
+# suite (tests/global_params.test.tolk) and is intentionally NOT broadcast on
+# testnet (no decoy deploy + deliberate failed tx), so there is no
+# ::CHECK::globalparams_nonadmin:: marker to parse here.
 check_passfail globalparams_update    "GlobalParams admin update_params (persisted, address stable)"
-check_passfail globalparams_nonadmin  "GlobalParams non-admin update_params rejected"
 check_passfail globalparams_blocklist "GlobalParams governance blocklist round-trip"
 check_passfail duckton_metadata       "Duckton TEP-64 metadata (name/symbol/decimals)"
 check_passfail multileaf_inclusion    "multi-leaf Merkle inclusion verified on-chain"

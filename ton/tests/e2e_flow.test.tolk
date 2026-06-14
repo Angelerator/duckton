@@ -195,7 +195,7 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
     evil.platformFeeBps = 9999;
     expect(
         gp.sendUpdateParams(attacker.address, 101, attacker.address, evil, { value: ton("0.5") }),
-    ).toHaveFailedTx({ from: attacker.address, to: gpAddr, exitCode: ERROR_NOT_ADMIN });
+    ).toHaveFailedTx({ from: attacker.address, to: gpAddr, exitCode: ErrCode.NOT_ADMIN });
     expect(gp.getParams().params.load().platformFeeBps).toEqual(350);
 
     // (c) governance blocklist round-trip.
@@ -230,7 +230,7 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
             beginCell().endCell().beginParse(),
             { value: ton("1") },
         ),
-    ).toHaveFailedTx({ from: deployer.address, to: receipt.address, exitCode: ERROR_RECEIPT_LOCKED });
+    ).toHaveFailedTx({ from: deployer.address, to: receipt.address, exitCode: ErrCode.RECEIPT_LOCKED });
     expect(receipt.getWalletData().balance).toEqual(ton("100"));
 
     // Duckton TEP-64 metadata exactly matches the canonical content bytes.

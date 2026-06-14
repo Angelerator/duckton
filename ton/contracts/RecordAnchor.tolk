@@ -32,11 +32,11 @@ fun onInternalMessage(in: InMessage) {
             val cfg = storage.config.load();
 
             // Epochs advance monotonically; each root chains to the previous one.
-            assert (msg.epoch == storage.currentEpoch + 1) throw ERROR_EPOCH_REGRESSION;
-            assert (msg.prevRoot == storage.lastRoot) throw ERROR_BAD_PREV_ROOT;
+            assert (msg.epoch == storage.currentEpoch + 1) throw ErrCode.EPOCH_REGRESSION;
+            assert (msg.prevRoot == storage.lastRoot) throw ErrCode.BAD_PREV_ROOT;
             // Stake-weighted acceptance: the aggregate weight backing the root
             // must clear the threshold (anchoring is not a trust bottleneck).
-            assert (msg.stakeWeight >= cfg.minStakeWeight) throw ERROR_INSUFFICIENT_ANCHOR_STAKE;
+            assert (msg.stakeWeight >= cfg.minStakeWeight) throw ErrCode.INSUFFICIENT_ANCHOR_STAKE;
 
             storage.currentEpoch = msg.epoch;
             storage.lastRoot = msg.root;
@@ -47,11 +47,11 @@ fun onInternalMessage(in: InMessage) {
         AnchorOpenDispute => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.valueCoins >= cfg.disputeBondMin) throw ERROR_DISPUTE_BOND_TOO_LOW;
+            assert (in.valueCoins >= cfg.disputeBondMin) throw ErrCode.DISPUTE_BOND_TOO_LOW;
 
             // The inclusion proof must reproduce the claimed (anchored) root.
             val recomputed = computeRootFromProof(msg.leaf, msg.proof);
-            assert (recomputed == msg.claimedRoot) throw ERROR_BAD_INCLUSION_PROOF;
+            assert (recomputed == msg.claimedRoot) throw ErrCode.BAD_INCLUSION_PROOF;
 
             val id = storage.nextDisputeId;
             storage.nextDisputeId = id + 1;
@@ -73,10 +73,10 @@ fun onInternalMessage(in: InMessage) {
         AnchorResolveDispute => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.verdictAuthority) throw ERROR_NOT_VERDICT_AUTHORITY;
+            assert (in.senderAddress == cfg.verdictAuthority) throw ErrCode.NOT_VERDICT_AUTHORITY;
 
             val found = storage.disputes.get(msg.disputeId);
-            assert (found.isFound) throw ERROR_NO_SUCH_DISPUTE;
+            assert (found.isFound) throw ErrCode.NO_SUCH_DISPUTE;
             var dispute = found.loadValue();
 
             if (msg.upheld) {
@@ -95,7 +95,7 @@ fun onInternalMessage(in: InMessage) {
         }
 
         else => {
-            assert (in.body.isEmpty()) throw ERROR_INVALID_OP;
+            assert (in.body.isEmpty()) throw ErrCode.INVALID_OP;
         }
     }
 }

@@ -37,6 +37,16 @@ depends = []
 
 [test]
 
+# Coverage gate: CI fails if the overall coverage score drops below this. The
+# current money-contract coverage is ~93% score / 99% lines; 90 leaves a small
+# margin for benign churn while still catching real regressions.
+[test.coverage]
+minimum-percent = 90
+
+# Deterministic fuzzing: a fixed seed makes @test.fuzz runs reproducible in CI.
+[test.fuzz]
+seed = 1337
+
 [fmt]
 width = 100
 ignore = []
