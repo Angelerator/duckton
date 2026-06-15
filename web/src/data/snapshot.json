@@ -1,0 +1,4012 @@
+{
+  "config": {
+    "exampleToml": "# =============================================================================\n# duckdb-p2p — example node configuration\n# =============================================================================\n# Layered precedence (lowest -> highest):\n#   1. built-in defaults (shown below)\n#   2. this TOML file              (P2P_CONFIG=/path/to/p2p.toml, or pass --config)\n#   3. environment variables       (P2P_* — see crates/config/src/lib.rs)\n#   4. per-call SQL parameters      (args to p2p_query / p2p_share / p2p_join)\n#\n# Every value here is optional; omit a key to inherit the documented default.\n# `deny_unknown_fields` is on, so a typo'd key is a hard error (fail fast).\n# -----------------------------------------------------------------------------\n\n[protocol]\n# Protocol version this node advertises and the minimum it will accept.\n# Compatibility: same MAJOR required; MINOR/PATCH may differ (newer side\n# downgrades to the negotiated common version). Peers below min_supported_version\n# or with a different major are cleanly rejected with a typed error.\nversion                         = \"1.0.0\"\nmin_supported_version           = \"1.0.0\"\n# Require peers to report an identical DuckDB engine version to participate in a\n# quorum (result-determinism). Off by default.\nrequire_matching_engine_version = false\n\n[network]\n# QUIC bind address. Port 0 = OS-assigned ephemeral port (handy for tests).\nbind_addr = \"127.0.0.1:0\"\n# advertised_addr = \"203.0.113.10:9494\"   # externally reachable addr, if NAT'd\nidle_timeout_ms       = 30000\nconnect_timeout_ms    = 10000\nkeepalive_ms          = 10000            # must be < idle_timeout_ms\nmax_concurrent_bidi_streams = 256        # backpressure: cap in-flight streams\nstream_receive_window = 8388608          # 8 MiB per-stream flow-control window\nreceive_window        = 67108864         # 64 MiB per-connection window\nresult_chunk_bytes    = 262144           # 256 KiB result streaming chunk size\n\n# -----------------------------------------------------------------------------\n# Transport performance tuning (low latency + high throughput, all configurable)\n# See ARCHITECTURE.md \"Transport performance tuning\" for the full rationale.\n# -----------------------------------------------------------------------------\n[transport.quic]\ngso          = true                       # UDP Generic Segmentation Offload on TX\n                                          # (biggest throughput lever; quinn-udp\n                                          #  auto-disables if unsupported)\ngro          = true                       # desire UDP Generic Receive Offload\n                                          # (quinn-udp enables automatically; advisory)\ncongestion   = \"cubic\"                    # \"bbr\" | \"cubic\" | \"newreno\"\npacing       = true                       # NOTE: Quinn always paces; off = advisory\n# stream_receive_window_bytes     = 8388608   # override [network].stream_receive_window\n# connection_receive_window_bytes = 67108864  # override [network].receive_window\nsend_window_bytes           = 67108864    # 64 MiB connection send window\nmax_concurrent_uni_streams  = 256         # cap on bulk result fan-out streams\nenable_0rtt                 = false       # 0-RTT/session resumption (see caveats)\nsession_ticket_lifetime_secs = 43200      # 12h resumption ticket lifetime\n[transport.quic.bdp]\n# Auto-size flow-control windows from bandwidth-delay product when enabled;\n# overrides the explicit windows above so large results aren't window-limited.\nenabled        = false\nbandwidth_mbps = 1000                     # target link bandwidth (Mbit/s)\nrtt_ms         = 50                        # target round-trip time (ms)\n\n[transport.result]\nparallelism       = 1                     # concurrent uni-streams per large result\n                                          # (1 = inline; overridable per p2p_query call)\n# chunk_bytes     = 262144                # override [network].result_chunk_bytes\nparallel_min_bytes = 1048576              # only fan out results >= 1 MiB\n\n[transport.compression]\nalgorithm     = \"none\"                    # \"none\" | \"lz4\" | \"zstd\"\n                                          # default off on loopback/LAN; for WAN\n                                          # prefer \"lz4\" (cheap) or \"zstd\" (ratio)\nlevel         = 3                          # zstd level 1..=22 (lz4/none ignore)\nmin_size_bytes = 65536                    # only compress results >= 64 KiB\n\n[identity]\n# key_path = \"/etc/duckdb-p2p/node.key\"  # PKCS#8 Ed25519 PEM; omit = ephemeral\npinning_mode = \"tofu\"                     # \"tofu\" | \"allowlist\"\nallowlist    = []                         # node ids trusted when pinning_mode=\"allowlist\"\n\n[discovery]\nmode = \"static\"                           # \"static\" (MVP) | \"kademlia\" (libp2p\n                                          # Kademlia DHT + gossipsub; scales)\nbootstrap = []                            # entry peers only; never in data path.\n                                          # kademlia mode: libp2p multiaddrs incl.\n                                          # peer id, e.g.\n                                          # \"/ip4/203.0.113.10/tcp/9595/p2p/12D3Koo...\"\nlisten_addrs = []                         # libp2p listen multiaddrs for the\n                                          # discovery overlay (distinct from the\n                                          # QUIC data-plane network.bind_addr).\n                                          # [] = ephemeral loopback TCP port.\n                                          # e.g. [\"/ip4/0.0.0.0/tcp/9595\"]\ncandidate_sample_size = 16                # HARD cap on workers contacted per job\n                                          # (keeps fan-out bounded at any swarm size)\n[discovery.kademlia]\nreplication_factor = 20                   # k-bucket size\nquery_parallelism  = 3                    # alpha\nrecord_ttl_secs    = 3600\n\n[discovery.gossip]\ntopic               = \"duckdb-p2p/caps/1\" # gossipsub topic for signed cap ads\nheartbeat_ms        = 5000                # capability-ad republish interval\nfanout              = 6\ncapability_ttl_secs = 30                  # ads older than this are rejected\n\n# -----------------------------------------------------------------------------\n# Global NAT traversal (architecture §8 \"Networking & NAT traversal\")\n# -----------------------------------------------------------------------------\n# Lets two nodes behind home/office NATs on DIFFERENT networks worldwide connect\n# DIRECTLY, with NO central server and NO fixed IP/URL. `identify` is always on;\n# these gate the optional libp2p behaviours layered on the discovery overlay:\n#   * autonat      — learn if we're publicly reachable + discover our external addr\n#   * dcutr        — coordinated hole punching: upgrade a relayed link to a DIRECT\n#                    one through NATs (works over QUIC/UDP). Requires relay_client.\n#   * relay_client — Circuit Relay v2 client + AutoRelay: when hole punching fails\n#                    (symmetric NAT), route through VOLUNTEER relay peers\n#                    auto-selected from the network (never a central server).\n#   * act_as_relay — volunteer THIS node as a Circuit Relay v2 server for others.\n#   * mdns         — zero-config peer discovery on the same LAN.\n# NOTE (law of distributed systems): at least one reachable entry point\n# (discovery.bootstrap seed or a relay) is required to JOIN the swarm — but it is\n# replaceable, owns nothing, and is never in the query data path.\n[discovery.nat]\nautonat            = true\ndcutr              = true                 # requires relay_client = true\nrelay_client       = true\nact_as_relay       = false                # opt in to volunteer as a relay\nmdns               = true                 # LAN zero-config discovery\nmdns_query_interval_secs = 300            # how often mDNS re-queries the LAN\nexternal_addresses = []                   # e.g. [\"/ip4/203.0.113.10/udp/9595/quic-v1\"]\nrelays             = []                    # explicit relay multiaddrs (incl. /p2p/<id>);\n                                          #  [] = AutoRelay picks relays from the network\nmax_relays         = 3                    # max simultaneous relay reservations (AutoRelay cap)\n\n[discovery.nat.relay_limits]              # caps applied only when act_as_relay = true\nmax_reservations          = 128\nmax_reservations_per_peer = 4\nreservation_duration_secs = 3600\nmax_circuits              = 16\nmax_circuits_per_peer     = 4\nmax_circuit_duration_secs = 120\nmax_circuit_bytes         = 131072        # 128 KiB\n\n[scheduler]\nreplicas              = 3                  # k workers to race (>= quorum)\nquorum                = 2                  # matching hashes required to accept\nverify_mode           = \"quorum\"          # \"fast\" | \"quorum\"\noffer_timeout_ms      = 2000\ndispatch_timeout_ms   = 30000\n# --- Resilience / re-dispatch (architecture §8/§11) ---\nattempt_deadline_ms       = 60000          # requester per-attempt deadline; a silent\n                                           #  attempt past this is inconclusive (job\n                                           #  fault, NO provider penalty) -> re-dispatch\nmax_retries               = 0              # max (re)dispatch attempts; 0 = UNLIMITED\n                                           #  (route around dead/timed-out nodes until done)\nmax_total_duration_ms     = 0              # optional wall-clock cap on the whole loop (0 = none)\nbackoff_initial_ms        = 200            # exponential backoff start\nbackoff_max_ms            = 5000           # backoff ceiling\nbackoff_jitter_frac       = 0.5            # jitter fraction [0,1] to de-sync retry storms\nretry_budget_max_tokens   = 32             # global retry/hedge token bucket (burst cap; 0 = unlimited)\nretry_budget_refill_per_sec = 4            # token refill rate (tokens/sec)\nprogress_interval_ms      = 2000           # requester's expected heartbeat interval\nprogress_stall_multiplier = 5              # stall if no progress within interval * this\nmax_inflight_jobs     = 64                 # requester-side concurrency semaphore\n\n# -----------------------------------------------------------------------------\n# Host (worker) execution deadline + progress/heartbeat streaming (resilience)\n# -----------------------------------------------------------------------------\n# The host abandons a job that exceeds job_timeout_ms (the requester then\n# re-dispatches), and streams a progress/heartbeat update every\n# progress_interval_ms while executing — the progress update IS the liveness\n# signal the requester watches for stalls.\n[worker]\njob_timeout_ms      = 60000                # host execution deadline (0 = none)\nprogress_interval_ms = 2000                # how often the host streams progress (0 = off)\n\n# -----------------------------------------------------------------------------\n# Liveness / failure detection (architecture §8): phi-accrual + SWIM\n# -----------------------------------------------------------------------------\n# A phi-accrual failure detector over heartbeat/gossip intervals plus SWIM-style\n# indirect probing, layered on the libp2p gossip overlay. Unhealthy/suspect peers\n# are excluded from candidate selection. Off-path until a liveness view is wired\n# into the coordinator, so a node with no liveness wiring behaves as before.\n[liveness.phi]\nenabled            = true\nconvict_threshold  = 8.0                   # phi at/above which a peer is convicted (~8-12)\nwindow_size        = 100                   # sliding window of recent heartbeat intervals\nmin_std_ms         = 50.0                  # floor on interval std-dev (avoid over-confidence)\nacceptable_pause_ms = 0.0                  # extra slack added to the mean interval\nfirst_interval_ms  = 5000.0                # bootstrap interval before enough samples\n\n[liveness.swim]\nenabled                   = true\nindirect_probe_count      = 3              # k random peers asked to indirect-probe a suspect\nprobe_timeout_ms          = 1000           # direct-probe timeout\nindirect_probe_timeout_ms = 2000           # each indirect (relayed) probe timeout\n\n[budget]\nmemory_bytes         = 4294967296          # 4 GiB donated\nthreads              = 2\nmax_jobs             = 3\nper_job_memory_bytes = 1073741824          # 1 GiB default per-job lease\nper_job_threads      = 1\ndata_classes         = [\"public\"]          # public | internal | sensitive\n\n[trust]\nmin_trust                 = 0.7            # soft score gate [0,1]\nmin_attestation           = \"L0\"           # hard gate: L0 | L1 | L2\nreputation_half_life_secs = 604800         # 7 days recency half-life\ncanary_rate               = 0.05           # fraction of jobs that are canaries\nincorrect_penalty         = 0.5\nbootstrap_trust           = 0.1            # trust for brand-new identities\n# store_path              = \"/var/lib/duckdb-p2p/trust.redb\"  # persist reputation\n                                            # across restarts (embedded redb).\n                                            # omit = bounded in-memory (default)\n\n[trust.weights]                            # effective_trust soft-score weights\nalpha_reputation = 0.7\nbeta_age         = 0.1\ngamma_voucher    = 0.1\ndelta_stake      = 0.1\n\n[sybil]\npow_difficulty_bits = 16                   # leading zero bits for identity PoW\nmin_stake           = 0\nvouch_weight        = 0.05\n\n[storage]\nprovider            = \"local-fake\"         # default credential provider: local-fake | s3 | az | gcs\n                                           # (use \"s3\" for AWS *and* self-hosted MinIO / S3-compatible)\n# endpoint          = \"minio.local:9000\"   # S3-compatible / MinIO host:port (host only; scheme via use_ssl)\n# region            = \"us-east-1\"          # MinIO accepts any region; must be set\n# url_style         = \"path\"               # \"path\" for MinIO/most self-hosted, \"vhost\" for AWS\n# use_ssl           = false                # MinIO dev is often plain HTTP; true in production\ncredential_ttl_secs = 900                  # scoped credential lifetime\nkey_ttl_secs        = 900                  # sealed data-key lifetime\n\n# --- Data sources & formats (architecture §4 / §9.2 / §9.4) ------------------\n# Master switch: allow worker NETWORK EGRESS for remote object-storage reads.\n# When false (default) the execution engine stays in the strict/local lockdown\n# (enable_external_access=false). DuckDB's enable_external_access is all-or-\n# nothing for the network — it CANNOT restrict egress to specific endpoints — so\n# enabling remote access REQUIRES complementary OS-level egress filtering (the\n# OS sandbox is separately deferred; see §9.4).\nenable_remote_access = false\n# Fail engine init if a preload_extensions entry can't be loaded. Required\n# extensions are pre-loaded at init, NEVER INSTALL/LOAD'd at query time.\nrequire_extensions   = true\n# DuckDB extensions pre-loaded at engine init. For real cloud reads enable e.g.\n# [\"httpfs\", \"aws\", \"azure\", \"parquet\", \"json\", \"delta\", \"iceberg\"]. (parquet\n# and json are also statically linked in the bundled build.)\npreload_extensions   = []\n# Formats workers will serve (extensible; unknown values tolerated).\nenabled_formats      = [\"csv\", \"json\", \"parquet\"]\n# Storage/credential providers enabled on this node.\nenabled_providers    = [\"local-fake\"]\n# Local directories DuckDB may read even with external access disabled\n# (DuckDB `allowed_directories`); used for local fixtures. e.g. [\"/srv/data\"].\nallowed_local_paths  = []\n# Per-provider option overrides (endpoint/region/url_style/use_ssl/...), keyed\n# by id. These are NON-SECRET connection knobs only — the access key / secret\n# are NEVER placed here; they are delivered per job, sealed (encrypted) to the\n# worker (see \"Encrypted credentials\" below).\n# [storage.provider_options.s3]            # AWS S3\n# region    = \"us-east-1\"\n# endpoint  = \"s3.amazonaws.com\"\n# Self-hosted MinIO / S3-compatible (reads Delta/Parquet/CSV/JSON/Iceberg):\n# [storage.provider_options.s3]\n# endpoint  = \"minio.local:9000\"\n# url_style = \"path\"                        # MinIO requires path-style addressing\n# use_ssl   = false                         # plain HTTP for a local MinIO; true with TLS\n# region    = \"us-east-1\"\n# [storage.provider_options.gcs]\n# endpoint  = \"storage.googleapis.com\"\n#\n# Encrypted credentials (the MinIO access key / secret) — NEVER in config:\n#   * Requester side: put the key/secret in a CloudCredential, seal it to the\n#     selected worker's X25519 sealing public key (from its attestation /\n#     capability record) with `p2p_node::sealed_credential(\"s3\", pubkey, &cred,\n#     \"bucket/prefix/\", ttl)`. The token is `sealed:v1:<hex>` — ciphertext only.\n#   * Worker side: the engine opens it just-in-time at setup with its sealing\n#     key (StorageSetup::with_sealing) and mints a prefix-scoped CREATE SECRET.\n#     Plaintext never persists; at rest only 0600 files / sealed-to-worker blobs.\n# Per-format reader options, keyed by format id:\n# [storage.format_options.parquet]\n# hive_partitioning = \"true\"\n\n# -----------------------------------------------------------------------------\n# Local-first execution planner (architecture §4 data plane / §11 scheduler)\n# -----------------------------------------------------------------------------\n# A node can run a query entirely in its OWN locked-down in-process DuckDB for\n# FREE — no bidding, escrow, quorum or payment — because it trusts its own\n# machine. This section governs WHEN that free local path is chosen over a grid\n# dispatch. A pre-flight, metadata-only data-size estimate (Parquet footers,\n# Delta _delta_log stats, Iceberg manifests, CSV/JSON object size + sampling) is\n# translated into an estimated PEAK WORKING-SET memory and compared against the\n# node's CURRENT headroom (budget.memory_bytes * ram_fraction minus memory in\n# use by concurrent local jobs). A job that blows past the threshold mid-flight\n# is aborted and re-dispatched to the grid (adaptive fail-over).\n[planner]\nenabled                   = true           # false = always dispatch to the grid\nlocal_execution_enabled   = true           # false = REMOTE-ONLY mode: never run a\n                                            # query on this machine (even tiny ones);\n                                            # always route to the grid. Hard gate that\n                                            # overrides `prefer` (incl. per-call\n                                            # prefer => 'local'). Thin-client friendly:\n                                            # a node that never called p2p_share works\n                                            # as a pure requester. No hosts => clear\n                                            # NoCandidates error (no local fallback).\nprefer                    = \"auto\"          # default routing: local | remote | auto\n                                            # (per call: p2p_query(..., prefer => 'local'))\n                                            # set \"remote\" for a sticky prefer-the-grid default\nram_fraction              = 0.6             # alpha: fraction of budget.memory_bytes\n                                            # usable locally (headroom basis)\nmax_concurrent_local_jobs = 4               # local saturation -> route to grid\nsize_threshold_bytes      = 268435456       # 256 MiB hard cap on local scanned bytes\nspill_tolerance_bytes     = 536870912       # 512 MiB the peak working set may exceed\n                                            # RAM headroom via out-of-core spill (0=never)\nmax_local_latency_ms      = 10000           # latency budget for the local path (0=off)\n\n# -----------------------------------------------------------------------------\n# OS-level execution sandbox (architecture §9.4)\n# -----------------------------------------------------------------------------\n# The boundary AROUND job execution, complementing DuckDB's own lockdown\n# (enable_external_access / lock_configuration / allowed_directories / ephemeral\n# temp). DuckDB CANNOT scope network egress to specific endpoints — the OS must.\n# OFF by default: with enabled = false this is a no-op and the node behaves\n# exactly as today. Turn it on (and pick a backend) on workers that enable\n# remote storage reads (storage.enable_remote_access = true).\n[sandbox]\nenabled        = false                     # master switch (false = no-op sandbox)\nbackend        = \"auto\"                    # auto | none | rlimit | cgroups-seccomp |\n                                           #  macos-seatbelt | windows-jobobject |\n                                           #  android | ios\n                                           #  auto (OS-agnostic): Linux->cgroups+seccomp,\n                                           #  macOS->Seatbelt, Windows->Job Objects,\n                                           #  Android->app sandbox+seccomp, iOS->app\n                                           #  sandbox (in-process only), else rlimit\negress_mode    = \"inherit_storage\"         # inherit_storage | explicit\n                                           #  inherit_storage derives the allow-list\n                                           #  from [storage] endpoints/providers\negress_allowlist = []                      # extra host[:port] entries (appended in\n                                           #  inherit_storage mode; the whole list\n                                           #  in explicit mode)\ntemp_dir_policy = \"ephemeral\"              # ephemeral | inherit | custom\n# temp_dir      = \"/var/tmp/duckdb-p2p\"    # REQUIRED when temp_dir_policy = \"custom\"\n\n[sandbox.limits]\n# A field set to 0 = unlimited / inherit (no cap installed for that resource).\nmode                = \"inherit_budget\"     # inherit_budget | explicit\n                                           #  inherit_budget: RAM/threads from [budget]\nmemory_bytes        = 0                    # RLIMIT_AS (explicit mode only)\ncpu_seconds         = 0                    # RLIMIT_CPU wall of CPU time (0 = off)\nmax_file_size_bytes = 0                    # RLIMIT_FSIZE max created-file size (0 = off)\nmax_open_files      = 0                    # RLIMIT_NOFILE fd cap (0 = inherit)\nmax_processes       = 0                    # RLIMIT_NPROC cap (explicit mode only)\n\n[limits]\nreceipt_cache_per_worker = 256             # bounded reputation history per worker\ntrust_store_capacity     = 100000          # LRU-evicted workers\npeer_cache_capacity      = 50000           # LRU-evicted peers\nworker_pool_size         = 8               # inbound job concurrency semaphore\nconnection_pool_size     = 1024\n\n# -----------------------------------------------------------------------------\n# Blockchain economic / settlement layer (TON) — see docs/BLOCKCHAIN_ECONOMICS.md\n# -----------------------------------------------------------------------------\n# OFF by default: with enabled = false the node behaves exactly as today — every\n# job is FREE, touches NO chain (no escrow/stake/anchor/fees) — yet is STILL\n# scored (quorum/canary verification + signed receipts + reputation). Settlement\n# and scoring are decoupled: turning the chain off never turns scoring off.\n#\n# Per-job payment mode resolves (highest precedence first):\n#   1. per-call SQL override   p2p_query(..., payment => 'free'|'paid'|'auto')\n#   2. data-class policy        ('auto' => public:free, internal/sensitive:paid)\n#   3. economics.default_payment (below)\n#   4. economics.enabled        (false => always free, no chain)\n[economics]\nenabled           = false                  # master switch (false = free, no chain)\nsettlement        = \"noop\"                 # \"noop\" | \"mock\" | \"channel\" | \"onchain\" (SQL: noop|mock|ton)\ncustody           = \"noncustodial\"         # v1: code-governed contracts, no platform wallet\naccounting_unit   = \"ton\"                  # v1: price AND settle natively in TON (no oracle)\nchain             = \"ton\"\nnetwork           = \"testnet\"              # \"testnet\" (safe default) | \"mainnet\" (real funds)\nmainnet_confirmed = false                  # explicit opt-in required to use mainnet\ndefault_payment   = \"auto\"                 # free | paid | auto (per-call overridable)\n# fee_recipient = \"EQ...treasury\"          # platform fee-recipient (REQUIRED once enabled = true\n                                           # AND settlement = \"channel\"|\"onchain\")\n\n# Per-network settings — keep BOTH networks configured at once; the active one is\n# selected by `network`. Manage these via SQL: p2p_contracts(...) / p2p_wallet(...).\n# RPC/explorer default per network (testnet -> testnet.toncenter.com / testnet.tonviewer.com;\n# mainnet -> toncenter.com / tonviewer.com) and are overridable here.\n# [economics.testnet]\n# rpc          = \"https://testnet.toncenter.com/api/v2/\"\n# explorer     = \"testnet.tonviewer.com\"\n# api_key_file = \"/path/outside/repo/testnet.api_key\"   # 0600 file ref, never the raw key\n# [economics.testnet.contracts]\n# stake_vault   = \"kQ...\"\n# job_escrow    = \"kQ...\"\n# record_anchor = \"kQ...\"\n# global_params = \"kQ...\"   # platform-wide params (§12); address is STABLE (edited in place)\n# [economics.testnet.wallet]\n# address       = \"kQ...\"\n# mnemonic_file = \"/path/outside/repo/testnet.mnemonic\" # 0600 file ref, never the raw mnemonic\n# [economics.mainnet] … same shape …\n\n# Pricing (role-appropriate): providers advertise unit_price; requesters cap with max_bid.\n[economics.pricing]\nunit_price = 0                             # whole TON per reference unit (0 = free)\nmax_bid    = 0                             # whole TON budget cap (0 = no cap)\n\n[economics.stake]\nmin_stake               = 0                # 0 = permissionless/free tier (public only)\nmin_stake_internal      = 100              # per-class minimums (whole TON)\nmin_stake_sensitive     = 1000\nstake_cap               = 100000          # ranking ceiling (anti-centralization)\nunbonding_secs          = 604800          # MUST be >= slashing.challenge_window_secs\nreceipt_jetton          = true            # mint 1:1 TEP-74 stake-receipt jetton (§8.5)\nreceipt_transfer_locked = true            # receipt non-transferable while bonded (anti-exit)\n\n[economics.ranking]\nw_quality = 0.6\nw_stake   = 0.15                           # diminishing + capped (StakeFactor, §5.2)\nw_price   = 0.25\nexploration_rate       = 0.0               # cold-start ε (§5.2/§6): 0 = pure exploitation;\n                                           # a small value (e.g. 0.1) samples new honest nodes\nexploration_saturation = 20                # obs count at which the exploration bonus hits 0\n\n[economics.quality]                        # provider quality score Q weights (§4.1)\nw_success      = 0.5\nw_latency      = 0.2                        # size-normalized latency (allowance scales with bytes)\nw_throughput   = 0.2                        # throughput-as-rate (bytes/ms), log-scaled\nw_completion   = 0.1\nlatency_ref_ms = 5000\nbytes_ref      = 1073741824                # 1 GiB reference for log throughput scaling\nthroughput_ref_bytes_per_ms = 0            # 0 => derive ref rate from bytes_ref / latency_ref_ms\n\n[economics.reputation]                     # confidence-aware reputation priors (§4.1/§7.3)\nprior_alpha  = 1.0                         # Beta pseudo-successes\nprior_beta   = 2.0                         # Beta pseudo-failures (pessimistic about thin history)\nconfidence_z = 1.96                        # Wilson lower-bound z (≈95%); 0 = posterior mean\n\n[economics.selection]\nn_public                = 3                # default N for public/low-value jobs\nn_default               = 5                # default N for internal/high-value jobs\nn_max                   = 10               # ceiling on requester overrides\nrequester_overridable   = true\nchecksum_min            = 3                # min matching results to accept (safety floor)\nchecksum_allow_degraded = true            # if < checksum_min respond, proceed + flag\n\n[economics.fees]\nplatform_fee_pct              = 0.02\nverification_surcharge_pct    = 0.05\nparticipation_commission_frac = 0.02       # kappa: fixed cut of winner payout per agreeing node\nbonus_aggressiveness          = 0.5        # rho: escrow slack funding the perf bonus\nlambda_quality                = 0.5        # blend of quality vs speed in the bonus\nlambda_speed                  = 0.5\n\n[economics.slashing]\nslash_wrong_result_pct = 0.15\nslash_cheat_pct        = 1.0\nslash_downtime_pct     = 0.02\nslash_equivocation_pct = 0.5\nslash_failed_commitment_pct = 0.1          # FINE for a broken commitment: accepted a PAID\n                                           #  job then failed to deliver a valid result while\n                                           #  the job was feasible (quorum reached / another\n                                           #  node delivered). Distinct from a wrong-result slash.\nchallenge_window_secs  = 86400             # optimistic-settlement window\nslash_to_challenger    = 0.4               # split of slashed funds (must sum to 1.0)\nslash_to_redundancy    = 0.3\nslash_to_burn          = 0.2\nslash_to_treasury      = 0.1\n\n[economics.records]\nepoch_secs        = 60                      # how often the receipt Merkle root is anchored\nanchor_quorum_pct = 0.66                    # stake-weighted signers needed to accept a root\n\n# -----------------------------------------------------------------------------\n# Anti-abuse / robustness layer (architecture \"Abuse resistance\")\n# -----------------------------------------------------------------------------\n# Defends the grid against reputation-griefing and other abuse. Defaults preserve\n# today's behavior where a change would be observable: the scoring-altering pieces\n# (requester-trust weighting, pre-flight cost gating, free-mode rate limiting,\n# auto-blocking, gossip peer scoring) default OFF; only the always-safe pieces\n# (provable-fault attribution and non-determinism detection, which never ADD a\n# penalty) default ON. Deny-lists are managed via SQL: p2p_block / p2p_unblock /\n# p2p_blocklist (persisted to blocklist.toml).\n[antiabuse]\nenabled = true                             # master switch (false = disables every sub-mechanism)\n\n[antiabuse.fault_attribution]\n# Penalize a provider ONLY for provable PROVIDER fault (result disagrees with a\n# verified quorum, downtime, equivocation). Requester/job-caused failures\n# (infeasible / too expensive / resource-exceeded / malformed / missing data)\n# apply ZERO provider penalty. If >= job_consensus_fraction of the selected\n# providers fail the SAME way with no quorum, blame the JOB, not the providers.\nenabled               = true\njob_consensus_fraction = 0.67\n\n[antiabuse.requester_trust]\n# Trust-weighted score impact (\"newer sender -> less effect\"): a job's effect on\n# a provider's score is multiplied by w(requester) in (0,1] from the requester's\n# own reputation + age. New/unproven requester => w ≈ 0 (esp. for negatives);\n# established => w -> 1. Asymmetric (gates negatives hardest). Primary defense\n# against the heavy-query reputation-griefing attack. OFF by default (when off,\n# every requester has weight 1.0 — today's behavior).\nenabled               = false\nnegative_floor_weight = 0.0                # floor weight for a brand-new requester's PENALTY\npositive_floor_weight = 0.5                # floor weight for its reputation CREDIT (asymmetric)\nage_saturation        = 50                 # requester observations at which weight saturates to 1.0\n\n[antiabuse.cost_gate]\n# Pre-flight cost gating at admission: the worker rejects an over-budget query up\n# front (a rejection is NOT an execution failure and never affects score). OFF by\n# default.\nenabled                = false\nmax_cost_hint_rows     = 0                 # reject offers with cost_hint_rows above this (0 = no cap)\nmax_working_set_factor = 1.0               # reject when est. peak working set > per-job mem * factor\n\n[antiabuse.nondeterminism]\n# Detect non-deterministic queries (random(), now()/current_*, unordered LIMIT)\n# that can't reach a stable quorum hash, mark the job non-verifiable, and apply\n# no provider penalty. ON by default (deterministic queries are unaffected).\nenabled = true\n\n[antiabuse.free_rate_limit]\n# Per-requester-identity rate limiting for FREE jobs (anti-spam). Paid jobs are\n# prioritized and bypass this limiter. Optional small PoW for free requesters.\n# OFF by default.\nenabled               = false\nmax_free_per_window   = 30\nwindow_secs           = 60\nmax_tracked_requesters = 10000             # bounded, LRU-evicted\nrequire_pow_bits      = 0                   # optional PoW difficulty for free requesters (0 = none)\nprioritize_paid       = true\n\n[antiabuse.blocklist]\n# Local deny-list policy. Entries are managed via SQL (p2p_block/p2p_unblock/\n# p2p_blocklist) and persisted to blocklist.toml. This governs the AUTOMATIC\n# triggers and which external sources are honored. Each node decides on its own —\n# no central authority.\nauto_block_enabled     = false             # auto-block a worker below the trust floor\nauto_block_trust_floor = 0.0               # trust floor for auto-blocking (0 = disabled)\nhonor_gossip_signals   = false             # act on signed, gossiped abuse signals\nhonor_global_params    = false             # consult the on-chain GlobalParams governance blocklist\n\n[antiabuse.gossip]\n# Eclipse / gossip hardening for the libp2p discovery overlay.\npeer_scoring      = false                  # gossipsub peer scoring (penalize misbehaving peers)\ndiverse_bootstrap = true                   # prefer a diverse bootstrap/relay set (anti-eclipse)\n",
+    "value": {
+      "antiabuse": {
+        "blocklist": {
+          "auto_block_enabled": false,
+          "auto_block_trust_floor": 0,
+          "honor_global_params": false,
+          "honor_gossip_signals": false
+        },
+        "cost_gate": {
+          "enabled": false,
+          "max_cost_hint_rows": 0,
+          "max_working_set_factor": 1
+        },
+        "enabled": true,
+        "fault_attribution": {
+          "enabled": true,
+          "job_consensus_fraction": 0.67
+        },
+        "free_rate_limit": {
+          "enabled": false,
+          "max_free_per_window": 30,
+          "max_tracked_requesters": 10000,
+          "prioritize_paid": true,
+          "require_pow_bits": 0,
+          "window_secs": 60
+        },
+        "gossip": {
+          "diverse_bootstrap": true,
+          "peer_scoring": false
+        },
+        "nondeterminism": {
+          "enabled": true
+        },
+        "requester_trust": {
+          "age_saturation": 50,
+          "enabled": false,
+          "negative_floor_weight": 0,
+          "positive_floor_weight": 0.5
+        }
+      },
+      "budget": {
+        "data_classes": [
+          "public"
+        ],
+        "max_jobs": 3,
+        "memory_bytes": 4294967296,
+        "per_job_memory_bytes": 1073741824,
+        "per_job_threads": 1,
+        "threads": 2
+      },
+      "discovery": {
+        "bootstrap": [],
+        "candidate_sample_size": 16,
+        "gossip": {
+          "capability_ttl_secs": 30,
+          "fanout": 6,
+          "heartbeat_ms": 5000,
+          "topic": "duckdb-p2p/caps/1"
+        },
+        "kademlia": {
+          "query_parallelism": 3,
+          "record_ttl_secs": 3600,
+          "replication_factor": 20
+        },
+        "listen_addrs": [],
+        "mode": "static",
+        "nat": {
+          "act_as_relay": false,
+          "autonat": true,
+          "dcutr": true,
+          "external_addresses": [],
+          "max_relays": 3,
+          "mdns": true,
+          "mdns_query_interval_secs": 300,
+          "relay_client": true,
+          "relay_limits": {
+            "max_circuit_bytes": 131072,
+            "max_circuit_duration_secs": 120,
+            "max_circuits": 16,
+            "max_circuits_per_peer": 4,
+            "max_reservations": 128,
+            "max_reservations_per_peer": 4,
+            "reservation_duration_secs": 3600
+          },
+          "relays": []
+        }
+      },
+      "economics": {
+        "accounting_unit": "ton",
+        "chain": "ton",
+        "custody": "noncustodial",
+        "default_payment": "auto",
+        "enabled": false,
+        "fee_recipient": null,
+        "fees": {
+          "bonus_aggressiveness": 0.5,
+          "lambda_quality": 0.5,
+          "lambda_speed": 0.5,
+          "participation_commission_frac": 0.02,
+          "platform_fee_pct": 0.02,
+          "verification_surcharge_pct": 0.05
+        },
+        "mainnet": {
+          "api_key_file": null,
+          "contracts": {
+            "global_params": null,
+            "job_escrow": null,
+            "record_anchor": null,
+            "stake_vault": null
+          },
+          "explorer": null,
+          "rpc": null,
+          "wallet": {
+            "address": null,
+            "mnemonic_file": null
+          }
+        },
+        "mainnet_confirmed": false,
+        "network": "testnet",
+        "pricing": {
+          "max_bid": 0,
+          "unit_price": 0
+        },
+        "quality": {
+          "bytes_ref": 1073741824,
+          "latency_ref_ms": 5000,
+          "throughput_ref_bytes_per_ms": 0,
+          "w_completion": 0.1,
+          "w_latency": 0.2,
+          "w_success": 0.5,
+          "w_throughput": 0.2
+        },
+        "ranking": {
+          "exploration_rate": 0,
+          "exploration_saturation": 20,
+          "w_price": 0.25,
+          "w_quality": 0.6,
+          "w_stake": 0.15
+        },
+        "records": {
+          "anchor_quorum_pct": 0.66,
+          "epoch_secs": 60
+        },
+        "reputation": {
+          "confidence_z": 1.96,
+          "prior_alpha": 1,
+          "prior_beta": 2
+        },
+        "selection": {
+          "checksum_allow_degraded": true,
+          "checksum_min": 3,
+          "n_default": 5,
+          "n_max": 10,
+          "n_public": 3,
+          "requester_overridable": true
+        },
+        "settlement": "noop",
+        "slashing": {
+          "challenge_window_secs": 86400,
+          "slash_cheat_pct": 1,
+          "slash_downtime_pct": 0.02,
+          "slash_equivocation_pct": 0.5,
+          "slash_failed_commitment_pct": 0.1,
+          "slash_to_burn": 0.2,
+          "slash_to_challenger": 0.4,
+          "slash_to_redundancy": 0.3,
+          "slash_to_treasury": 0.1,
+          "slash_wrong_result_pct": 0.15
+        },
+        "stake": {
+          "min_stake": 0,
+          "min_stake_internal": 100,
+          "min_stake_sensitive": 1000,
+          "receipt_jetton": true,
+          "receipt_transfer_locked": true,
+          "stake_cap": 100000,
+          "unbonding_secs": 604800
+        },
+        "testnet": {
+          "api_key_file": null,
+          "contracts": {
+            "global_params": null,
+            "job_escrow": null,
+            "record_anchor": null,
+            "stake_vault": null
+          },
+          "explorer": null,
+          "rpc": null,
+          "wallet": {
+            "address": null,
+            "mnemonic_file": null
+          }
+        }
+      },
+      "identity": {
+        "allowlist": [],
+        "key_path": null,
+        "pinning_mode": "tofu"
+      },
+      "limits": {
+        "connection_pool_size": 1024,
+        "peer_cache_capacity": 50000,
+        "receipt_cache_per_worker": 256,
+        "trust_store_capacity": 100000,
+        "worker_pool_size": 8
+      },
+      "liveness": {
+        "phi": {
+          "acceptable_pause_ms": 0,
+          "convict_threshold": 8,
+          "enabled": true,
+          "first_interval_ms": 5000,
+          "min_std_ms": 50,
+          "window_size": 100
+        },
+        "swim": {
+          "enabled": true,
+          "indirect_probe_count": 3,
+          "indirect_probe_timeout_ms": 2000,
+          "probe_timeout_ms": 1000
+        }
+      },
+      "network": {
+        "advertised_addr": null,
+        "bind_addr": "127.0.0.1:0",
+        "connect_timeout_ms": 10000,
+        "idle_timeout_ms": 30000,
+        "keepalive_ms": 10000,
+        "max_concurrent_bidi_streams": 256,
+        "receive_window": 67108864,
+        "result_chunk_bytes": 262144,
+        "stream_receive_window": 8388608
+      },
+      "planner": {
+        "enabled": true,
+        "local_execution_enabled": true,
+        "max_concurrent_local_jobs": 4,
+        "max_local_latency_ms": 10000,
+        "prefer": "auto",
+        "ram_fraction": 0.6,
+        "size_threshold_bytes": 268435456,
+        "spill_tolerance_bytes": 536870912
+      },
+      "protocol": {
+        "min_supported_version": "1.0.0",
+        "require_matching_engine_version": false,
+        "version": "1.0.0"
+      },
+      "sandbox": {
+        "backend": "auto",
+        "egress_allowlist": [],
+        "egress_mode": "inherit_storage",
+        "enabled": false,
+        "limits": {
+          "cpu_seconds": 0,
+          "max_file_size_bytes": 0,
+          "max_open_files": 0,
+          "max_processes": 0,
+          "memory_bytes": 0,
+          "mode": "inherit_budget"
+        },
+        "temp_dir": null,
+        "temp_dir_policy": "ephemeral"
+      },
+      "scheduler": {
+        "attempt_deadline_ms": 60000,
+        "backoff_initial_ms": 200,
+        "backoff_jitter_frac": 0.5,
+        "backoff_max_ms": 5000,
+        "dispatch_timeout_ms": 30000,
+        "max_inflight_jobs": 64,
+        "max_retries": 0,
+        "max_total_duration_ms": 0,
+        "offer_timeout_ms": 2000,
+        "progress_interval_ms": 2000,
+        "progress_stall_multiplier": 5,
+        "quorum": 2,
+        "replicas": 3,
+        "retry_budget_max_tokens": 32,
+        "retry_budget_refill_per_sec": 4,
+        "verify_mode": "quorum"
+      },
+      "storage": {
+        "allowed_local_paths": [],
+        "credential_ttl_secs": 900,
+        "enable_remote_access": false,
+        "enabled_formats": [
+          "csv",
+          "json",
+          "parquet"
+        ],
+        "enabled_providers": [
+          "local-fake"
+        ],
+        "endpoint": null,
+        "format_options": {},
+        "key_ttl_secs": 900,
+        "preload_extensions": [],
+        "provider": "local-fake",
+        "provider_options": {},
+        "region": null,
+        "require_extensions": true,
+        "url_style": null,
+        "use_ssl": null
+      },
+      "sybil": {
+        "min_stake": 0,
+        "pow_difficulty_bits": 16,
+        "vouch_weight": 0.05
+      },
+      "transport": {
+        "compression": {
+          "algorithm": "none",
+          "level": 3,
+          "min_size_bytes": 65536
+        },
+        "quic": {
+          "bdp": {
+            "bandwidth_mbps": 1000,
+            "enabled": false,
+            "rtt_ms": 50
+          },
+          "congestion": "cubic",
+          "connection_receive_window_bytes": null,
+          "enable_0rtt": false,
+          "gro": true,
+          "gso": true,
+          "max_concurrent_uni_streams": 256,
+          "pacing": true,
+          "send_window_bytes": 67108864,
+          "session_ticket_lifetime_secs": 43200,
+          "stream_receive_window_bytes": null
+        },
+        "result": {
+          "chunk_bytes": null,
+          "parallel_min_bytes": 1048576,
+          "parallelism": 1
+        }
+      },
+      "trust": {
+        "bootstrap_trust": 0.1,
+        "canary_rate": 0.05,
+        "incorrect_penalty": 0.5,
+        "min_attestation": "L0",
+        "min_trust": 0.7,
+        "reputation_half_life_secs": 604800,
+        "store_path": null,
+        "weights": {
+          "alpha_reputation": 0.7,
+          "beta_age": 0.1,
+          "delta_stake": 0.1,
+          "gamma_voucher": 0.1
+        }
+      },
+      "worker": {
+        "job_timeout_ms": 60000,
+        "progress_interval_ms": 2000
+      }
+    }
+  },
+  "jobs": [
+    {
+      "_idx": 0,
+      "candidates": [
+        {
+          "alias": "rust-shrike",
+          "attestation": "L0",
+          "commitLatencyMs": 19,
+          "committedHash": "1bf229cf6cb8bc342a6062476e73c55e2ecaffcc5865228b2c4e467a01cf4325",
+          "etaMs": 19,
+          "price": 0,
+          "progressPct": 100,
+          "state": "committed",
+          "verdict": "Incorrect",
+          "workerId": "b3:89b9b379dfdd0b30e7bab25820a8ea3fad513f2c63a3292bd4e7bb99266295a2"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 23,
+          "committedHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+          "etaMs": 23,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 31,
+          "committedHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+          "etaMs": 31,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 48,
+          "committedHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+          "etaMs": 48,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 112,
+          "committedHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+          "etaMs": 112,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        },
+        {
+          "alias": "cobalt-stoat",
+          "attestation": "L0",
+          "commitLatencyMs": 0,
+          "committedHash": null,
+          "etaMs": 0,
+          "price": 0,
+          "progressPct": 0,
+          "state": "dispatched",
+          "verdict": "Timeout",
+          "workerId": "b3:b66c3384d929c12d59f7f9c8fe69e27cd32a6c65f667073f160bee3cafe2835d"
+        }
+      ],
+      "createdAtMs": 1781486079460,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "5ea191263841720c49efaaabc26c61c6",
+      "k": 6,
+      "latencyMs": 134,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "69"
+          ],
+          [
+            "1",
+            "205"
+          ],
+          [
+            "2",
+            "23"
+          ]
+        ]
+      },
+      "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT region, count(*) AS orders, sum(total) AS gmv FROM orders GROUP BY region ORDER BY gmv DESC",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 23
+        },
+        {
+          "detail": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+          "label": "Quorum reached: 4/3 agree",
+          "stage": "verify",
+          "tMs": 48
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 134
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "harbor-vole",
+      "winnerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "_idx": 1,
+      "candidates": [
+        {
+          "alias": "frost-owl",
+          "attestation": "L2",
+          "commitLatencyMs": 15,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 15,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 23,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 23,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 32,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 32,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 46,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 46,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "pine-marten",
+          "attestation": "L0",
+          "commitLatencyMs": 62,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 62,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 112,
+          "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "etaMs": 112,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        }
+      ],
+      "createdAtMs": 1781486079595,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "522ca8776004133b82c3e206c173dec7",
+      "k": 6,
+      "latencyMs": 138,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "158"
+          ],
+          [
+            "1",
+            "59"
+          ],
+          [
+            "2",
+            "0"
+          ]
+        ]
+      },
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT date_trunc('hour', ts) h, avg(latency_ms) FROM telemetry GROUP BY 1 ORDER BY 1",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 15
+        },
+        {
+          "detail": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+          "label": "Quorum reached: 6/3 agree",
+          "stage": "verify",
+          "tMs": 32
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 138
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_idx": 2,
+      "candidates": [
+        {
+          "alias": "frost-owl",
+          "attestation": "L2",
+          "commitLatencyMs": 12,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 12,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 24,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 24,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 31,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 31,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 46,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 46,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "pine-marten",
+          "attestation": "L0",
+          "commitLatencyMs": 60,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 60,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 111,
+          "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "etaMs": 111,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        }
+      ],
+      "createdAtMs": 1781486079734,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "k": 6,
+      "latencyMs": 138,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "174"
+          ],
+          [
+            "1",
+            "68"
+          ],
+          [
+            "2",
+            "250"
+          ]
+        ]
+      },
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT sku, sum(qty) FROM sales GROUP BY sku HAVING sum(qty) > 1000",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 12
+        },
+        {
+          "detail": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+          "label": "Quorum reached: 6/3 agree",
+          "stage": "verify",
+          "tMs": 31
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 138
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_idx": 3,
+      "candidates": [
+        {
+          "alias": "frost-owl",
+          "attestation": "L2",
+          "commitLatencyMs": 15,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 15,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 23,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 23,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 33,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 33,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 47,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 47,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "pine-marten",
+          "attestation": "L0",
+          "commitLatencyMs": 61,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 61,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 111,
+          "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "etaMs": 111,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        }
+      ],
+      "createdAtMs": 1781486079872,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "k": 6,
+      "latencyMs": 136,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "153"
+          ],
+          [
+            "1",
+            "244"
+          ],
+          [
+            "2",
+            "206"
+          ]
+        ]
+      },
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT cohort, count(DISTINCT user_id) active FROM events WHERE kind='session' GROUP BY cohort",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 15
+        },
+        {
+          "detail": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+          "label": "Quorum reached: 6/3 agree",
+          "stage": "verify",
+          "tMs": 33
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 136
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_idx": 4,
+      "candidates": [
+        {
+          "alias": "frost-owl",
+          "attestation": "L2",
+          "commitLatencyMs": 12,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 12,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 23,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 23,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 30,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 30,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 46,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 46,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "pine-marten",
+          "attestation": "L0",
+          "commitLatencyMs": 61,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 61,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 111,
+          "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "etaMs": 111,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        }
+      ],
+      "createdAtMs": 1781486080008,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "c5f9522548499306c4ad20c00495cede",
+      "k": 6,
+      "latencyMs": 134,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "2"
+          ],
+          [
+            "1",
+            "213"
+          ],
+          [
+            "2",
+            "90"
+          ]
+        ]
+      },
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT p99(duration_ms), count(*) FROM spans WHERE service='api'",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 12
+        },
+        {
+          "detail": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+          "label": "Quorum reached: 6/3 agree",
+          "stage": "verify",
+          "tMs": 30
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 134
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_idx": 5,
+      "candidates": [
+        {
+          "alias": "frost-owl",
+          "attestation": "L2",
+          "commitLatencyMs": 14,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 14,
+          "price": 0,
+          "progressPct": 100,
+          "state": "won",
+          "verdict": "Correct",
+          "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+        },
+        {
+          "alias": "harbor-vole",
+          "attestation": "L2",
+          "commitLatencyMs": 22,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 22,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+        },
+        {
+          "alias": "tidal-fox",
+          "attestation": "L1",
+          "commitLatencyMs": 32,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 32,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+        },
+        {
+          "alias": "amber-mole",
+          "attestation": "L1",
+          "commitLatencyMs": 46,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 46,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+        },
+        {
+          "alias": "pine-marten",
+          "attestation": "L0",
+          "commitLatencyMs": 60,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 60,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+        },
+        {
+          "alias": "slate-heron",
+          "attestation": "L0",
+          "commitLatencyMs": 111,
+          "committedHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "etaMs": 111,
+          "price": 0,
+          "progressPct": 100,
+          "state": "reset",
+          "verdict": "Correct",
+          "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+        }
+      ],
+      "createdAtMs": 1781486080142,
+      "dataClass": "Public",
+      "escrowTon": 0,
+      "fn": "p2p_query",
+      "id": "03c096454afa0bb8876a3b89144d63f2",
+      "k": 6,
+      "latencyMs": 136,
+      "paid": false,
+      "quorum": 3,
+      "requester": "analyst-ws",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "177"
+          ],
+          [
+            "1",
+            "229"
+          ],
+          [
+            "2",
+            "217"
+          ]
+        ]
+      },
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT country, sum(revenue) FROM invoices GROUP BY country ORDER BY 2 DESC LIMIT 20",
+      "status": "verified",
+      "timeline": [
+        {
+          "detail": "query_hash bound with fresh nonce",
+          "label": "Offer broadcast to 6 candidates",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "k selected by trust + ETA",
+          "label": "Bids collected (accept/reject)",
+          "stage": "bidding",
+          "tMs": 2
+        },
+        {
+          "detail": "scoped per node key",
+          "label": "Dispatch full SQL to top-k",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "commit-first, before bulk stream",
+          "label": "First result_hash committed",
+          "stage": "commit",
+          "tMs": 14
+        },
+        {
+          "detail": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+          "label": "Quorum reached: 6/3 agree",
+          "stage": "verify",
+          "tMs": 32
+        },
+        {
+          "detail": "receipts emitted",
+          "label": "Winner streams result · losers RESET",
+          "stage": "settle",
+          "tMs": 136
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    }
+  ],
+  "meta": {
+    "buildMs": 3498,
+    "engineVersion": "mock-1",
+    "generatedAtMs": 1781486079445,
+    "generatedNote": "Generated by `cargo test -p p2p-node --test console_export -- --ignored`. Every value below is produced by the real duckdb-p2p crates running an in-process loopback-QUIC grid — no hand-authored data.",
+    "jobsRun": 27,
+    "minSupported": "1.0.0",
+    "protocolVersion": "1.0.0",
+    "tls": "TLS 1.3 · mutual auth pinned to Ed25519 node identities",
+    "transport": "QUIC (Quinn + rustls), loopback",
+    "wireSchemaVersion": 1,
+    "workspaceVersion": "0.2.0"
+  },
+  "overview": {
+    "attestationMix": [
+      {
+        "count": 4,
+        "fill": "var(--chart-3)",
+        "level": "L0 — anonymous"
+      },
+      {
+        "count": 2,
+        "fill": "var(--chart-2)",
+        "level": "L1 — measured boot"
+      },
+      {
+        "count": 2,
+        "fill": "var(--chart-1)",
+        "level": "L2 — TEE enclave"
+      }
+    ],
+    "avgTrust": 0.5351562782703718,
+    "failed": 0,
+    "freeMemBytes": 270582939648,
+    "jobsRun": 27,
+    "latencyHistogram": [
+      {
+        "bucket": "<25ms",
+        "count": 45
+      },
+      {
+        "bucket": "25–50",
+        "count": 50
+      },
+      {
+        "bucket": "50–100",
+        "count": 23
+      },
+      {
+        "bucket": "100–250",
+        "count": 24
+      },
+      {
+        "bucket": "250ms–1s",
+        "count": 0
+      },
+      {
+        "bucket": ">1s",
+        "count": 0
+      }
+    ],
+    "series": [
+      {
+        "label": "j1",
+        "latencyMs": 134,
+        "verified": 1
+      },
+      {
+        "label": "j2",
+        "latencyMs": 138,
+        "verified": 1
+      },
+      {
+        "label": "j3",
+        "latencyMs": 138,
+        "verified": 1
+      },
+      {
+        "label": "j4",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j5",
+        "latencyMs": 134,
+        "verified": 1
+      },
+      {
+        "label": "j6",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j7",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j8",
+        "latencyMs": 137,
+        "verified": 1
+      },
+      {
+        "label": "j9",
+        "latencyMs": 135,
+        "verified": 1
+      },
+      {
+        "label": "j10",
+        "latencyMs": 138,
+        "verified": 1
+      },
+      {
+        "label": "j11",
+        "latencyMs": 135,
+        "verified": 1
+      },
+      {
+        "label": "j12",
+        "latencyMs": 134,
+        "verified": 1
+      },
+      {
+        "label": "j13",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j14",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j15",
+        "latencyMs": 138,
+        "verified": 1
+      },
+      {
+        "label": "j16",
+        "latencyMs": 137,
+        "verified": 1
+      },
+      {
+        "label": "j17",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j18",
+        "latencyMs": 134,
+        "verified": 1
+      },
+      {
+        "label": "j19",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j20",
+        "latencyMs": 135,
+        "verified": 1
+      },
+      {
+        "label": "j21",
+        "latencyMs": 137,
+        "verified": 1
+      },
+      {
+        "label": "j22",
+        "latencyMs": 136,
+        "verified": 1
+      },
+      {
+        "label": "j23",
+        "latencyMs": 137,
+        "verified": 1
+      },
+      {
+        "label": "j24",
+        "latencyMs": 136,
+        "verified": 1
+      }
+    ],
+    "totalStakeTon": 9520,
+    "verified": 24,
+    "workersOnline": 7,
+    "workersTotal": 8
+  },
+  "paidJobs": [
+    {
+      "_paidIdx": 0,
+      "candidates": [],
+      "createdAtMs": 1781486082759,
+      "dataClass": "Internal",
+      "escrowTon": 100,
+      "fn": "p2p_query",
+      "id": "b866dbc212a2455181b049070a6fe4e6",
+      "k": 4,
+      "latencyMs": 59,
+      "paid": true,
+      "quorum": 3,
+      "requester": "etl-runner",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "95"
+          ],
+          [
+            "1",
+            "253"
+          ],
+          [
+            "2",
+            "112"
+          ]
+        ]
+      },
+      "resultHash": "71eac4dde3c4740d675374181c9c55ee18766e1fb543f3dc2ae41db3145bcf2d",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT cohort, count(DISTINCT user_id) FROM events GROUP BY cohort",
+      "status": "settled",
+      "timeline": [
+        {
+          "detail": "escrow B=100 TON",
+          "label": "Offer to paid pool",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "HTLC keyed on quorum hash",
+          "label": "Dispatch + open escrow",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "anchored to epoch root",
+          "label": "Settle: winner paid, losers RESET",
+          "stage": "settle",
+          "tMs": 59
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_paidIdx": 1,
+      "candidates": [],
+      "createdAtMs": 1781486082819,
+      "dataClass": "Internal",
+      "escrowTon": 100,
+      "fn": "p2p_query",
+      "id": "0da82ace49b4c88395e507d1d00b850f",
+      "k": 4,
+      "latencyMs": 58,
+      "paid": true,
+      "quorum": 3,
+      "requester": "etl-runner",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "63"
+          ],
+          [
+            "1",
+            "221"
+          ],
+          [
+            "2",
+            "86"
+          ]
+        ]
+      },
+      "resultHash": "189d5621313bba0834b088b1d25ad3b269705a849e2e873d6ab4595c1493db07",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT sku, sum(qty*price) gmv FROM line_items GROUP BY sku ORDER BY gmv DESC LIMIT 50",
+      "status": "settled",
+      "timeline": [
+        {
+          "detail": "escrow B=100 TON",
+          "label": "Offer to paid pool",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "HTLC keyed on quorum hash",
+          "label": "Dispatch + open escrow",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "anchored to epoch root",
+          "label": "Settle: winner paid, losers RESET",
+          "stage": "settle",
+          "tMs": 58
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "_paidIdx": 2,
+      "candidates": [],
+      "createdAtMs": 1781486082877,
+      "dataClass": "Internal",
+      "escrowTon": 100,
+      "fn": "p2p_query",
+      "id": "83dd5720972288c9c80f4564e8079531",
+      "k": 4,
+      "latencyMs": 61,
+      "paid": true,
+      "quorum": 3,
+      "requester": "etl-runner",
+      "result": {
+        "columns": [
+          "k",
+          "v"
+        ],
+        "rows": [
+          [
+            "0",
+            "141"
+          ],
+          [
+            "1",
+            "179"
+          ],
+          [
+            "2",
+            "59"
+          ]
+        ]
+      },
+      "resultHash": "6ac9cf852bcc8dd39ce7a9a04652c98e0b501cd3efbbccf3be72fb6cadd1acdf",
+      "rowCount": 3,
+      "source": "in-process mock engine (loopback)",
+      "sql": "SELECT segment, avg(ltv) FROM customers GROUP BY segment",
+      "status": "settled",
+      "timeline": [
+        {
+          "detail": "escrow B=100 TON",
+          "label": "Offer to paid pool",
+          "stage": "offer",
+          "tMs": 0
+        },
+        {
+          "detail": "HTLC keyed on quorum hash",
+          "label": "Dispatch + open escrow",
+          "stage": "dispatch",
+          "tMs": 4
+        },
+        {
+          "detail": "anchored to epoch root",
+          "label": "Settle: winner paid, losers RESET",
+          "stage": "settle",
+          "tMs": 61
+        }
+      ],
+      "verifyMode": "Quorum",
+      "winner": "frost-owl",
+      "winnerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    }
+  ],
+  "protocol": {
+    "handshake": {
+      "minSupported": "1.0.0",
+      "requireMatchingEngineVersion": false,
+      "version": "1.0.0",
+      "wireSchemaVersion": 1
+    },
+    "messages": {
+      "Bid": {
+        "attestation": {
+          "evidence": "7464782d71756f74653a656e636c6176652d7265706f7274",
+          "level": "L2",
+          "measurement": "allowlisted-enclave-v1"
+        },
+        "decision": "Accept",
+        "eta_ms": 2600,
+        "free_mem_bytes": 23622320128,
+        "free_threads": 14,
+        "job_id": "192959dd850de09f84326cfd2552a865",
+        "price": 0,
+        "recent_receipts": [],
+        "worker_id": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+      },
+      "Dispatch": {
+        "compression": null,
+        "credential": {
+          "expires_at": 1781486982,
+          "prefix": "s3://acme-lake/orders/2026/",
+          "provider": "s3",
+          "token": "<downscoped-sts-session>"
+        },
+        "job_id": "192959dd850de09f84326cfd2552a865",
+        "memory_limit_bytes": 4294967296,
+        "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
+        "result_parallelism": 4,
+        "sealed_key": null,
+        "sql": "SELECT region, count(*) AS orders, sum(total) AS gmv FROM orders GROUP BY region ORDER BY gmv DESC",
+        "threads": 8,
+        "verify_mode": "Quorum"
+      },
+      "Offer": {
+        "cost_hint_rows": 184000000,
+        "data_class": "Internal",
+        "job_id": "192959dd850de09f84326cfd2552a865",
+        "nonce": 11469010869004630000,
+        "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
+        "requester_id": "b3:350c2e42fbeb7f973be2adae1234b62906543f2509b7d88cb8a1c8a90c7aebcf"
+      },
+      "Receipt": {
+        "job_id": "5ea191263841720c49efaaabc26c61c6",
+        "latency_ms": 112,
+        "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
+        "requester_id": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+        "requester_pubkey": "d7269eeed7e24ff96e22bc06c7051f6458b08bd4d95b8788cf95d3a44ea30575",
+        "result_hash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+        "sig": "f5388f400eb3b770f1dbbb713342c4d633fb26ad5492fb0f7698078325babcab7e83d2a1910063da9a45d2f77b13444089af21c02cb19e0c9cca81de300e710c",
+        "ts": 1781486079,
+        "verdict": "Correct",
+        "worker_id": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+      },
+      "ResultCommit": {
+        "job_id": "192959dd850de09f84326cfd2552a865",
+        "latency_ms": 2410,
+        "result_hash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
+        "row_count": 3,
+        "worker_id": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+      }
+    },
+    "verdicts": [
+      {
+        "fault": "neutral",
+        "verdict": "Correct"
+      },
+      {
+        "fault": "provider",
+        "verdict": "Incorrect"
+      },
+      {
+        "fault": "provider",
+        "verdict": "Timeout"
+      },
+      {
+        "fault": "provider",
+        "verdict": "Malformed"
+      },
+      {
+        "fault": "requester",
+        "verdict": "ResourceExceeded"
+      },
+      {
+        "fault": "requester",
+        "verdict": "Infeasible"
+      },
+      {
+        "fault": "neutral",
+        "verdict": "Inconclusive"
+      }
+    ],
+    "wire": [
+      {
+        "direction": "R↔W",
+        "purpose": "connection handshake (versions + engine build)",
+        "variant": "Hello"
+      },
+      {
+        "direction": "R↔W",
+        "purpose": "typed version-incompatibility rejection",
+        "variant": "VersionReject"
+      },
+      {
+        "direction": "R→W",
+        "purpose": "probe a candidate with query_hash + nonce",
+        "variant": "Offer"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "accept (ETA + attestation + receipts) or reject",
+        "variant": "Bid"
+      },
+      {
+        "direction": "R→W",
+        "purpose": "full SQL + scoped credential to top-k",
+        "variant": "Dispatch"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "liveness heartbeat during execution",
+        "variant": "Progress"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "result_hash first (commit-first)",
+        "variant": "Commit"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "describes result encoding/splitting",
+        "variant": "Manifest"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "bulk result bytes (winner only)",
+        "variant": "Chunk"
+      },
+      {
+        "direction": "W→R",
+        "purpose": "header for one parallel stream part",
+        "variant": "Part"
+      },
+      {
+        "direction": "R→W",
+        "purpose": "RESET losers",
+        "variant": "Cancel"
+      },
+      {
+        "direction": "R↔W",
+        "purpose": "generic acknowledgement / error",
+        "variant": "Ack"
+      }
+    ]
+  },
+  "receipts": [
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 112,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+      "sig": "ed25519:f5388f40…710c",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 48,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+      "sig": "ed25519:af065c38…120e",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "provider",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 19,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "1bf229cf6cb8bc342a6062476e73c55e2ecaffcc5865228b2c4e467a01cf4325",
+      "sig": "ed25519:4e063d4c…9904",
+      "tsMs": 1781486079000,
+      "verdict": "Incorrect",
+      "verified": true,
+      "workerAlias": "rust-shrike",
+      "workerId": "b3:89b9b379dfdd0b30e7bab25820a8ea3fad513f2c63a3292bd4e7bb99266295a2"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 31,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+      "sig": "ed25519:373f60c3…8d0a",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 23,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
+      "sig": "ed25519:0e2e1b63…7a0a",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "provider",
+      "gossiped": true,
+      "jobId": "5ea191263841720c49efaaabc26c61c6",
+      "latencyMs": 0,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "—",
+      "sig": "ed25519:13e505dd…9500",
+      "tsMs": 1781486079000,
+      "verdict": "Timeout",
+      "verified": true,
+      "workerAlias": "cobalt-stoat",
+      "workerId": "b3:b66c3384d929c12d59f7f9c8fe69e27cd32a6c65f667073f160bee3cafe2835d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 23,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:92c330d9…1f05",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 112,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:989aa7c4…a702",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 32,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:e99fb2fb…710a",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 46,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:6ce296e7…7c02",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 62,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:ce389aa2…ad05",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "522ca8776004133b82c3e206c173dec7",
+      "latencyMs": 15,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:3929c356…1004",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 24,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:b4c2b387…d908",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 46,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:78ab3d34…dc05",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 111,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:6463d03c…a305",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 31,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:a925229d…bd0d",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 60,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:27f4be04…e70f",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "d07fdf53b44fb9e5d6197f29e2e43526",
+      "latencyMs": 12,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:a27cc73f…fe07",
+      "tsMs": 1781486079000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 33,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:b1e0b8e0…5400",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 111,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:16121679…3406",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 47,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:79b7805f…260f",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 23,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:03b2874b…8d0b",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 15,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:d369f2ec…0e09",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "15db76f6f70e78fc497a6cb69d3f0df9",
+      "latencyMs": 61,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:37612f22…7b00",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 46,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:b822327f…4601",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 23,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:cb56315d…6202",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 111,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:d6b1cca0…b005",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 30,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:a11203de…bf06",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 61,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:80b7c2dc…060a",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "c5f9522548499306c4ad20c00495cede",
+      "latencyMs": 12,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:208d0871…9006",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 32,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:c5c22b59…f302",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 111,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:d6fac4cf…f20b",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 46,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:6e74c53b…7a0d",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 22,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:b39e48ff…d800",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 60,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:69ea3834…c600",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "03c096454afa0bb8876a3b89144d63f2",
+      "latencyMs": 14,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:04ced971…390f",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 32,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:b9e1e37e…710c",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 22,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:baefcf47…fe0d",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 46,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:55438cfd…9406",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 111,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:56277ee5…1806",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 14,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:4c939a54…930a",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "cdfa5018824b33d7ee83875f1f5db906",
+      "latencyMs": 60,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:2ab42386…b807",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 32,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:4f6f0b76…1805",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 23,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:33547a4a…1809",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 48,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:f6383e1b…0107",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 112,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:a8c8d6d6…9f0f",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 13,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:0107383c…d601",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "f8b18824627b2e78b15fb92c9fb37cb8",
+      "latencyMs": 60,
+      "requesterId": "b3:b6b4b8d8e3d14f06ebfdf9d14eb11dcab1c2ac7e4e33b77d70119af036114411",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:b6c61460…2d05",
+      "tsMs": 1781486080000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+    }
+  ],
+  "settlement": {
+    "anchorRecords": 3,
+    "binding": {
+      "expiry": 1784078082,
+      "nodeId": "b3:f7cf5114e238c6a3cccf4c6dc814e6e1a45cb7781390a9d882076434231de72a",
+      "nonceHex": "636f6e736f6c652d6e6f6e63652d3031",
+      "sigNodeHex": "568823db84517ba7…",
+      "tonProof": {
+        "domain": "duckdb-p2p",
+        "payloadHex": "62333a6637636635…",
+        "signatureHex": "baa41a9fa2335801…",
+        "timestamp": 1781486082
+      },
+      "verified": true,
+      "walletAddress": "0:3f6d2c5c9c8661a57e644a45e0bf9456ecc7f2687c2bebc39fb8f7e2322a2244"
+    },
+    "enabled": true,
+    "epochRootHex": "c6960e70d11e5e02746e3deaeb3e7e64ec02a9d01c24acaf940345b4f0d4fb42",
+    "escrowMaxBidTon": 100,
+    "events": [
+      {
+        "job": "b866dbc212a2455181b049070a6fe4e6",
+        "maxBidTon": 100,
+        "type": "Opened"
+      },
+      {
+        "job": "b866dbc212a2455181b049070a6fe4e6",
+        "totalTon": 100,
+        "type": "Settled"
+      },
+      {
+        "job": "0da82ace49b4c88395e507d1d00b850f",
+        "maxBidTon": 100,
+        "type": "Opened"
+      },
+      {
+        "job": "0da82ace49b4c88395e507d1d00b850f",
+        "totalTon": 100,
+        "type": "Settled"
+      },
+      {
+        "job": "83dd5720972288c9c80f4564e8079531",
+        "maxBidTon": 100,
+        "type": "Opened"
+      },
+      {
+        "job": "83dd5720972288c9c80f4564e8079531",
+        "totalTon": 100,
+        "type": "Settled"
+      }
+    ],
+    "fees": {
+      "bonusAggressiveness": 0.5,
+      "lambdaQuality": 0.5,
+      "lambdaSpeed": 0.5,
+      "participationCommissionFrac": 0.02,
+      "platformFeePct": 0.02,
+      "verificationSurchargePct": 0.05
+    },
+    "inclusionProof": {
+      "leafHex": "9385c4b420a6cafe8f59f2c11e06fb1c1d33262d1d2ea7fe0701636054c5f78f",
+      "siblings": [
+        {
+          "hashHex": "3510a45c78a48d3ec616ee8d672edf4cc733c7ed8c84086d0e3d7e644e3b0a92",
+          "right": false
+        },
+        {
+          "hashHex": "fbc5884b500f67fe06f5675aadf139c8715f9948ca4182e3771b99e4e21cc788",
+          "right": false
+        }
+      ],
+      "verified": true
+    },
+    "network": "Testnet",
+    "quality": {
+      "qualityScore": 0.9892000000000001,
+      "sample": {
+        "bytesVerified": 12884901888,
+        "latencyMs": 240,
+        "successRatio": 0.98
+      },
+      "throughputScore": 1
+    },
+    "slashing": {
+      "challengeWindowSecs": 86400,
+      "cheatPct": 1,
+      "downtimePct": 0.02,
+      "equivocationPct": 0.5,
+      "failedCommitmentPct": 0.1,
+      "toBurn": 0.2,
+      "toChallenger": 0.4,
+      "toRedundancy": 0.3,
+      "toTreasury": 0.1,
+      "wrongResultPct": 0.15
+    },
+    "splits": [
+      {
+        "participants": [
+          {
+            "amountTon": 2,
+            "wallet": "0:319ad1dba1e3"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:a0fe3895ee96"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:2b9ccf697439"
+          }
+        ],
+        "platformFeeTon": 2,
+        "resultHashHex": "1196c1a032643b28a156bbe590b6c184d314ca5671f1870bafea6644b7119222",
+        "totalTon": 100,
+        "winnerTon": 92
+      },
+      {
+        "participants": [
+          {
+            "amountTon": 2,
+            "wallet": "0:319ad1dba1e3"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:a0fe3895ee96"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:2b9ccf697439"
+          }
+        ],
+        "platformFeeTon": 2,
+        "resultHashHex": "dfa6341ff75044e03ea5f81f4e9a78ee6b11719120a81d64316baaf53391d7c8",
+        "totalTon": 100,
+        "winnerTon": 92
+      },
+      {
+        "participants": [
+          {
+            "amountTon": 2,
+            "wallet": "0:319ad1dba1e3"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:a0fe3895ee96"
+          },
+          {
+            "amountTon": 2,
+            "wallet": "0:2b9ccf697439"
+          }
+        ],
+        "platformFeeTon": 2,
+        "resultHashHex": "2caaa786554b04fee2eb229ab298764cdcfe3bbd2cb58ece70d46c290a4829be",
+        "totalTon": 100,
+        "winnerTon": 92
+      }
+    ],
+    "stake": {
+      "minStake": 0,
+      "minStakeInternal": 100,
+      "minStakeSensitive": 1000,
+      "receiptJetton": true,
+      "receiptTransferLocked": true,
+      "stakeCap": 100000,
+      "unbondingSecs": 604800
+    },
+    "stakeCurve": [
+      {
+        "factor": 0,
+        "stakeTon": 0
+      },
+      {
+        "factor": 0.4008639265722868,
+        "stakeTon": 100
+      },
+      {
+        "factor": 0.49571286855019464,
+        "stakeTon": 300
+      },
+      {
+        "factor": 0.580725998807176,
+        "stakeTon": 800
+      },
+      {
+        "factor": 0.6352755866580494,
+        "stakeTon": 1500
+      },
+      {
+        "factor": 0.6830274771720122,
+        "stakeTon": 2600
+      },
+      {
+        "factor": 0.7246699068704621,
+        "stakeTon": 4200
+      },
+      {
+        "factor": 0.7806281760402795,
+        "stakeTon": 8000
+      },
+      {
+        "factor": 0.939794921736344,
+        "stakeTon": 50000
+      },
+      {
+        "factor": 1,
+        "stakeTon": 100000
+      }
+    ],
+    "stakeTable": [
+      {
+        "alias": "frost-owl",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": true,
+        "stakeFactor": 0.7246699068704621,
+        "stakeTon": 4200,
+        "wallet": "0:0d629215da7bdabfcadfcc253065516ff1dc6193015513e9f15da700fdd5f2ca",
+        "workerId": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631"
+      },
+      {
+        "alias": "harbor-vole",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": true,
+        "stakeFactor": 0.6830274771720122,
+        "stakeTon": 2600,
+        "wallet": "0:319ad1dba1e3ab7c694aa5cc8125b4b7cc024905eddc6ad298c889bb4c1e66f3",
+        "workerId": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d"
+      },
+      {
+        "alias": "tidal-fox",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": true,
+        "stakeFactor": 0.6352755866580494,
+        "stakeTon": 1500,
+        "wallet": "0:a0fe3895ee969c3adf818b1fb8130c64a32b9289126c3a42dcdc39ee1d4a0b02",
+        "workerId": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865"
+      },
+      {
+        "alias": "amber-mole",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": false,
+        "stakeFactor": 0.580725998807176,
+        "stakeTon": 800,
+        "wallet": "0:2b9ccf697439f1a1c3b31dcce03e1c6a1e718ac9e42b8389193b6f12e9ce3181",
+        "workerId": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb"
+      },
+      {
+        "alias": "pine-marten",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": false,
+        "stakeFactor": 0.49571286855019464,
+        "stakeTon": 300,
+        "wallet": "0:f4f7850bdd67a86aa3fbb4cb1eba9db51dc78e7fd77a9ce6d5e2b92531359512",
+        "workerId": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327"
+      },
+      {
+        "alias": "slate-heron",
+        "eligibleInternal": true,
+        "eligiblePublic": true,
+        "eligibleSensitive": false,
+        "stakeFactor": 0.416556712248536,
+        "stakeTon": 120,
+        "wallet": "0:de47203d1b0d8bf6e691ef79602b9feba1bac976995264c602b6f5dc46aa3111",
+        "workerId": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1"
+      }
+    ]
+  },
+  "ton": {
+    "computed": {
+      "escrow": {
+        "address": "0:ae035056d9f6ba43a96c00ba0809755574af2365c7e6d3e8430d397fc807a06d",
+        "codeHash": "43d503abba89a865d86ce8585e3cd1d177c745479dd7ac89f764aa591e168ff6",
+        "deterministic": "address = hash(StateInit{code, data}); data binds requester+arbiter+B+deadline+^terms",
+        "escrowTon": 100,
+        "expectedHashHex": "1196c1a032643b28a156bbe590b6c184d314ca5671f1870bafea6644b7119222",
+        "paramsVersion": 1,
+        "termsCellHash": "316256003f7c37033c70075c78bb11770f10ec345ddcf974955b7d70822dea90"
+      },
+      "globalParams": {
+        "attemptDeadlineMs": 60000,
+        "challengeWindowSecs": 86400,
+        "checksumMin": 3,
+        "ecoParamsBocBase64": "te6cckEBAQEASAAAjADIAfQAyAXcJxAAyBOID6ALuAfQA+gFF0h26ABejUpRAAZa8xB6QAAACTqAAAFRgAMFCgMDF3AF3AnEA+gAAOpgAAAH0AVfWEKm",
+        "ecoParamsCellHash": "4f23e11abd24cf971b60a9c92abf309d59119b014683c2e1fd9ab26bc7df4a32",
+        "minStakeInternalTon": 100,
+        "minStakeSensitiveTon": 1000,
+        "minStakeTon": 0,
+        "nDefault": 5,
+        "nMax": 10,
+        "nPublic": 3,
+        "participationCommissionBps": 200,
+        "platformFeeBps": 200,
+        "progressIntervalMs": 2000,
+        "progressStallMult": 5,
+        "quorum": 3,
+        "slashCheatBps": 10000,
+        "slashDowntimeBps": 200,
+        "slashEquivocationBps": 5000,
+        "slashFailedCommitmentBps": 1000,
+        "slashWrongBps": 1500,
+        "splitBurnBps": 2000,
+        "splitChallengerBps": 4000,
+        "splitRedundancyBps": 3000,
+        "splitTreasuryBps": 1000,
+        "stakeCapTon": 100000,
+        "surchargeBps": 500,
+        "unbondingSecs": 604800,
+        "updateBodyHash": "6daf00f81a3e2441f4428f1efc3a4aaddc7c04a23f324c4c810bd3c32b7f5800",
+        "wPriceBps": 2500,
+        "wQualityBps": 6000,
+        "wStakeBps": 1500
+      },
+      "messages": [
+        {
+          "bits": 700,
+          "bocBase64": "te6cckEBBgEA3wABr0VTQwIAAAAAAAAAARGWwaAyZDsooVa75ZC2wYTTFMpWcfGHC6/qZkS3EZIigAGsUkK7T3tX+Vv5hKYMqi3+O4wyYCqifT4rtOAfur5ZSirXQTAAjuaygBgBAgWBcAIDAgBLv9B/HEr3S04db8DFj9wJhjJRlclEiTYdIW5uHPcOpQWBI7msoAQCAWYFBABLvwZrR26Hjq3xpSqXMgSW0t8wCSQXt3GrSmMiJu0weZvNHc1lACAAS78ucz2l0OfGhw7MdzOA+HGoecYrJ5CuDiRk7bxLpzjGBR3NZQAga6Ab4Q==",
+          "cellHash": "9f5d210d215b5e8e8fd5d6a73fa27183774d87631fb63f1ce86d057e6939a8ca",
+          "label": "EscrowSettle (HTLC release)",
+          "opcode": 1163084546,
+          "opcodeHex": "0x45534302"
+        },
+        {
+          "bits": 140,
+          "bocBase64": "te6cckEBAQEAFAAAI1NLSwEAAAAAAAAAAVC6Q7dACDBEXEU=",
+          "cellHash": "0e3478034a5c9f2587f7c94bc015c05e9e1bdd6690619a53c61a3ef91baa36f6",
+          "label": "StakeDeposit (bond 50 TON)",
+          "opcode": 1397443329,
+          "opcodeHex": "0x534b4b01"
+        },
+        {
+          "bits": 644,
+          "bocBase64": "te6cckEBAQEAUwAAoUFOQwEAAAAAAAAAAQAAAAHGlg5w0R5eAnRuPerrPn5k7AKp0BwkrK+UA0W08NT7QgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACGGuEZM=",
+          "cellHash": "064817d84e9dd127612743c79128ed8ce998b0420aaa1d0584da6bb8b23d59df",
+          "label": "AnchorSubmit (epoch 1 root)",
+          "opcode": 1095648001,
+          "opcodeHex": "0x414e4301"
+        },
+        {
+          "bits": 363,
+          "bocBase64": "te6cckEBAgEAeQABW0dQQQEAAAAAAAAAAoAXYim6fTbgs7eFRDlnYL1lraW0PA64GxWcaKAhqhED5lABAIwAyAH0AMgF3CcQAMgTiA+gC7gH0APoBRdIdugAXo1KUQAGWvMQekAAAAk6gAABUYADBQoDAxdwBdwJxAPoAADqYAAAB9AFJV+zww==",
+          "cellHash": "1d9178dd0a2111605969832f878f72445cdbe42b66a73c7473b141b7e38591bd",
+          "label": "UpdateParams (set GlobalParams)",
+          "opcode": 1196441857,
+          "opcodeHex": "0x47504101"
+        }
+      ],
+      "opcodes": {
+        "GlobalParams": [
+          {
+            "hex": "0x47504101",
+            "name": "OP_UPDATE_PARAMS",
+            "value": 1196441857
+          },
+          {
+            "hex": "0x47504102",
+            "name": "OP_UPDATE_ADMIN",
+            "value": 1196441858
+          },
+          {
+            "hex": "0x47504104",
+            "name": "OP_UPGRADE_CODE",
+            "value": 1196441860
+          }
+        ],
+        "JobEscrow": [
+          {
+            "hex": "0x45534300",
+            "name": "OP_ESCROW_TOPUP",
+            "value": 1163084544
+          },
+          {
+            "hex": "0x45534302",
+            "name": "OP_ESCROW_SETTLE",
+            "value": 1163084546
+          },
+          {
+            "hex": "0x45534303",
+            "name": "OP_ESCROW_REFUND",
+            "value": 1163084547
+          }
+        ],
+        "RecordAnchor": [
+          {
+            "hex": "0x414e4301",
+            "name": "OP_ANCHOR_SUBMIT",
+            "value": 1095648001
+          },
+          {
+            "hex": "0x414e4304",
+            "name": "OP_ANCHOR_UPGRADE_CODE",
+            "value": 1095648004
+          }
+        ],
+        "StakeVault": [
+          {
+            "hex": "0x534b4b01",
+            "name": "OP_STAKE_DEPOSIT",
+            "value": 1397443329
+          },
+          {
+            "hex": "0x534b4b02",
+            "name": "OP_STAKE_UNBOND",
+            "value": 1397443330
+          },
+          {
+            "hex": "0x534b4b03",
+            "name": "OP_STAKE_WITHDRAW",
+            "value": 1397443331
+          },
+          {
+            "hex": "0x534b4b05",
+            "name": "OP_STAKE_SLASH",
+            "value": 1397443333
+          },
+          {
+            "hex": "0x534b4b07",
+            "name": "OP_STAKE_ANNOUNCE_UPGRADE",
+            "value": 1397443335
+          },
+          {
+            "hex": "0x534b4b08",
+            "name": "OP_STAKE_APPLY_UPGRADE",
+            "value": 1397443336
+          },
+          {
+            "hex": "0x534b4b09",
+            "name": "OP_STAKE_CANCEL_UPGRADE",
+            "value": 1397443337
+          }
+        ]
+      }
+    },
+    "toolchain": "Acton 1.1.0 (Rust TON toolkit · Tolk + @stdlib/@acton)",
+    "network": "testnet",
+    "rpc": "https://testnet.toncenter.com/api/v2/",
+    "wallet": "kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+    "resultHash": "0x9f93e7246ff86674ca1078133e3973f7194df96d7c0c41553ae8218676813349",
+    "bindingHash": "0xf064374e3068c80d08607859327d0aeeac6ae7fe16476590c4db866b68fea9eb",
+    "contracts": [
+      {
+        "name": "StakeVault",
+        "role": "Per-node non-custodial bond contract (one vault per operator) and the jetton master of the node's transfer-locked Duckton stake receipt. Deposit, unbonding cooldown, graduated slashing, keeper withdrawal — all governed by code, no human key.",
+        "doc": "§8 · §8.5 · §8.6",
+        "upgradeable": "timelocked SETCODE (announce → apply ≥ unbonding window)",
+        "storage": [
+          [
+            "owner",
+            "address",
+            "node operator wallet"
+          ],
+          [
+            "staked",
+            "coins",
+            "currently bonded"
+          ],
+          [
+            "unbondingAmount",
+            "coins",
+            "in cooldown (still slashable)"
+          ],
+          [
+            "unbondingAt",
+            "uint32",
+            "cooldown start ts (0 = none)"
+          ],
+          [
+            "totalSupply",
+            "coins",
+            "receipts outstanding (== staked + unbonding)"
+          ],
+          [
+            "bindingHash",
+            "uint256",
+            "wallet↔node identity binding (§3.2)"
+          ],
+          [
+            "config",
+            "^VaultConfig",
+            "minStake, windows, slasher, slash split"
+          ],
+          [
+            "upgrade",
+            "^VaultUpgradeState",
+            "codeVersion, pendingCodeHash, pendingAt"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_vault_state",
+            "{ staked, unbondingAmount, unbondingAt, totalSupply, eligible }"
+          ],
+          [
+            "get_pending_upgrade",
+            "{ codeVersion, pendingCodeHash, pendingAt, readyAt }"
+          ],
+          [
+            "get_code_version",
+            "int (0 = original)"
+          ],
+          [
+            "get_jetton_data",
+            "TEP-74 master data (Duckton)"
+          ],
+          [
+            "get_wallet_address(owner)",
+            "deterministic receipt-wallet address"
+          ],
+          [
+            "is_eligible",
+            "bool"
+          ]
+        ],
+        "guards": [
+          "slash only by config.slasher; bounded by staked + unbondingAmount",
+          "withdraw blocked until now ≥ unbondingAt + unbondingPeriod",
+          "slash split must sum to 10000 bps; burn share locked forever",
+          "upgrade two-step + timelocked + commit-reveal (hash must match)"
+        ],
+        "testnetAddress": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+        "codeHash": "2630657e91e482b536e0c6dcd0d61bca06180ad6260158069910c8d94839c707",
+        "bocBytes": 3708,
+        "codeBoc64": "te6ccgECLwEACtEAART/APSkE/S88sgLAQIBYgIDBPbQ+JGO29MfMdMf7UTQ+kj6APoA1h/6ANb/1NT0BSqCEBeNRRm6jio6CNM/MfoAMFMGtggXoVA2oQbI+lJQBfoCUAP6As5QA/oCzszM9ADJ7VTgOQmCEFNLSwu6kl8J4w3gINcsIppaWAzjAtcsIppaWBTjAtcsIppaWBwEBQYHAgEgGhsAeviSKIEBC/QKb6GT+gDRkjBw4viS+JcSoMgB+gJAGYEBC/RBBsj6UlAF+gJQA/oCzgH6As4SzBLM9ADJ7VQB/jHtRND6SPoA+gDWH/oAINdM+JInxwXy4IQH0z/6ADD4lyGCCvrwgKC+8uCJCND6ADHTH9Mf0x8x0w/6SDH6SDHU1NECgScQu/LhHFq+8uEFAdD6SDH6SDHTD9MP0w/TD9FaoFigoIEnELry4M9RaKBROKAnyPpSUAT6AlAF+gIIAIYx7UTQ+kj6APoAMdMf+JIkxwXy4IQB8tDKA9M/MfoAMCDCAJVTAbvDAJFw4vLgyWah+CMDyPpSAfoCAfoCyx/Oye1UBDbjAtcsIppaWCTjAtcsIppaWCzjAtcsIppaWFQJCgsMALQTzgH6As7J7VT4KCDIz4RCFfpSFPpSyYIK+vCAiwjIz5BeNRRmFMs/UAb6AlJA+lIU+lLPhCDOycjPiYgBXcjPhNDMzPkWzwv/UAT6AoEAjc8LcMzMzMlx+wAC/jHtRND6SPoA+gDTH/oAINdM+JInxwXy4IQkwgDy4MzQ+gAx0x/THzHTHzHTDzH6SDH6SDHU1DHRBKD4I7vy4MtRE6ElyPpSJfoCcM8LIwH6As7J7VQE1ws/+CgkyM+EQvpS+lLJUAXIz4TQzMz5FsjPigBAy//PUIIJMS0AyIkNDgH+Me1E0PpI+gD6ANMf+gAg10wkwgDy4MzQ+gAx0x/THzHTH9MP+kgx+kgx1NQx0VBjoKD4I7vy4M1RJKEmyPpSJvoCcM8LIwH6As7J7VRSIoEnEKmEBdcLP/goJcjPhEL6UvpSyVjIz4TQzMz5FsjPigBAy//PUIIJMS0AyM+FCA8B/jHtRND6SPoA+gDWH/oAINdM0PoAMdMfMdMfMdMfMdMPMfpI+kgx1NTR+JJQA8cF8uDIU2WgCdM/+gDTBzH6SDAhwgCVUhy7wwCSO3Di8uDOUwi2CFGZoVIaoRihUVehKcj6UlAJ+gJQBfoCFc5QBvoCzsntVPgoyM+EQhb6UhUQAv6OaTHtRNAB0z/6SDAC+kj6APoA1h/6ANb/1NT0BVOggQEL9Ary4Mz6ANEgwgDy4MxSsoEBC/RZMAnI+lJQCPoCUAb6AhTOWPoCzszMEvQAye1UyM+FiBP6Ulj6AoIQU0tLC88Liss/yXH7AODXLCFjtcuc4wLXLCKaWlgEkVvgFBUAAUIAds8WEvpSAfoCghBTS0sGzwuKJM8LPwH6Aslz+wCCCvrwgKBw+wLIz4WI+lKCEFNLSwvPC47LP8mDBvsAAL4S+lIB+gKCEFNLSwbPC4ohzws/WPoCyXP7AAGCCvrwgKBw+wIiwgCOHfiSyM+FiPpSUAP6AoIQU0tLC88LiiLPCz/JcfsAkTLiyM+FiPpSghBTS0sLzwuOyz/Jgwb7AAP4+lLJAcjPhNDMzPkWyM+KAEDL/89QggkxLQDIz4UIEvpSAfoCghBTS0sGzwuKI88LPyH6Aslz+wAB0PpI+kjTD9MP0w/TD9FdoFigIaCBJxC68uDPUlOBJxCphFJSgScQqYRQUoEnEKmEJMIAkjQ14w0kwgCSMDPjDSDCABESEwA8yM+FiBf6UlAE+gKCEFNLSwvPC4okzws/yXH7ABAkADbIz4WI+lJQBPoCghBTS0sLzwuKIs8LP8lx+wAAPo4ZyM+FiBP6Ulj6AoIQU0tLC88Liss/yXH7AJJfA+IA3jHtRNDXTND6ADHTHzHTHzHTHzHTDzH6SDH6SDHU1DHRAdM/+kjXCgD4KCLIz4RC+lL6UslQBMjPhNDMzPkWyM+KAEDL/89QA5TI+lLJkjBt4viSyM+FCPpSghDRc1QAzwuOEss/EvpS9ADJgEL7AAT6idcnjmox7UTQ+kj6APoA1h/6ANb/1NQi0PoAMdMfMdMfMdMfMdMPMfpIMfpI1DHUMdH4kscF8uEbAdDTH9P/MdMfMdEJ0z8x1wv/+CMKyMsfy/8Zyx/JB8j6UlAG+gJQBPoCEs4B+gLOzMzOye1U4NcsIppaWETjAonXJzEWFxgZAAhTS0sHAP4x7UTQ+kj6APoA1h/6ANb/1NQi0PoAMdMf0x8x0x8x0w8x+kgx+kjUMdQx0fiSxwXy4RsC0NMf0//TH9Eh8uDQDNdMIPkAWLry4NJQs6D4I7vy4NEB+wQIpMjLH3DPC//PkAAAAALJB8j6UlAG+gJQBPoCEs4B+gLOzMzOye1UAAhTS0sJAOSOaDDtRND6SPoA+gDWH/oA1v/U1CLQ+gAx0x8x0x8x0x8x0w8x+kgx+kjUMdQx0fiSxwXy4RsB0NMf0//THzHR8uDQyMsfcM8L/8+QAAAAAskIyPpSUAf6AlAF+gITzgH6As7MEszOye1U4IQPAccA8vQCASAcHQIBSCIjAgEgHh8CASAgIQBttcddqJofSQY/QB9ABjpj+umaH0AaY+Y6Y+Y6Y+Y6YeY/SQY/SQY6hjqGOiJX0pgAGGASRg4cUAARtzS9qJofSQYQAGu3rp2omhqa6ZoaY/p/+mP6IHofQAY6Y/pj5jpj5jph5j9JBj9JBjqGOoY6JHJEdBJGDhxIJhAAL7S+HaiaH0kGP0AGP0AGOmPmP0AGOuF/8AIBICQlAgEgLS4AV7HVu1E0PpIMfoAMfoAMdMfMfoAMdP/MdQx1DH0BYEBC/QKb6GSMHDh+gDRgAgEgJicCA5m4KCkB2a8W9qJofSQY/QAY/QAY6Y+Y/QBrpmh9ABjpj5jpj5jpj5jph5j9JBj9JBjqahjov/wUNsGDwXhBUam/+G3nP3Ya609uHQxPc3i+wXmp0qn81UtlhfHnRMW6I6sbW6N7dGRnwgFnZKCZ+gvBg8AqAG2i9qJofSQY/QB9AGmP/QBrpmh9AGmPmOmPmOmPmOmHmP0kGP0kGOoY6hjokl3KkOAAYYBIuHFAAH+k9qJoa6ZofQAY6Y+Y6Y+Y6Y+Y6YeY/SQY/SQY6moY6PwUZGfCIQn9KQl9KWSA5GfCaGZmfItkZ8UAIGX/56hAAdCC8LdqfKFTwkZxZYM1u9CJRjUP/GIfocUW5xIwldT/1cWBi3RFVDS1RPToyM+EAs7JQTP0F4MHgvDugP0vHgNIDiKCNjWW7nUte7J/UHdrlQhqAnkYlnWSPosTmMjPhALOyUEz9BeDBysBbILwyQRvejetDqfO5zNVmE+lQomC+LN8j3vOyR96xxp80QSJyM+EAs7JQTP0F8jPhAL0AMlVAiwAwE5vbi10cmFuc2ZlcmFibGUgMToxIHN0YWtlLXJlY2VpcHQgZm9yIGEgYm9uZGVkIGR1Y2tkYi1wMnAgbm9kZSAoc2xhc2hhYmxlIGFjY291bnRhYmlsaXR5IGJvbmQpLgAnsId7UTQ1DHXTNDTH9P/MdMfMdGAAgbCve1E0NdM0PoAMdMfMdMfMdMfMdMPMfpIMfpIMdTUMdH4KMjPhEIT+lIS+lLJAcjPhNDMzPkWyM+KAEDL/89Qg",
+        "verify": {
+          "codeHash": "fec61f627fc1a854cc249f9dd1a36615733162990b30d4bc409f387838d1cb24",
+          "url": null,
+          "verified": false,
+          "alreadyVerified": false,
+          "failed": true
+        },
+        "opcodes": [
+          {
+            "hex": "0x534b4b01",
+            "name": "OP_STAKE_DEPOSIT",
+            "value": 1397443329,
+            "desc": "owner bonds stake; mints 1:1 transfer-locked receipt jetton"
+          },
+          {
+            "hex": "0x534b4b02",
+            "name": "OP_STAKE_UNBOND",
+            "value": 1397443330,
+            "desc": "begin cooldown; stake stays slashable during unbonding"
+          },
+          {
+            "hex": "0x534b4b03",
+            "name": "OP_STAKE_WITHDRAW",
+            "value": 1397443331,
+            "desc": "withdraw after cooldown; burns receipts"
+          },
+          {
+            "hex": "0x534b4b05",
+            "name": "OP_STAKE_SLASH",
+            "value": 1397443333,
+            "desc": "slasher-only; graduated slash + split (challenger/redundancy/burn/treasury)"
+          },
+          {
+            "hex": "0x534b4b07",
+            "name": "OP_STAKE_ANNOUNCE_UPGRADE",
+            "value": 1397443335,
+            "desc": "start timelocked SETCODE (records pending code hash + clock)"
+          },
+          {
+            "hex": "0x534b4b08",
+            "name": "OP_STAKE_APPLY_UPGRADE",
+            "value": 1397443336,
+            "desc": "apply SETCODE after timelock; code hash must match announced"
+          },
+          {
+            "hex": "0x534b4b09",
+            "name": "OP_STAKE_CANCEL_UPGRADE",
+            "value": 1397443337,
+            "desc": "cancel a pending upgrade"
+          }
+        ]
+      },
+      {
+        "name": "StakeReceiptWallet",
+        "role": "Per-holder TEP-74-shaped but NON-transferable stake-receipt jetton (Duckton). A slashable accountability bond, not a liquid position — outgoing transfers are hard-locked for the whole bond lifetime so a host can't sell it and dodge slashing.",
+        "doc": "§8.5",
+        "upgradeable": "no (minimal surface; holds no TON, no admin)",
+        "storage": [
+          [
+            "status",
+            "uint4",
+            "bit 0 = transfers locked (always set)"
+          ],
+          [
+            "balance",
+            "coins",
+            "1:1 with bonded TON"
+          ],
+          [
+            "owner",
+            "address",
+            "node operator"
+          ],
+          [
+            "master",
+            "address",
+            "the minting StakeVault"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_wallet_data",
+            "TEP-74 { balance, owner, minter, code }"
+          ],
+          [
+            "is_transfer_locked",
+            "bool (always true)"
+          ],
+          [
+            "get_status",
+            "int"
+          ]
+        ],
+        "guards": [
+          "JettonTransfer (0x0f8a7ea5) always throws RECEIPT_LOCKED (138)",
+          "only master may credit (mint) or burn; balance never negative"
+        ],
+        "testnetAddress": null,
+        "codeHash": "13a38522adbbb9681bf630d186efbddb590025b992a562c7e66514472aaf1871",
+        "bocBytes": 420,
+        "codeBoc64": "te6ccgECDAEAAS4AART/APSkE/S88sgLAQIBYgIDAfjQ+JGRMOAg1ywgvGoozI5fMe1E0NYD+gAg+kj6SDD4kiHHBfLghQXTP/oA+kgx+kgx+gBRYqAHyM5QB/oCFM7J7VQkwgCOJMjPkc2LQnLLP1j6AhT6Us7JyM+FCBP6UgH6AnHPC2rMyXH7AJJfBuLg1ywgfFP1LJPywIrgBAIBIAYHAYyJ1yeOLjHtRNDWA/oAIPpIMfpIMPiSxwXy4IUD0z8x+gAwoSDC//LgiAHIzgH6As7J7VTg1ywimlpYBDGRMOCEDwHHAPL0BQAIU0tLBgIBIAgJAgFICgsAHbuaXtRNDTAzH6ADH6SDCAAju7Au1E0NMDMfoA+kj6SDD4KoABG1Qj2omhrhYHAAGbawHaiaGuFgbjYYADA=",
+        "verify": null,
+        "opcodes": []
+      },
+      {
+        "name": "JobEscrow",
+        "role": "Per-job non-custodial escrow with HTLC-style release keyed on the quorum result hash. Requester locks max bid B at deploy; settle is gated on the agreed hash and bounded by B (remainder refunded); refund-on-timeout returns everything. No platform key can take custody.",
+        "doc": "§4.2 · §6.2 · §13",
+        "upgradeable": "no — a live HTLC's guarantees can't be rewritten mid-flight",
+        "storage": [
+          [
+            "requester",
+            "address",
+            "funds B, receives refunds"
+          ],
+          [
+            "arbiter",
+            "address",
+            "quorum oracle/coordinator authorized to settle"
+          ],
+          [
+            "escrowAmount",
+            "coins",
+            "B, locked up front"
+          ],
+          [
+            "deadline",
+            "uint32",
+            "refund-on-timeout (unix secs)"
+          ],
+          [
+            "settled",
+            "bool",
+            "one-shot"
+          ],
+          [
+            "terms",
+            "^EscrowTerms",
+            "treasury, expectedHash (HTLC lock), paramsVersion"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_escrow_state",
+            "{ escrowAmount, deadline, settled, paramsVersion }"
+          ],
+          [
+            "get_expected_hash",
+            "int (the HTLC lock = quorum result hash)"
+          ],
+          [
+            "get_params_version",
+            "int"
+          ],
+          [
+            "get_requester",
+            "address"
+          ]
+        ],
+        "guards": [
+          "settle: arbiter-only, once, resultHash == terms.expectedHash",
+          "winnerAmount + platformFee + Σparticipants ≤ escrowAmount",
+          "refund: permissionless once now ≥ deadline → entire balance to requester"
+        ],
+        "testnetAddress": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+        "codeHash": "28f676708b3b16d39c5a5c926b3cda39d95c4c357ce7e783220bbff98c6fe001",
+        "bocBytes": 1148,
+        "codeBoc64": "te6ccgECFgEAA1EAART/APSkE/S88sgLAQIBYgIDBPbQ+JGOUdMfMdcLH4IQRVNDBbqOQe1E0PpI+kj6ANYg1PQF+JIhgQEL9ApvoZP6ANGSMHDi+JL4lxKgyAH6AgKBAQv0QQXI+lIU+lJY+gLOzPQAye1U4OAg1ywiKpoYFOMC1ywiKpoYHOMC1ywiKpoYJOMC1ywiKpoYBDEEBQYHAgEgDA0C/DHtRND6SPpI+gDWH9IAINdM+JImxwXy4N4C8tDgAdD6SNP/0//THzHRCNM/0//6SPoA+gD0BPQFUFe68uDfJcj0APkWUA268uEZUxnHBfLRGFMUgQEL9ApvoTHy4RlwUwOBAQv0gm+lkIroXwM1UwugUAWgKLvy4OIpyPpSGQgJAHZb7UTQ+kj6SPoA0x/SAAHy0OD4IyK+8uDhJMj6UhT6Ulj6Assfz4POye1UyM+FCPpScM8LbsmBAIL7AAC6Me1E0AHTP/pIMAL6SPpI+gDWINT0BVNwgQEL9Ary4OL6ANEgwgDy4OJSgoEBC/RZMAbI+lIV+lJQA/oCzswS9ADJ7VTIz4WIE/pSWPoCghBFU0MFzwuKyz/JcfsAABSRMOCEDwHHAPL0AEwCpCDBIfLhGlMogQEL9ApvoTHy4RkB+gDRE6BRFYEBC/R0b6UQNAL++lJQB/oCFc7PgxPOye1Uggr68IBw+wIhwgCOG8jPhYgV+lIB+gKCEEVTQwXPC4ohzws/yXH7AJI0MOIkwgCOHMjPhYgT+lJQBPoCghBFU0MFzwuKIc8LP8lx+wCSMjPiIoEBC/SCb6WQiuhbMsjPhYj6UoIQRVNDBc8Ljss/yQoLAGJSAvoA0SDCAI4byM+FiBP6Ulj6AoIQRVNDBc8LiiLPCz/JcfsAkjAx4iOBAQv0dG+lAAiDBvsAAgFIDg8CAUgQEQAptnsdqJoa6ZofSQY6f/p/5jpj5jowACm2Gd2omhrpmh9JBjp/5jp/5jpj+jACASASEwAptD29qJoa6ZofSQY6f+Y6f/pj5jowAgFmFBUAQbKdO1E0PpIMfpIMfoA0x/SANdM0PpIMdP/MdP/MdMf0YAAPp73aiaH0kGEARaat2omh9JBj9JBj9ABjpkBjqGPoCwICF+gU30MkYOHD9AGj",
+        "verify": {
+          "codeHash": "60c9f21aa3146cfa0a77b28098865118080b67f9cdf700f7c5dedc984bd77e71",
+          "url": "https://verifier.ton.org/0QAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjjV9?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x45534300",
+            "name": "OP_ESCROW_TOPUP",
+            "value": 1163084544,
+            "desc": "fund a freshly-deployed escrow"
+          },
+          {
+            "hex": "0x45534302",
+            "name": "OP_ESCROW_SETTLE",
+            "value": 1163084546,
+            "desc": "arbiter-only HTLC release keyed on quorum result hash; ≤ escrow B"
+          },
+          {
+            "hex": "0x45534303",
+            "name": "OP_ESCROW_REFUND",
+            "value": 1163084547,
+            "desc": "permissionless refund-on-timeout (entire balance → requester)"
+          }
+        ]
+      },
+      {
+        "name": "RecordAnchor",
+        "role": "Per-epoch Merkle-root anchor + dispute contract. Permissionless keepers anchor a per-epoch root chained to the previous one, gated by a stake-weighted threshold. Anyone can open a bonded dispute with an inclusion proof; an authority resolves it (upheld → bond returned + slash on the vault; rejected → bond forfeited).",
+        "doc": "§7 · §7.2 · §11",
+        "upgradeable": "authority-gated SETCODE (no timelock; only bonds + chain)",
+        "storage": [
+          [
+            "currentEpoch",
+            "uint32",
+            "last anchored epoch (0 = none)"
+          ],
+          [
+            "lastRoot",
+            "uint256",
+            "prev_root for the next epoch (chains history)"
+          ],
+          [
+            "nextDisputeId",
+            "uint32",
+            "dispute counter"
+          ],
+          [
+            "disputes",
+            "map<uint32,DisputeInfo>",
+            "open/resolved disputes"
+          ],
+          [
+            "config",
+            "^AnchorConfig",
+            "minStakeWeight, disputeBondMin, verdictAuthority, treasury"
+          ],
+          [
+            "codeVersion",
+            "uint32",
+            "monotonic (0 = original)"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_anchor_state",
+            "{ currentEpoch, lastRoot, nextDisputeId }"
+          ],
+          [
+            "verify_inclusion(leaf,root,proof)",
+            "bool"
+          ],
+          [
+            "compute_root(leaf,proof)",
+            "int"
+          ],
+          [
+            "get_dispute(id)",
+            "DisputeInfo? "
+          ],
+          [
+            "get_code_version",
+            "int"
+          ]
+        ],
+        "guards": [
+          "submit: epoch == currentEpoch+1, prevRoot == lastRoot, stakeWeight ≥ min",
+          "dispute requires value ≥ disputeBondMin and a valid inclusion proof",
+          "resolve: verdictAuthority-only; upheld → refund bond, rejected → forfeit to treasury"
+        ],
+        "testnetAddress": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+        "codeHash": "11f776bc4950de4fbef8ca2c247a8aa3ceb806676f90ea4abc8f909e14d1496e",
+        "bocBytes": 1112,
+        "codeBoc64": "te6ccgECFQEAAzYAART/APSkE/S88sgLAQIBYgIDAgLPBAUCASANDgTvPiRjlbTHzHTHwGCEEFOQwW6jkXXCx/tRNCBAUDXGPQEUzGAIPQOb6GOKvpI0x/T//oA0wEx0QPI+lISyx/L/wH6As+EgFBCgCD0QwHIzvQAzsntVJJfBeLgMOAg1ywiCnIYDOMC1ywiCnIYFOMC1ywiCnIYHOMCgBgcICQBtAHIy//5FnCTIm6zjiakIMEh8uD5AtDTANP/9ATRApjIy/8Sy//5FpkCyMv/Esv/+RbiWOgwMYADqMe1E0NMf0//WH/QE9AQg10zQ+gD6APpIMdTR0PpIMfpI+kgx0fiSxwXy4PqCCJiWgL7y4PwH0z8x0x/T/9P/+gAwIvLg+wmkI7ry4PFQB7ry4PBQZ77y4PJTU8jL/1BygCD0QwXIyx8Ty//O9AAS9ADOye1UANYx7UTQgQEg1xjTH/QEIPQE10zQ+gAx+gD6SDHUMdH4l7vy4PQF0z8x0x/T//QFUiiAIPQO8uD40//RUhjwAVAHuvLg8yOk+JL4lwHI+lITyx8Xy/8B+gLPhIBagCD0QwLIzhPLH/QAzsntVALcMe1E0IEBQNcY9AQg9AHXTND6ADH6ADH6SNTR+JJYxwXy4PYE0z8x0x/XCgBTE4Ag9A7y4PX6SNMf0//6ANMB0fLQ9ySRcZFy4iTI+lIUyx8Sy/8h+gISywFUIEeAIPRDBsjOFvQAE87J7VQB4w8KCwGoidcnjkYx7UTQgQFA1xj0BPQE1NcLHyHQ+gAx+gAx+kgx1NH4kgHQ+kgx+kgx+kjRxwXy4RsF10z7BASkA8jOEvQA9AASzMsfye1U4DCEDwHHAPL0DAA0M8jPhYgS+lIB+gKCEEFOQwXPC4rLH8lx+wAASDIC0PpI+kgx+kgx0cjPhYj6Ulj6AoIQQU5DBc8LissfyXH7AAAIQU5DBAIBIA8QAgFmExQAGbrNztRNDTH9P/1wsfgCASAREgAJtvJ+ADAAU7aQ3aiaECAoGuQ+gLAEHoHN9DLmDa2tra2uHD9JGmP6f/9AGmA6MCAQsAAjsId7UTQgQFA1yH0AfQB1wsfgAA2z2ES8AG6g",
+        "verify": {
+          "codeHash": "187743596e72426b5156e234fe4b12b7cf4887217fd99b249d024eb89f2270af",
+          "url": "https://verifier.ton.org/0QDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6G1Z?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x414e4301",
+            "name": "OP_ANCHOR_SUBMIT",
+            "value": 1095648001,
+            "desc": "permissionless keeper anchors epoch root (chained, stake-weighted)"
+          },
+          {
+            "hex": "0x414e4304",
+            "name": "OP_ANCHOR_UPGRADE_CODE",
+            "value": 1095648004,
+            "desc": "verdict-authority SETCODE (no timelock; holds only bonds+chain)"
+          }
+        ]
+      },
+      {
+        "name": "GlobalParams",
+        "role": "The single ecosystem-wide config contract (singleton). Holds the economic parameters every node/contract reads. Editable IN PLACE with a stable address (update_params mutates storage, bounds-validated on-chain) so others can hard-pin it; code is upgradable in place too.",
+        "doc": "§12 · §12.1",
+        "upgradeable": "admin-gated SETCODE (no timelock; no user funds)",
+        "storage": [
+          [
+            "admin",
+            "address",
+            "single key today; designed for multisig"
+          ],
+          [
+            "feeRecipient",
+            "address",
+            "platform fee sink"
+          ],
+          [
+            "params",
+            "^EcoParams",
+            "all bps + stake + windows + selection + weights"
+          ],
+          [
+            "blocklist",
+            "map<uint256,uint1>",
+            "governance blocklist (additive)"
+          ],
+          [
+            "paramsVersion",
+            "uint32",
+            "monotonic; bumped on every update"
+          ],
+          [
+            "codeVersion",
+            "uint32",
+            "monotonic; bumped on every SETCODE"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_params",
+            "{ admin, feeRecipient, params, paramsVersion }"
+          ],
+          [
+            "get_params_version",
+            "int"
+          ],
+          [
+            "get_code_version",
+            "int"
+          ],
+          [
+            "get_platform_fee_bps / get_participation_commission_bps / …",
+            "scalar policy reads"
+          ],
+          [
+            "get_blocklisted(subject)",
+            "bool"
+          ]
+        ],
+        "guards": [
+          "all mutators admin-only; validateEcoParams enforced on every update",
+          "slash split sums to 10000; unbondingSecs ≥ challengeWindowSecs",
+          "paramsVersion / codeVersion are contract-controlled (admin can't set directly)"
+        ],
+        "testnetAddress": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
+        "codeHash": "bc752b1f7ab0ffcd3705ce0255ab985e99849c1d2fee0378a9f5338c4be1b8a7",
+        "bocBytes": 2296,
+        "codeBoc64": "te6ccgECJAEABqwAART/APSkE/S88sgLAQIBYgIDBPbQ+JGRMOAg1ywiOoIIDOMC1ywiOoIIFI4cMe1E0PpI+JJYxwXy4QQB0z8x+kgwyPpSzsntVODXLCI6gggcjjYx7UTQ+kj6SNT0BPiSJccF8uEEBdM/MdP/1woAcXDjBMjLAAKDB/RDA8j6UhL6Usz0AM7J7VTgidcn4wIEBQYHAgEgDA0B+jHtRND6SPpIMdQx9ATTH/iSJMcF8uEEBNM/+kjXTCDQ0w/TD9MP0w/TD9MP0w/TD9MP0w/TD/oA+gD6APoA0x/TH9MH0wfTB9MH0wfTD9MP0w/TD9MfMdMf0wfRVhuBJxC78uEFERqBJxC78uEFEReBJxC78uEFERWBJxC7CAAIR1BBBQBoMe1E0PpI+kjU9ATWXzD4kiXHBfLhBAXTPzHXC//4IwXI+lIU+lISzPQAE84Sy//LH8ntVAKUidcn4wLXLCI6ggg0MY4zMO1E0PpI+kjU9ATWX9cL//iSJscF8uEE8uDQBMj6UhP6Usz0AM5wzwv/z5AAAAACye1U4IQPAccA8vQKCwH88uEFEROBJxC78uEFERGBJxC78uEFgScQu/LhBQ+BJxC78uEFD4EnELvy4QUPgScQu/LhBREQgQPou/LhBQ7CAPLhBQ/CAPLhBVCHoFAFoFADoIEnELry4QVRIb7y4QUhvvLhBVEivvLhBVAHvvLhBSDCAPLhBSO78uEFUjO+CQCc8uEFIr7y4QUgwgCTvsMAkltw4vLhBQWkB8j6UhP6UswU9AAkzwsfFc7J7VTIz48YAASCEGdwdXDPC/dwzwthFMs/Essfyw8B+gLJcPsAAAhHUEEEAP4x7UTQ+kj6SNT0BNYf0x/TH9P/1wsf+JIpxwXy4QQh8uDQCdM/10wg+QBQA7ry4NJRkqD4I7vy4NEg+wQCpAfI+lIW+lIUzBL0AM4jzwsfEssfcM8L/8+QAAAAAsntVPkAyM+PGAAEghBncHVxzwv3cM8LYRPLP8sfy//JcPsAAgEgDg8CASAcHQIBIBARAgEgFhcA77QNPaiaH0kGP0kGOp6Ahjpj5jpj5jpj5jp/5jpj5jo6GmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmP0AGP0AGP0AGP0AGOmPmOmPmOmDmOmDmOmDmOmDmOmDmOmHmOmHmOmHmOmHmOmP6Y+Y6YOY6MAIBIBITAO+yRTtRND6SDH6SDHU9AQx0x8x0x8x0x8x0/8x0x8x0dDTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzH6ADH6ADH6ADH6ADHTHzHTHzHTBzHTBzHTBzHTBzHTBzHTDzHTDzHTDzHTDzHTHzHTHzHTB9GACASAUFQAlrGd2omh9JBj9JBjqGPoA64WPwADvrpj2omh9JBj9JBjqegIY6Y+Y6Y+Y6Y+Y6f+Y6Y+Y6Ohph5jph5jph+mHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmP0AGP0AGP0AGP0AGOmPmOmPmOmDmOmDmOmDmOmDmOmDmOmHmOmHmOmHmOmHmOmPmOmPmOmDmOjAAgEgGBkA77dYPaiaH0kGP0kGOp6Ahjpj5jpj5jpj5jp/5jpj5jo6GmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmP0AGP0AGP0AGP0AGOmPmOmPmOmDmOmDmOmDmOmDmOmDmOmHmOmHmOmHmOmH6Y+Y6Y+Y6YOY6MADvs707UTQ+kgx+kgx1PQEMdMfMdMfMdMfMdP/MdMfMdHQ0w/TDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzHTDzH6ADH6ADH6ADH6ADHTHzHTHzHTBzHTBzHTBzHTBzHTBzHTDzHTDzHTDzHTDzHTHzHTHzHTBzHRgAgEgGhsAF6+ddqJofSQY/SQYQABLrrp2omh9JBj9JBjqGPoA6Y+Y6Y/pj+n/64WPkEmpAdBJGThxCUACAVgeHwIBICIjACuwh3tRND6SDH6SDHUMfQB0x8x1wsfgAgFYICEAEKn27UTQ+kgwADypV+1E0PpIMfpIMdQx9AWDB/QOb6GSMHDh0wDRwAEAH7Q53aiaH0kfSRqegDrhY/AA77dl/aiaH0kGP0kGOp6Ahjpj5jpj5jpj5jp/5jpj5jo6GmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmOmHmP0AGP0AGP0AGP0AGOmPmOmPmOmDmOmDmOmDmOmDmOmDmOmHmOmHmOmHmOmHmOmPmOmP6YOY6MA==",
+        "verify": {
+          "codeHash": "88cc70a4101f804fad9c053cda8e67fa986367ae4218f96f512fe13a844dd98e",
+          "url": "https://verifier.ton.org/0QB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tg5E?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x47504101",
+            "name": "OP_UPDATE_PARAMS",
+            "value": 1196441857,
+            "desc": "admin-only; bounds-validated on-chain; bumps paramsVersion"
+          },
+          {
+            "hex": "0x47504102",
+            "name": "OP_UPDATE_ADMIN",
+            "value": 1196441858,
+            "desc": "admin rotation (single-key → multisig handoff)"
+          },
+          {
+            "hex": "0x47504104",
+            "name": "OP_UPGRADE_CODE",
+            "value": 1196441860,
+            "desc": "admin-only in-place SETCODE (no timelock; no user funds)"
+          }
+        ]
+      }
+    ],
+    "deployments": {
+      "StakeVault": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+      "JobEscrow": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+      "RecordAnchor": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+      "GlobalParams": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB"
+    },
+    "deployLogs": {
+      "stake": [
+        "Deployed StakeVault to kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+        "owner       = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "min stake   = 0",
+        "receipt for = kQBQUNpbA-k3sNKPot4DT0tYd4kX4hUXgv0eHZlW5deT06HA"
+      ],
+      "anchor": [
+        "Deployed RecordAnchor to kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+        "verdict authority = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "min stake weight  = 100000000000"
+      ],
+      "escrow": [
+        "Deployed JobEscrow to kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+        "escrow amount = 50000000",
+        "deadline      = 1781430809"
+      ],
+      "globalParams": [
+        "Deployed GlobalParams to kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
+        "admin         = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "fee recipient = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422"
+      ]
+    },
+    "e2e": [
+      "wallet=kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+      "globalparams_update::PASS::fee_bps=250::addr_stable=true",
+      "globalparams_blocklist::PASS::blocked=true::cleared=false",
+      "stake_deposit::staked=50000000::eligible=true",
+      "jetton::minted=50000000::staked=50000000::locked=true",
+      "duckton_metadata::PASS::name=Duckton::symbol=DUCKTON::decimals=9",
+      "escrow_settle::settled=true",
+      "anchor_submit::epoch=1::prev_epoch=0",
+      "inclusion::verified=true",
+      "multileaf_inclusion::PASS::epoch=2::included=true::tampered_rejected=true",
+      "dispute::id=0::status=1",
+      "done"
+    ],
+    "gas": [
+      {
+        "op": "StakeSlash",
+        "minGas": 1795,
+        "maxGas": 10634,
+        "avgGas": 10361,
+        "samples": 135
+      },
+      {
+        "op": "StakeDeposit",
+        "minGas": 1013,
+        "maxGas": 5672,
+        "avgGas": 5629,
+        "samples": 212
+      },
+      {
+        "op": "EscrowSettle",
+        "minGas": 1013,
+        "maxGas": 13226,
+        "avgGas": 4650,
+        "samples": 74
+      },
+      {
+        "op": "StakeKeeperWithdraw",
+        "minGas": 1176,
+        "maxGas": 7764,
+        "avgGas": 4605,
+        "samples": 4
+      },
+      {
+        "op": "ProvideWalletAddress",
+        "minGas": 3933,
+        "maxGas": 4459,
+        "avgGas": 4196,
+        "samples": 2
+      },
+      {
+        "op": "AnchorOpenDispute",
+        "minGas": 1438,
+        "maxGas": 5697,
+        "avgGas": 4009,
+        "samples": 7
+      },
+      {
+        "op": "UpdateParams",
+        "minGas": 945,
+        "maxGas": 6164,
+        "avgGas": 3825,
+        "samples": 95
+      },
+      {
+        "op": "AnchorResolveDispute",
+        "minGas": 1477,
+        "maxGas": 5505,
+        "avgGas": 3395,
+        "samples": 4
+      },
+      {
+        "op": "StakeWithdraw",
+        "minGas": 1145,
+        "maxGas": 6292,
+        "avgGas": 2608,
+        "samples": 4
+      },
+      {
+        "op": "SetBlocklisted",
+        "minGas": 985,
+        "maxGas": 2540,
+        "avgGas": 2189,
+        "samples": 5
+      },
+      {
+        "op": "AnchorSubmitRoot",
+        "minGas": 1503,
+        "maxGas": 2282,
+        "avgGas": 2091,
+        "samples": 11
+      },
+      {
+        "op": "ReceiptBurn",
+        "minGas": 1262,
+        "maxGas": 2079,
+        "avgGas": 2069,
+        "samples": 137
+      },
+      {
+        "op": "JettonInternalTransfer",
+        "minGas": 897,
+        "maxGas": 3831,
+        "avgGas": 1907,
+        "samples": 212
+      },
+      {
+        "op": "StakeRequestUnbond",
+        "minGas": 936,
+        "maxGas": 2056,
+        "avgGas": 1601,
+        "samples": 73
+      },
+      {
+        "op": "EscrowRefund",
+        "minGas": 892,
+        "maxGas": 2903,
+        "avgGas": 1594,
+        "samples": 3
+      },
+      {
+        "op": "UpdateAdmin",
+        "minGas": 840,
+        "maxGas": 1507,
+        "avgGas": 1174,
+        "samples": 2
+      },
+      {
+        "op": "ReceiptTopUp",
+        "minGas": 914,
+        "maxGas": 1072,
+        "avgGas": 993,
+        "samples": 2
+      },
+      {
+        "op": "0xdeadbeef",
+        "minGas": 729,
+        "maxGas": 1195,
+        "avgGas": 925,
+        "samples": 5
+      },
+      {
+        "op": "EscrowTopUp",
+        "minGas": 606,
+        "maxGas": 606,
+        "avgGas": 606,
+        "samples": 1
+      },
+      {
+        "op": "JettonTransfer",
+        "minGas": 592,
+        "maxGas": 592,
+        "avgGas": 592,
+        "samples": 3
+      },
+      {
+        "op": "TakeWalletAddress",
+        "minGas": 309,
+        "maxGas": 309,
+        "avgGas": 309,
+        "samples": 2
+      },
+      {
+        "op": "JettonTransferNotification",
+        "minGas": 309,
+        "maxGas": 309,
+        "avgGas": 309,
+        "samples": 1
+      }
+    ],
+    "economicsToml": "# Generated by scripts/testnet_e2e.sh — node [economics] snippet for the live\n# testnet. Point your node config at it via P2P_CONFIG, or merge the keys.\n#\n# crates/config's [economics.<net>.contracts] block is now wired (the live TON\n# client reads it via p2p_settlement::resolve_ton_wiring + economics.guard_mainnet),\n# so the deployed addresses are recorded directly below for the active network.\n[economics]\nenabled         = true\nsettlement      = \"onchain\"\ncustody         = \"noncustodial\"\naccounting_unit = \"ton\"\nchain           = \"ton\"\nnetwork         = \"testnet\"\ndefault_payment = \"paid\"\nfee_recipient   = \"kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422\"\n\n[economics.testnet.contracts]\nstake_vault   = \"kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K\"\njob_escrow    = \"kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4\"\nrecord_anchor = \"kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc\"\nglobal_params = \"kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB\"\n",
+    "canonical": {
+      "source": "docs/TESTNET.md",
+      "globalParams": "kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna",
+      "stakeVault": "kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp",
+      "ducktonHolder": "kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r",
+      "recordAnchor": "kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3",
+      "jobEscrow": "0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23",
+      "setcode": {
+        "address": "kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF",
+        "from": "GlobalParams (codeVersion 1)",
+        "to": "GlobalParamsV2 (codeVersion 2)",
+        "addressStable": true,
+        "newGetter": "get_surcharge_bps",
+        "newGetterValue": 500,
+        "note": "SETCODE swapped code in place — address unchanged, paramsVersion/fee/admin preserved."
+      },
+      "duckton": {
+        "name": "Duckton",
+        "symbol": "DUCKTON",
+        "decimals": 9,
+        "balance": "0.2",
+        "transferLocked": true
+      }
+    },
+    "deployFlow": {
+      "build": [
+        "acton build",
+        "acton test",
+        "acton test --coverage"
+      ],
+      "deploy": [
+        "STAKE_BINDING_HASH=0x… acton script scripts/deploy_stake.tolk --net testnet",
+        "ANCHOR_BOND_MIN=100000000 acton script scripts/deploy_anchor.tolk --net testnet",
+        "ESCROW_AMOUNT=300000000 ESCROW_EXPECTED_HASH=0x… acton script scripts/deploy_escrow.tolk --net testnet",
+        "GP_FEE_RECIPIENT=<addr> acton script scripts/deploy_global_params.tolk --net testnet"
+      ],
+      "verify": [
+        "acton verify GlobalParams --address <addr> --net testnet",
+        "acton verify RecordAnchor --address <addr> --net testnet",
+        "acton verify JobEscrow --address <addr> --net testnet"
+      ],
+      "live": "cargo test -p p2p-settlement --features ton-live --test testnet_live -- --nocapture"
+    }
+  },
+  "transport": {
+    "compression": {
+      "algorithm": "none",
+      "level": 3,
+      "min_size_bytes": 65536
+    },
+    "quic": {
+      "bdp": {
+        "bandwidth_mbps": 1000,
+        "enabled": false,
+        "rtt_ms": 50
+      },
+      "congestion": "cubic",
+      "connection_receive_window_bytes": null,
+      "enable_0rtt": false,
+      "gro": true,
+      "gso": true,
+      "max_concurrent_uni_streams": 256,
+      "pacing": true,
+      "send_window_bytes": 67108864,
+      "session_ticket_lifetime_secs": 43200,
+      "stream_receive_window_bytes": null
+    },
+    "result": {
+      "chunk_bytes": null,
+      "parallel_min_bytes": 1048576,
+      "parallelism": 1
+    },
+    "bench": {
+      "rows": 80000,
+      "sweep": [
+        {
+          "parallelism": 1,
+          "rowsPerSec": 50979,
+          "mbPerSec": 3.7,
+          "p50Ms": 4.851
+        },
+        {
+          "parallelism": 2,
+          "rowsPerSec": 115802,
+          "mbPerSec": 8.3,
+          "p50Ms": 4.68
+        },
+        {
+          "parallelism": 4,
+          "rowsPerSec": 115807,
+          "mbPerSec": 8.3,
+          "p50Ms": 4.661
+        },
+        {
+          "parallelism": 8,
+          "rowsPerSec": 116143,
+          "mbPerSec": 8.3,
+          "p50Ms": 4.616
+        }
+      ],
+      "best": {
+        "parallelism": 2,
+        "rowsPerSec": 115802,
+        "mbPerSec": 8.3,
+        "p50Ms": 4.68
+      },
+      "command": "cargo test -p p2p-node --test benches -- --nocapture",
+      "envKnobs": [
+        "P2P_BENCH_ROWS",
+        "P2P_BENCH_PARALLELISM",
+        "P2P_BENCH_COMPRESSION",
+        "P2P_BENCH_CONGESTION"
+      ]
+    }
+  },
+  "trust": {
+    "bootstrapTrust": 0.1,
+    "canonical": {
+      "columns": [
+        "region",
+        "orders",
+        "gmv"
+      ],
+      "hash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
+      "orderIndependent": true,
+      "reorderedHash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
+      "rows": [
+        [
+          "emea",
+          "184233",
+          "2481002.5"
+        ],
+        [
+          "amer",
+          "201980",
+          "3120550"
+        ],
+        [
+          "apac",
+          "98120",
+          "1044980.75"
+        ]
+      ]
+    },
+    "formula": "effective_trust = gate(level ≥ min_level) · clamp(α·R + β·age + γ·voucher + δ·stake − penalties) + exploration",
+    "halfLifeSecs": 604800,
+    "minTrust": 0,
+    "quorum": {
+      "agreedHash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
+      "agreement": 3,
+      "hashes": [
+        "h(A)",
+        "h(A)",
+        "h(A')",
+        "h(divergent)"
+      ],
+      "quorum": 3,
+      "reached": true
+    },
+    "weights": {
+      "alpha": 0.7,
+      "beta": 0.1,
+      "delta": 0.1,
+      "gamma": 0.1
+    }
+  },
+  "workers": [
+    {
+      "ageFactor": 1,
+      "alias": "frost-owl",
+      "attestation": "L2",
+      "behavior": "honest",
+      "correct": 23,
+      "delayMs": 12,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:4f66840d80d51d45e0ac8e64472c9e2bc5bd23073f21210fa58914a0c9dfb631",
+      "jobsParticipated": 23,
+      "maxJobs": 12,
+      "observations": 23,
+      "online": true,
+      "p50LatencyMs": 14,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7585805251948495,
+      "soft": 0.7634733583234409,
+      "stakeFactor": 0.7246699068704621,
+      "stakeNanoton": "4200000000000",
+      "stakeTon": 4200,
+      "successRate": 1,
+      "totalMemBytes": 68719476736,
+      "totalThreads": 32,
+      "trust": 0.7634733583234409,
+      "voucherTrust": 0.6,
+      "wallet": "0:0d629215da7bdabfcadfcc253065516ff1dc6193015513e9f15da700fdd5f2ca"
+    },
+    {
+      "ageFactor": 1,
+      "alias": "harbor-vole",
+      "attestation": "L2",
+      "behavior": "honest",
+      "correct": 24,
+      "delayMs": 22,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:0269387caa4ec25f71099c277f7e274fb44b851589692b9d9608fcf08439b37d",
+      "jobsParticipated": 24,
+      "maxJobs": 10,
+      "observations": 24,
+      "online": true,
+      "p50LatencyMs": 23,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7663002270926939,
+      "soft": 0.7447129066820869,
+      "stakeFactor": 0.6830274771720122,
+      "stakeNanoton": "2600000000000",
+      "stakeTon": 2600,
+      "successRate": 1,
+      "totalMemBytes": 103079215104,
+      "totalThreads": 40,
+      "trust": 0.7447129066820869,
+      "voucherTrust": 0.4,
+      "wallet": "0:319ad1dba1e3ab7c694aa5cc8125b4b7cc024905eddc6ad298c889bb4c1e66f3"
+    },
+    {
+      "ageFactor": 1,
+      "alias": "tidal-fox",
+      "attestation": "L1",
+      "behavior": "honest",
+      "correct": 24,
+      "delayMs": 30,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:2811c38070632b05fc63be96a560487f360988d4f369548282beab32a030e865",
+      "jobsParticipated": 24,
+      "maxJobs": 6,
+      "observations": 24,
+      "online": true,
+      "p50LatencyMs": 32,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7663002270926939,
+      "soft": 0.7199377176306906,
+      "stakeFactor": 0.6352755866580494,
+      "stakeNanoton": "1500000000000",
+      "stakeTon": 1500,
+      "successRate": 1,
+      "totalMemBytes": 34359738368,
+      "totalThreads": 16,
+      "trust": 0.7199377176306906,
+      "voucherTrust": 0.2,
+      "wallet": "0:a0fe3895ee969c3adf818b1fb8130c64a32b9289126c3a42dcdc39ee1d4a0b02"
+    },
+    {
+      "ageFactor": 1,
+      "alias": "amber-mole",
+      "attestation": "L1",
+      "behavior": "honest",
+      "correct": 24,
+      "delayMs": 45,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:6d33e3bde011e29e4e200dc8f8b1795dcb4781770b53916732daca6d7f5488eb",
+      "jobsParticipated": 24,
+      "maxJobs": 4,
+      "observations": 24,
+      "online": true,
+      "p50LatencyMs": 46,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7663002270926939,
+      "soft": 0.6944827588456032,
+      "stakeFactor": 0.580725998807176,
+      "stakeNanoton": "800000000000",
+      "stakeTon": 800,
+      "successRate": 1,
+      "totalMemBytes": 25769803776,
+      "totalThreads": 12,
+      "trust": 0.6944827588456032,
+      "voucherTrust": 0,
+      "wallet": "0:2b9ccf697439f1a1c3b31dcce03e1c6a1e718ac9e42b8389193b6f12e9ce3181"
+    },
+    {
+      "ageFactor": 1,
+      "alias": "pine-marten",
+      "attestation": "L0",
+      "behavior": "honest",
+      "correct": 23,
+      "delayMs": 60,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:689d6458267ecdd81f3be3480da574265582c253b6ccbb9ce08c85acf33c5327",
+      "jobsParticipated": 23,
+      "maxJobs": 4,
+      "observations": 23,
+      "online": true,
+      "p50LatencyMs": 61,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7585805251948495,
+      "soft": 0.680577654491414,
+      "stakeFactor": 0.49571286855019464,
+      "stakeNanoton": "300000000000",
+      "stakeTon": 300,
+      "successRate": 1,
+      "totalMemBytes": 17179869184,
+      "totalThreads": 8,
+      "trust": 0.680577654491414,
+      "voucherTrust": 0,
+      "wallet": "0:f4f7850bdd67a86aa3fbb4cb1eba9db51dc78e7fd77a9ce6d5e2b92531359512"
+    },
+    {
+      "ageFactor": 1,
+      "alias": "slate-heron",
+      "attestation": "L0",
+      "behavior": "honest",
+      "correct": 24,
+      "delayMs": 110,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 0,
+      "id": "b3:cdd3238c811636f90224aba837750223f11af8dcdd14f908dd9004e35eed20a1",
+      "jobsParticipated": 24,
+      "maxJobs": 2,
+      "observations": 24,
+      "online": true,
+      "p50LatencyMs": 111,
+      "penalty": 0,
+      "reputation": 1,
+      "reputationConfident": 0.7663002270926939,
+      "soft": 0.6780658301897392,
+      "stakeFactor": 0.416556712248536,
+      "stakeNanoton": "120000000000",
+      "stakeTon": 120,
+      "successRate": 1,
+      "totalMemBytes": 8589934592,
+      "totalThreads": 4,
+      "trust": 0.6780658301897392,
+      "voucherTrust": 0,
+      "wallet": "0:de47203d1b0d8bf6e691ef79602b9feba1bac976995264c602b6f5dc46aa3111"
+    },
+    {
+      "ageFactor": 0.05,
+      "alias": "rust-shrike",
+      "attestation": "L0",
+      "behavior": "cheat",
+      "correct": 0,
+      "delayMs": 18,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 1,
+      "id": "b3:89b9b379dfdd0b30e7bab25820a8ea3fad513f2c63a3292bd4e7bb99266295a2",
+      "jobsParticipated": 1,
+      "maxJobs": 2,
+      "observations": 1,
+      "online": true,
+      "p50LatencyMs": 0,
+      "penalty": 0.5,
+      "reputation": 0,
+      "reputationConfident": 0.045586062644636216,
+      "soft": 0,
+      "stakeFactor": 0,
+      "stakeNanoton": "0",
+      "stakeTon": 0,
+      "successRate": 0,
+      "totalMemBytes": 8589934592,
+      "totalThreads": 4,
+      "trust": 0,
+      "voucherTrust": 0,
+      "wallet": null
+    },
+    {
+      "ageFactor": 0.05,
+      "alias": "cobalt-stoat",
+      "attestation": "L0",
+      "behavior": "fail",
+      "correct": 0,
+      "delayMs": 25,
+      "engineVersion": "mock-1",
+      "explorationBonus": 0,
+      "faults": 1,
+      "id": "b3:b66c3384d929c12d59f7f9c8fe69e27cd32a6c65f667073f160bee3cafe2835d",
+      "jobsParticipated": 1,
+      "maxJobs": 1,
+      "observations": 1,
+      "online": false,
+      "p50LatencyMs": 0,
+      "penalty": 0.5,
+      "reputation": 0,
+      "reputationConfident": 0.045586062644636216,
+      "soft": 0,
+      "stakeFactor": 0,
+      "stakeNanoton": "0",
+      "stakeTon": 0,
+      "successRate": 0,
+      "totalMemBytes": 4294967296,
+      "totalThreads": 2,
+      "trust": 0,
+      "voucherTrust": 0,
+      "wallet": null
+    }
+  ]
+}
