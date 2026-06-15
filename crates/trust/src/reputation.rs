@@ -7,7 +7,7 @@
 //! implementation while production can use a persistent embedded store. All
 //! caches are **bounded** (per [`p2p_config::LimitsConfig`]) — no unbounded maps.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -22,12 +22,31 @@ pub fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
+/// A stable fingerprint of a receipt's *identity* — `(job_id, requester_id)`. A
+/// requester issues exactly one receipt per job, so within a given worker's
+/// history this uniquely identifies a receipt; it deliberately excludes the
+/// verdict/latency so an equivocating requester can't create two observations
+/// for the same job. Used to dedup replayed/re-presented receipts.
+pub(crate) fn receipt_fingerprint(r: &Receipt) -> u64 {
+    let mut h = blake3::Hasher::new();
+    h.update(b"duckdb-p2p-receipt-fp-v1");
+    h.update(r.job_id.0.as_bytes());
+    h.update(&[0]);
+    h.update(r.requester_id.0.as_bytes());
+    let bytes = h.finalize();
+    let mut x = [0u8; 8];
+    x.copy_from_slice(&bytes.as_bytes()[..8]);
+    u64::from_le_bytes(x)
+}
+
 /// One recorded outcome for a worker.
 #[derive(Debug, Clone, Copy)]
 struct Observation {
     ts: u64,
     correct: bool,
     weight: f64,
+    /// Fingerprint of the source receipt (for replay dedup + eviction cleanup).
+    fp: u64,
 }
 
 /// Pluggable reputation/receipt store.
@@ -91,6 +110,9 @@ pub trait TrustStore: Send + Sync {
 
 struct WorkerState {
     observations: VecDeque<Observation>,
+    /// Fingerprints of receipts already counted, for replay dedup. Kept in lock
+    /// step with `observations` (pruned on FIFO eviction) so it stays bounded.
+    seen: HashSet<u64>,
     voucher_trust: f64,
     penalty: f64,
 }
@@ -99,6 +121,7 @@ impl WorkerState {
     fn new() -> Self {
         Self {
             observations: VecDeque::new(),
+            seen: HashSet::new(),
             voucher_trust: 0.0,
             penalty: 0.0,
         }
@@ -179,14 +202,24 @@ impl TrustStore for InMemoryTrustStore {
         }
         let correct = receipt.verdict.is_correct();
         let cap = self.max_obs_per_worker;
+        let fp = receipt_fingerprint(receipt);
         self.with_worker(&receipt.worker_id, |state| {
+            // Replay defense: count each unique (job, requester) receipt at most
+            // once, so replaying/re-presenting a captured receipt cannot inflate
+            // a provider's reputation.
+            if !state.seen.insert(fp) {
+                return;
+            }
             state.observations.push_back(Observation {
                 ts: receipt.ts,
                 correct,
                 weight: 1.0,
+                fp,
             });
             while state.observations.len() > cap {
-                state.observations.pop_front();
+                if let Some(old) = state.observations.pop_front() {
+                    state.seen.remove(&old.fp);
+                }
             }
         });
     }
@@ -265,7 +298,14 @@ impl TrustStore for InMemoryTrustStore {
             inner.requester_order.push_back(requester.clone());
         }
         let hist = inner.requesters.get_mut(requester).expect("just inserted");
-        hist.push_back(Observation { ts, correct, weight: 1.0 });
+        // Requester observations are not receipt-deduped (no per-requester `seen`
+        // set); `fp` is unused here.
+        hist.push_back(Observation {
+            ts,
+            correct,
+            weight: 1.0,
+            fp: 0,
+        });
         while hist.len() > cap {
             hist.pop_front();
         }
@@ -424,6 +464,20 @@ mod tests {
             requester_pubkey: String::new(),
             sig: String::new(),
         }
+    }
+
+    #[test]
+    fn replayed_receipt_counts_once() {
+        // Recording the identical receipt multiple times must yield ONE
+        // observation (replay cannot inflate reputation). The `receipt()` helper
+        // uses a fresh JobId per call, so we reuse a single instance here.
+        let s = store();
+        let w = NodeId("b3:w".into());
+        let r = receipt("b3:w", Verdict::Correct, 100);
+        s.record(&r);
+        s.record(&r);
+        s.record(&r);
+        assert_eq!(s.observation_count(&w), 1);
     }
 
     #[test]

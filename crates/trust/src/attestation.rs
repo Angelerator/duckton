@@ -19,7 +19,7 @@
 
 use std::collections::HashSet;
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2p_proto::{Attestation, AttestationLevel};
 use serde::{Deserialize, Serialize};
 
@@ -189,7 +189,7 @@ impl AttestationVerifier for AllowlistVerifier {
         let vk = VerifyingKey::from_bytes(&authority_pub).map_err(|_| AttestError::BadEvidence)?;
         let sig_bytes = hex::decode(&evidence.sig_hex).map_err(|_| AttestError::BadEvidence)?;
         let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| AttestError::BadEvidence)?;
-        vk.verify(
+        vk.verify_strict(
             &evidence_signing_bytes(&evidence.measurement, nonce, bound_pub),
             &Signature::from_bytes(&sig_arr),
         )

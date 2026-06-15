@@ -23,6 +23,9 @@ fun main() {
     val owner = scripts.wallet("deployer");
 
     val slasher = env<address>("STAKE_SLASHER") ?? owner.address;
+    // D1: a DISTINCT upgrade authority, separated from the slasher (defaults to
+    // the slasher for a single-wallet demo; set to a multisig in production).
+    val upgradeAuthority = env<address>("STAKE_UPGRADE_AUTHORITY") ?? slasher;
     val treasury = env<address>("STAKE_TREASURY") ?? owner.address;
     val redundancy = env<address>("STAKE_REDUNDANCY") ?? owner.address;
     val minStake = env<coins>("STAKE_MIN") ?? ton("100");
@@ -46,6 +49,7 @@ fun main() {
         keeperGrace: keeperGrace,
         keeperBountyBps: (env<int>("STAKE_KEEPER_BOUNTY_BPS") ?? 200) as uint16,
         slasher: slasher,
+        upgradeAuthority: upgradeAuthority,
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -59,6 +63,7 @@ fun main() {
         config: cfg.toCell(),
         // Fresh deploy: original code, no pending timelocked upgrade (§8.6).
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
 
     val vault = StakeVault.fromStorage(storage);

@@ -22,7 +22,27 @@ type AllowedMessageToAnchor =
     | AnchorResolveDispute
     | AnchorUpgradeCode
 
-fun onBouncedMessage(_in: InMessageBounced) {}
+// A1 bounce-safety: a bond refund that the recipient could not accept bounces
+// back here. Recover the `disputeId` (first 32 bits after the 0xFFFFFFFF prefix
+// and the op tag) and RE-OPEN the dispute (status → 0) so the authority can
+// re-resolve it. The bounced TON returns to this (non-custodial) contract, so the
+// bond is never lost and accounting is restored.
+fun onBouncedMessage(in: InMessageBounced) {
+    var body = in.bouncedBody;
+    body.skipBouncedPrefix();          // drop 0xFFFFFFFF
+    val op = body.loadUint(32);
+    if (op == OP_ANCHOR_BOND_REFUND) {
+        val disputeId = body.loadUint(32) as uint32;
+        var storage = lazy AnchorStorage.load();
+        val found = storage.disputes.get(disputeId);
+        if (found.isFound) {
+            var dispute = found.loadValue();
+            dispute.status = 0;        // re-open: the verdict can be re-applied
+            storage.disputes.set(disputeId, dispute);
+            storage.save();
+        }
+    }
+}
 
 fun onInternalMessage(in: InMessage) {
     val msg = lazy AllowedMessageToAnchor.fromSlice(in.body);
@@ -32,6 +52,17 @@ fun onInternalMessage(in: InMessage) {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
 
+            // A3: gate submission to the authorized keeper (NOT permissionless).
+            // `stakeWeight` is still an unverified number — see AnchorConfig.keeper
+            // for the documented residual assumption.
+            val auth = cfg.auth.load();
+            assert (in.senderAddress == auth.keeper) throw ErrCode.NOT_ANCHOR_KEEPER;
+            // A5: enforce the dispute-bond floor at first use (the config is set at
+            // deploy and has no on-chain setter, so genesis is the validation point).
+            validateAnchorConfig(cfg);
+            // A6: refuse an empty / all-zero root. A zero root would otherwise pass
+            // the genesis prevRoot==0 chain check and anchor a meaningless epoch.
+            assert (msg.root != 0) throw ErrCode.ZERO_ROOT;
             // Epochs advance monotonically; each root chains to the previous one.
             assert (msg.epoch == storage.currentEpoch + 1) throw ErrCode.EPOCH_REGRESSION;
             assert (msg.prevRoot == storage.lastRoot) throw ErrCode.BAD_PREV_ROOT;
@@ -41,6 +72,9 @@ fun onInternalMessage(in: InMessage) {
 
             storage.currentEpoch = msg.epoch;
             storage.lastRoot = msg.root;
+            // A2: record the authoritative per-epoch root for later dispute
+            // verification (proofs verify against THIS, not an attacker root).
+            storage.roots.set(msg.epoch, msg.root);
             storage.save();
             // (A small keeper reward could be paid here from accumulated fees.)
         }
@@ -50,9 +84,17 @@ fun onInternalMessage(in: InMessage) {
             val cfg = storage.config.load();
             assert (in.valueCoins >= cfg.disputeBondMin) throw ErrCode.DISPUTE_BOND_TOO_LOW;
 
-            // The inclusion proof must reproduce the claimed (anchored) root.
+            // A2: look up the STORED root for this epoch. An epoch that was never
+            // anchored cannot be disputed (rejects forged / unknown-epoch claims).
+            val rootFound = storage.roots.get(msg.epoch);
+            assert (rootFound.isFound) throw ErrCode.UNKNOWN_EPOCH;
+            val anchoredRoot = rootFound.loadValue();
+
+            // The inclusion proof must reproduce the contract's OWN anchored root
+            // (A2) using the leaf-domain-separated fold (A7). Both the root and the
+            // leaf are thus constrained to real anchored state.
             val recomputed = computeRootFromProof(msg.leaf, msg.proof);
-            assert (recomputed == msg.claimedRoot) throw ErrCode.BAD_INCLUSION_PROOF;
+            assert (recomputed == anchoredRoot) throw ErrCode.BAD_INCLUSION_PROOF;
 
             val id = storage.nextDisputeId;
             storage.nextDisputeId = id + 1;
@@ -79,32 +121,45 @@ fun onInternalMessage(in: InMessage) {
             val found = storage.disputes.get(msg.disputeId);
             assert (found.isFound) throw ErrCode.NO_SUCH_DISPUTE;
             var dispute = found.loadValue();
+            // A1 [CRITICAL]: refund/payout exactly ONCE. Without this guard,
+            // re-sending the same disputeId re-pays the bond and drains other
+            // challengers' commingled bonds. Require the open (0) state, and set
+            // the terminal status + persist BEFORE sending the bond out.
+            assert (dispute.status == 0) throw ErrCode.DISPUTE_NOT_OPEN;
 
             if (msg.upheld) {
                 // Challenge upheld: return the bond to the challenger (the actual
                 // stake slash + challenger bounty is applied on the cheater's
                 // StakeVault via the slasher path).
                 dispute.status = 1;
-                refund(dispute.challenger, dispute.bond);
             } else {
                 // Frivolous challenge: forfeit the bond to the treasury.
                 dispute.status = 2;
-                refund(cfg.treasury, dispute.bond);
             }
+            // Persist the terminal status FIRST (effects before interactions), so a
+            // bounce / re-delivery cannot re-enter and double-pay.
             storage.disputes.set(msg.disputeId, dispute);
             storage.save();
+
+            if (msg.upheld) {
+                refundBond(dispute.challenger, dispute.bond, msg.disputeId);
+            } else {
+                refundBond(cfg.auth.load().treasury, dispute.bond, msg.disputeId);
+            }
         }
 
         // Authority-gated IN-PLACE code upgrade (§12.1). Replaces the CODE via
         // TVM `SETCODE` (postponed to after this run) at a STABLE address,
         // preserving the anchored epoch chain + open disputes, so the
         // anchor/dispute logic can evolve without orphaning history at a new
-        // address. Gated to `verdictAuthority` (the anchor's governance
-        // authority); `codeVersion` is bumped by the contract.
+        // address. D2: gated to `upgradeAuthority`, a DISTINCT authority from the
+        // dispute `verdictAuthority`, so a compromised dispute-resolver key cannot
+        // also swap the contract code (separation of duties; meant to be a
+        // multisig). `codeVersion` is bumped by the contract.
         AnchorUpgradeCode => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.verdictAuthority) throw ErrCode.NOT_VERDICT_AUTHORITY;
+            assert (in.senderAddress == cfg.auth.load().upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
             storage.save();
@@ -116,13 +171,19 @@ fun onInternalMessage(in: InMessage) {
     }
 }
 
-fun refund(to: address, amount: coins) {
+// A1 bounce-safety: send the bond BOUNCEABLE with an op-tagged body so a failed
+// delivery returns the funds here AND lets `onBouncedMessage` re-open the dispute.
+// `Only256BitsOfBody` keeps the bounce cheap while preserving op + disputeId in
+// the first 256 bounced bits. NOT IGNORE_ERRORS: we want a genuine bounce on
+// failure (so accounting can be restored), not a silent drop.
+fun refundBond(to: address, amount: coins, disputeId: int) {
     val m = createMessage({
-        bounce: BounceMode.NoBounce,
+        bounce: BounceMode.Only256BitsOfBody,
         dest: to,
         value: amount,
+        body: AnchorBondRefund { disputeId: disputeId as uint32 },
     });
-    m.send(SEND_MODE_PAY_FEES_SEPARATELY | SEND_MODE_IGNORE_ERRORS);
+    m.send(SEND_MODE_PAY_FEES_SEPARATELY);
 }
 
 // ---------------------------------------------------------------------------

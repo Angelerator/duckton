@@ -54,13 +54,22 @@ fun JobEscrow.sendEscrowSettle(
     winnerAmount: coins,
     platformFee: coins,
     participants: map<address, coins>,
+    candidates: map<address, uint1>,
     config: SendParams = {},
 ): SendResultList {
     val genericMsg = createMessage({
         bounce: config.bounce,
         value: config.value,
         dest: self.address,
-        body: EscrowSettle { queryId, resultHash, winner, winnerAmount, platformFee, participants },
+        body: EscrowSettle {
+            queryId,
+            resultHash,
+            winner,
+            winnerAmount,
+            platformFee,
+            participants,
+            candidates,
+        },
     });
     return net.send(from, genericMsg);
 }
@@ -95,6 +104,22 @@ fun JobEscrow.sendEscrowTopUp(
     return net.send(from, genericMsg);
 }
 
+fun JobEscrow.sendEscrowClaim(
+    self,
+    from: address,
+    queryId: uint64,
+    recipient: address,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: EscrowClaim { queryId, recipient },
+    });
+    return net.send(from, genericMsg);
+}
+
 /// Send message to the contract with a custom body cell
 fun JobEscrow.sendAny(self, from: address, body: cell, config: SendParams = {}): SendResultList {
     val genericMsg = createMessage({
@@ -110,6 +135,10 @@ fun JobEscrow.getEscrowState(self): EscrowState {
     return net.runGetMethod(self.address, "get_escrow_state");
 }
 
+fun JobEscrow.getParamsVersion(self): int {
+    return net.runGetMethod(self.address, "get_params_version");
+}
+
 fun JobEscrow.getRequester(self): address {
     return net.runGetMethod(self.address, "get_requester");
 }
@@ -118,6 +147,10 @@ fun JobEscrow.getExpectedHash(self): int {
     return net.runGetMethod(self.address, "get_expected_hash");
 }
 
-fun JobEscrow.getParamsVersion(self): int {
-    return net.runGetMethod(self.address, "get_params_version");
+fun JobEscrow.getCandidatesHash(self): int {
+    return net.runGetMethod(self.address, "get_candidates_hash");
+}
+
+fun JobEscrow.getPending(self, recipient: address): int {
+    return net.runGetMethod(self.address, "get_pending", [recipient]);
 }

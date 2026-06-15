@@ -54,6 +54,12 @@ pub enum DataSourceError {
     /// no key material in its message.
     #[error("failed to open sealed credential (wrong recipient key or tampered ciphertext)")]
     SealOpenFailed,
+    /// A provider-specific `extra` secret key is not a safe SQL identifier. The
+    /// key is interpolated *unquoted* into a `CREATE SECRET (...)` statement, so
+    /// it must match `^[A-Z_][A-Z0-9_]*$` (after uppercasing) — otherwise it
+    /// could break out of the option list and inject SQL.
+    #[error("invalid secret option key `{0}` (must match [A-Z_][A-Z0-9_]*)")]
+    InvalidSecretKey(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +269,27 @@ fn sql_lit(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
+/// Validate and normalize a provider-specific `extra` secret OPTION KEY for safe,
+/// *unquoted* interpolation into a `CREATE SECRET (...)` option list. Unlike the
+/// option *values* (escaped via [`sql_lit`]), the key is an SQL identifier and is
+/// not quoted, so an unvalidated key (e.g. `"x) AS y; ATTACH ..."`) could break
+/// out of the statement. We uppercase (DuckDB option keys are case-insensitive)
+/// and require `^[A-Z_][A-Z0-9_]*$`.
+fn secret_key_ident(key: &str) -> Result<String, DataSourceError> {
+    let upper = key.to_uppercase();
+    let mut chars = upper.chars();
+    let valid = match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_uppercase() => {
+            chars.all(|c| c == '_' || c.is_ascii_uppercase() || c.is_ascii_digit())
+        }
+        _ => false,
+    };
+    if !valid {
+        return Err(DataSourceError::InvalidSecretKey(key.to_string()));
+    }
+    Ok(upper)
+}
+
 /// Normalize a credential prefix into a fully-qualified, slash-terminated SCOPE
 /// for the given scheme. DuckDB matches the longest scope prefix, and requires
 /// a trailing slash for directory scopes.
@@ -348,7 +375,7 @@ impl StorageProvider for S3Provider {
             parts.push(format!("USE_SSL {}", if ssl { "true" } else { "false" }));
         }
         for (k, v) in &c.extra {
-            parts.push(format!("{} {}", k.to_uppercase(), sql_lit(v)));
+            parts.push(format!("{} {}", secret_key_ident(k)?, sql_lit(v)));
         }
         parts.push(format!("SCOPE {}", sql_lit(&scope_url("s3", &cred.prefix))));
         Ok(Some(format!(
@@ -400,7 +427,7 @@ impl StorageProvider for AzureProvider {
             format!("CONNECTION_STRING {}", sql_lit(&conn)),
         ];
         for (k, v) in &c.extra {
-            parts.push(format!("{} {}", k.to_uppercase(), sql_lit(v)));
+            parts.push(format!("{} {}", secret_key_ident(k)?, sql_lit(v)));
         }
         parts.push(format!(
             "SCOPE {}",
@@ -465,7 +492,7 @@ impl StorageProvider for GcsProvider {
             parts.push(format!("ENDPOINT {}", sql_lit(&e)));
         }
         for (k, v) in &c.extra {
-            parts.push(format!("{} {}", k.to_uppercase(), sql_lit(v)));
+            parts.push(format!("{} {}", secret_key_ident(k)?, sql_lit(v)));
         }
         parts.push(format!("SCOPE {}", sql_lit(&scope_url("gcs", &cred.prefix))));
         Ok(Some(format!(
@@ -818,6 +845,49 @@ mod tests {
         assert!(sql.contains("URL_STYLE 'path'"), "{sql}");
         assert!(sql.contains("REGION 'us-east-1'"), "{sql}");
         assert!(sql.contains("USE_SSL true"), "cred overrides opts: {sql}");
+    }
+
+    #[test]
+    fn extra_secret_key_is_validated_against_sql_injection() {
+        use std::collections::BTreeMap;
+        // A malicious `extra` key tries to break out of the option list. The key
+        // is interpolated UNQUOTED, so it must be rejected (values are escaped,
+        // but keys are identifiers).
+        let mut extra = BTreeMap::new();
+        extra.insert("evil) AS x; ATTACH 'h::memory:' AS p; --".into(), "v".into());
+        let cred = CloudCredential {
+            key_id: Some("k".into()),
+            secret: Some("s".into()),
+            extra,
+            ..Default::default()
+        };
+        let sc = scoped("s3", "b/", &cred);
+        let err = S3Provider::default()
+            .create_secret_sql("s", &sc, &ProviderOptions::default())
+            .unwrap_err();
+        assert!(
+            matches!(err, DataSourceError::InvalidSecretKey(_)),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn extra_secret_key_valid_identifier_is_accepted_and_uppercased() {
+        use std::collections::BTreeMap;
+        let mut extra = BTreeMap::new();
+        extra.insert("kms_key_id".into(), "abc".into());
+        let cred = CloudCredential {
+            key_id: Some("k".into()),
+            secret: Some("s".into()),
+            extra,
+            ..Default::default()
+        };
+        let sc = scoped("s3", "b/", &cred);
+        let sql = S3Provider::default()
+            .create_secret_sql("s", &sc, &ProviderOptions::default())
+            .unwrap()
+            .unwrap();
+        assert!(sql.contains("KMS_KEY_ID 'abc'"), "{sql}");
     }
 
     #[test]

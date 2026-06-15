@@ -21,7 +21,10 @@ ARG DUCKDB_VERSION=v1.5.3
 # ---------------------------------------------------------------------------
 # Stage 1: build the extension cdylib + append metadata footer
 # ---------------------------------------------------------------------------
-FROM rust:1-bookworm AS builder
+# TODO: digest-pin via Renovate
+# Pinned to multi-arch index digest (resolved 2026-06-15).
+# Renovate will keep these current; see renovate.json at repo root.
+FROM rust:1-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS builder
 
 ARG DUCKDB_VERSION
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,15 +42,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Fetch the DuckDB CLI matching the crate's DuckDB version (used both to read the
 # platform string for the metadata footer and copied into the runtime stage).
+# SHA-256 values were computed from the official release zips on 2026-06-15
+# (DuckDB does not publish a separate .sha256 checksum file per release asset;
+# the hashes below were obtained by downloading and running sha256sum locally).
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
-      arm64) ddb_asset="duckdb_cli-linux-arm64.zip" ;; \
-      amd64) ddb_asset="duckdb_cli-linux-amd64.zip" ;; \
+      arm64) \
+        ddb_asset="duckdb_cli-linux-arm64.zip"; \
+        ddb_sha256="5e2399428793642e994f1584c47d49f4c58b7b4ec2297ea4a522353a6c553835" \
+        ;; \
+      amd64) \
+        ddb_asset="duckdb_cli-linux-amd64.zip"; \
+        ddb_sha256="35caef1fecbc8d7e2c07de4fd2cdefc5189ec9ba9e1cca228fb1a1c48cc52a8a" \
+        ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \
     curl -fsSL -o /tmp/duckdb.zip \
       "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/${ddb_asset}"; \
+    echo "${ddb_sha256}  /tmp/duckdb.zip" | sha256sum --check; \
     unzip -o /tmp/duckdb.zip -d /usr/local/bin; \
     chmod +x /usr/local/bin/duckdb; \
     rm /tmp/duckdb.zip; \
@@ -59,14 +72,13 @@ WORKDIR /src
 # the build context so this stays lean.
 COPY . .
 
-# Build the loadable cdylib (debug profile: faster to compile, smaller RAM
-# footprint than a full release build of the whole dependency tree).
+# Build the loadable cdylib (release profile for the production image).
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \
-    cargo build -p p2p-extension; \
+    cargo build --release -p p2p-extension; \
     mkdir -p /out; \
-    cp target/debug/libduckdb_p2p.so /out/libduckdb_p2p.so
+    cp target/release/libduckdb_p2p.so /out/libduckdb_p2p.so
 
 # Append the DuckDB metadata footer → a loadable .duckdb_extension. The output
 # basename MUST be `duckdb_p2p.duckdb_extension` (DuckDB derives the init symbol
@@ -86,7 +98,9 @@ RUN set -eux; \
 # ---------------------------------------------------------------------------
 # Stage 2: lean runtime
 # ---------------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# TODO: digest-pin via Renovate
+# Pinned to multi-arch index digest (resolved 2026-06-15).
+FROM debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fcc2e69f371b10f5cdf87857c4b8188404716 AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -105,6 +119,12 @@ COPY --from=builder /out/duckdb_p2p.duckdb_extension /node/duckdb_p2p.duckdb_ext
 COPY docker/entrypoint.sh /node/entrypoint.sh
 RUN chmod +x /node/entrypoint.sh
 
+# Create a non-root user (uid/gid 1001) and prepare the writable state directory.
+RUN groupadd --gid 1001 p2pnode \
+    && useradd --uid 1001 --gid 1001 --no-create-home --shell /usr/sbin/nologin p2pnode \
+    && mkdir -p /node/state \
+    && chown -R p2pnode:p2pnode /node/state
+
 # Default QUIC bind (each container has its own netns → same port is fine).
 # Donated budget (admission accounting only) must exceed the per-job lease a
 # requester dispatches; 256MB admits the lean per-job leases with headroom for
@@ -117,4 +137,10 @@ ENV P2P_BIND_ADDR=0.0.0.0:9494 \
     P2P_SHARE_PERJOB_BYTES=67108864
 
 EXPOSE 9494/udp
+
+# Health check: load the extension and run a trivial query.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD duckdb -unsigned -c "LOAD '/node/duckdb_p2p.duckdb_extension'; SELECT 1 FROM p2p_info() LIMIT 1;" || exit 1
+
+USER p2pnode
 ENTRYPOINT ["/node/entrypoint.sh"]

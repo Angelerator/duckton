@@ -50,6 +50,9 @@ fun deployGlobalParams(admin: address, feeRecipient: address): GlobalParams {
         blocklist: createEmptyMap(),
         paramsVersion: 1,
         codeVersion: 0,
+        upgradeDelay: 86400,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
     };
     val gp = GlobalParams.fromStorage(storage);
     val res = gp.deploy(admin, { value: ton("1") });

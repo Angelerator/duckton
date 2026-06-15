@@ -25,7 +25,9 @@ type AllowedMessageToGlobalParamsV2 =
     | UpdateParams
     | UpdateAdmin
     | SetBlocklisted
+    | AnnounceCode
     | UpgradeCode
+    | CancelCode
 
 fun onBouncedMessage(_in: InMessageBounced) {}
 
@@ -71,11 +73,26 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
+        AnnounceCode => {
+            var storage = lazy GlobalParamsStorage.load();
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            storage.pendingCodeHash = msg.newCodeHash;
+            storage.pendingCodeAt = blockchain.now() as uint32;
+            storage.save();
+        }
+
         UpgradeCode => {
             var storage = lazy GlobalParamsStorage.load();
             assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            assert (msg.newCode.hash() == storage.pendingCodeHash) throw ErrCode.UPGRADE_CODE_MISMATCH;
+            val readyAt = storage.pendingCodeAt + storage.upgradeDelay;
+            assert (blockchain.now() >= readyAt) throw ErrCode.UPGRADE_TIMELOCK_ACTIVE;
+
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
             storage.save();
 
             val ev = createExternalLogMessage({
@@ -87,6 +104,15 @@ fun onInternalMessage(in: InMessage) {
                 },
             });
             ev.send(SEND_MODE_REGULAR);
+        }
+
+        CancelCode => {
+            var storage = lazy GlobalParamsStorage.load();
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
+            storage.save();
         }
 
         else => {
@@ -118,6 +144,17 @@ get fun get_params_version(): int {
 get fun get_code_version(): int {
     val storage = lazy GlobalParamsStorage.load();
     return storage.codeVersion;
+}
+
+get fun get_pending_upgrade(): GlobalParamsUpgradeView {
+    val storage = lazy GlobalParamsStorage.load();
+    val readyAt = storage.pendingCodeAt == 0 ? 0 : storage.pendingCodeAt + storage.upgradeDelay;
+    return {
+        codeVersion: storage.codeVersion,
+        pendingCodeHash: storage.pendingCodeHash,
+        pendingAt: storage.pendingCodeAt,
+        readyAt: readyAt as uint32,
+    };
 }
 
 // NEW in v2: surcharge bps was stored all along but never exposed as a scalar

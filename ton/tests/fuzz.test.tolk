@@ -53,6 +53,7 @@ fun deployVaultSplit(
         keeperGrace: 100,
         keeperBountyBps: 200,
         slasher: slasher,
+        upgradeAuthority: slasher,
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -65,14 +66,27 @@ fun deployVaultSplit(
         bindingHash: 0xDEADBEEF,
         config: cfg.toCell(),
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
     val vault = StakeVault.fromStorage(storage);
     expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
     return vault;
 }
 
-fun deployEscrow(requester: address, arbiter: address, treasury: address, amount: coins): JobEscrow {
-    val terms: EscrowTerms = { treasury: treasury, expectedHash: RESULT_HASH, paramsVersion: 1 };
+// B1: a single-candidate set (the winner) + its commitment.
+fun candidateSet(a: address): map<address, uint1> {
+    var c: map<address, uint1> = createEmptyMap();
+    c.set(a, 1);
+    return c;
+}
+
+fun deployEscrow(requester: address, arbiter: address, treasury: address, winner: address, amount: coins): JobEscrow {
+    val terms: EscrowTerms = {
+        treasury: treasury,
+        expectedHash: RESULT_HASH,
+        candidatesHash: candidatesCommitment(candidateSet(winner)),
+        paramsVersion: 1,
+    };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,
@@ -80,6 +94,7 @@ fun deployEscrow(requester: address, arbiter: address, treasury: address, amount
         deadline: 1_700_000_500,
         settled: false,
         terms: terms.toCell(),
+        pending: createEmptyMap(),
     };
     val escrow = JobEscrow.fromStorage(storage);
     expect(escrow.deploy(requester, { value: amount + ton("2") })).toHaveSuccessfulDeploy({ to: escrow.address });
@@ -128,6 +143,9 @@ fun deployGlobalParams(admin: address): GlobalParams {
         blocklist: createEmptyMap(),
         paramsVersion: 1,
         codeVersion: 0,
+        upgradeDelay: 86400,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
     };
     val gp = GlobalParams.fromStorage(storage);
     expect(gp.deploy(admin, { value: ton("1") })).toHaveSuccessfulDeploy({ to: gp.address });
@@ -135,17 +153,23 @@ fun deployGlobalParams(admin: address): GlobalParams {
 }
 
 fun deployAnchor(authority: address): RecordAnchor {
+    val auth: AnchorAuthorities = {
+        treasury: authority,
+        keeper: authority,
+        upgradeAuthority: authority,
+    };
     val cfg: AnchorConfig = {
         minStakeWeight: ton("100"),
         disputeBondMin: ton("1"),
         verdictAuthority: authority,
-        treasury: authority,
+        auth: auth.toCell(),
     };
     val storage: AnchorStorage = {
         currentEpoch: 0,
         lastRoot: 0,
         nextDisputeId: 0,
         disputes: createEmptyMap(),
+        roots: createEmptyMap(),
         config: cfg.toCell(),
         codeVersion: 0,
     };
@@ -161,25 +185,37 @@ get fun `test fuzz slash from staked conserves balance and applies the fixed spl
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val challenger = randomAddress("ch");
-    val treasury = randomAddress("tr");
-    val redundancy = randomAddress("re");
+    // C1: split recipients are bounceable payouts → must be DEPLOYED to receive.
+    val challenger = testing.treasury("ch");
+    val treasury = testing.treasury("tr");
+    val redundancy = testing.treasury("re");
     val staked: coins = (100 * NANO) as coins;
-    val vault = deployVaultSplit(owner.address, slasher.address, treasury, redundancy, 4000, 3000, 2000, 1000);
+    val vault = deployVaultSplit(owner.address, slasher.address, treasury.address, redundancy.address, 4000, 3000, 2000, 1000);
     vault.sendStakeDeposit(owner.address, 1, staked, { value: ton("110") });
 
+    val cBefore = testing.getAccountBalance(challenger.address);
+    val rBefore = testing.getAccountBalance(redundancy.address);
+    val tBefore = testing.getAccountBalance(treasury.address);
     // Slash any amount in [1, staked]; it always comes out of the bonded bucket.
     val a: coins = (fuzz.bound(rawAmount, 1, 100) * NANO) as coins;
-    val res = vault.sendStakeSlash(slasher.address, 2, a, 1, challenger, { value: ton("1") });
+    val res = vault.sendStakeSlash(slasher.address, 2, a, 1, challenger.address, { value: ton("1") });
     expect(res).toHaveSuccessfulTx<StakeSlash>({ from: slasher.address, to: vault.address });
 
     val st = vault.getVaultState();
     expect(st.staked).toEqual(staked - a);
     expect(st.totalSupply).toEqual(staked - a);
-    // Split payouts are mulDivFloor(amount, bps, 10000).
-    expect(testing.getAccountBalance(challenger)).toEqual((a * 4000 / 10000) as coins);
-    expect(testing.getAccountBalance(redundancy)).toEqual((a * 3000 / 10000) as coins);
-    expect(testing.getAccountBalance(treasury)).toEqual((a * 1000 / 10000) as coins);
+    // Split payouts are mulDivFloor(amount, bps, 10000); the recipient nets that
+    // minus a few microTON of gas to process the op-tagged (bounceable) payout.
+    val cd = testing.getAccountBalance(challenger.address) - cBefore;
+    val rd = testing.getAccountBalance(redundancy.address) - rBefore;
+    val td = testing.getAccountBalance(treasury.address) - tBefore;
+    val GAS: coins = ton("0.005");
+    expect(cd).toBeLessOrEqual((a * 4000 / 10000) as coins);
+    expect(cd).toBeGreaterOrEqual(((a * 4000 / 10000) as coins) - GAS);
+    expect(rd).toBeLessOrEqual((a * 3000 / 10000) as coins);
+    expect(rd).toBeGreaterOrEqual(((a * 3000 / 10000) as coins) - GAS);
+    expect(td).toBeLessOrEqual((a * 1000 / 10000) as coins);
+    expect(td).toBeGreaterOrEqual(((a * 1000 / 10000) as coins) - GAS);
 }
 
 @test.fuzz(64)
@@ -187,9 +223,10 @@ get fun `test fuzz any split summing to 100% conserves the slashed amount`(c: in
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val challenger = randomAddress("ch");
-    val treasury = randomAddress("tr");
-    val redundancy = randomAddress("re");
+    // C1: split recipients are bounceable payouts → must be DEPLOYED to receive.
+    val challenger = testing.treasury("ch");
+    val treasury = testing.treasury("tr");
+    val redundancy = testing.treasury("re");
 
     // Construct a valid split that sums to exactly 10000 bps.
     val ch = fuzz.bound(c, 0, 10000);
@@ -199,22 +236,29 @@ get fun `test fuzz any split summing to 100% conserves the slashed amount`(c: in
 
     val staked: coins = (100 * NANO) as coins;
     val vault = deployVaultSplit(
-        owner.address, slasher.address, treasury, redundancy,
+        owner.address, slasher.address, treasury.address, redundancy.address,
         ch as uint16, re as uint16, bu as uint16, tr as uint16,
     );
     vault.sendStakeDeposit(owner.address, 1, staked, { value: ton("110") });
 
-    val res = vault.sendStakeSlash(slasher.address, 2, staked, 1, challenger, { value: ton("1") });
+    val cBefore = testing.getAccountBalance(challenger.address);
+    val rBefore = testing.getAccountBalance(redundancy.address);
+    val tBefore = testing.getAccountBalance(treasury.address);
+    val res = vault.sendStakeSlash(slasher.address, 2, staked, 1, challenger.address, { value: ton("1") });
     expect(res).toHaveSuccessfulTx<StakeSlash>({ from: slasher.address, to: vault.address });
 
     // Conservation: paid-out shares (floored) never exceed the slashed amount and
-    // exactly match the per-share floor; the burn share is left locked in-vault.
-    val paidCh = testing.getAccountBalance(challenger);
-    val paidRe = testing.getAccountBalance(redundancy);
-    val paidTr = testing.getAccountBalance(treasury);
-    expect(paidCh).toEqual((staked * ch / 10000) as coins);
-    expect(paidRe).toEqual((staked * re / 10000) as coins);
-    expect(paidTr).toEqual((staked * tr / 10000) as coins);
+    // match the per-share floor minus a little gas for the op-tagged payout.
+    val paidCh = testing.getAccountBalance(challenger.address) - cBefore;
+    val paidRe = testing.getAccountBalance(redundancy.address) - rBefore;
+    val paidTr = testing.getAccountBalance(treasury.address) - tBefore;
+    val GAS: coins = ton("0.005");
+    expect(paidCh).toBeLessOrEqual((staked * ch / 10000) as coins);
+    expect(paidCh).toBeGreaterOrEqual(((staked * ch / 10000) as coins) - GAS);
+    expect(paidRe).toBeLessOrEqual((staked * re / 10000) as coins);
+    expect(paidRe).toBeGreaterOrEqual(((staked * re / 10000) as coins) - GAS);
+    expect(paidTr).toBeLessOrEqual((staked * tr / 10000) as coins);
+    expect(paidTr).toBeGreaterOrEqual(((staked * tr / 10000) as coins) - GAS);
     expect(paidCh + paidRe + paidTr).toBeLessOrEqual(staked);
 }
 
@@ -223,23 +267,28 @@ get fun `test fuzz escrow settles iff winner+fee is within the locked B`(w: int,
     testing.setNow(T0);
     val requester = testing.treasury("req");
     val arbiter = testing.treasury("arb");
-    val winner = randomAddress("win");
+    // C1: a winner receiving a bounceable payout must be DEPLOYED to receive it.
+    val winner = testing.treasury("win");
     val treasury = randomAddress("tre");
     val B: coins = (100 * NANO) as coins;
-    val escrow = deployEscrow(requester.address, arbiter.address, treasury, B);
+    val escrow = deployEscrow(requester.address, arbiter.address, treasury, winner.address, B);
 
     val wa: coins = (fuzz.bound(w, 0, 150) * NANO) as coins;
     val fa: coins = (fuzz.bound(f, 0, 50) * NANO) as coins;
     val total = wa + fa;
 
+    val wBefore = testing.getAccountBalance(winner.address);
     var participants: map<address, coins> = createEmptyMap();
-    val res = escrow.sendEscrowSettle(arbiter.address, 1, RESULT_HASH, winner, wa, fa, participants, { value: ton("1") });
+    val res = escrow.sendEscrowSettle(arbiter.address, 1, RESULT_HASH, winner.address, wa, fa, participants, candidateSet(winner.address), { value: ton("1") });
 
     if (total <= B) {
         expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
         expect(escrow.getEscrowState().settled).toBeTrue();
         if (wa > 0) {
-            expect(testing.getAccountBalance(winner)).toEqual(wa);
+            // winner nets ~wa (minus a few microTON of gas for the op-tagged payout).
+            val wd = testing.getAccountBalance(winner.address) - wBefore;
+            expect(wd).toBeLessOrEqual(wa);
+            expect(wd).toBeGreaterOrEqual(wa - ton("0.005"));
         }
     } else {
         expect(
@@ -305,14 +354,16 @@ get fun `test fuzz two-leaf merkle inclusion always round-trips and rejects tamp
     val rightLeaf = fuzz.bound(rRaw, 1, 1_000_000_000);
     fuzz.assume(leftLeaf != rightLeaf);
 
-    val root = hashPair(leftLeaf, rightLeaf);
+    // MERKLE v2 (A7): leaves are domain-separated via hashLeaf before pairing, so
+    // the sibling in a proof is the OTHER leaf's hashLeaf, not its raw value.
+    val root = hashPair(hashLeaf(leftLeaf), hashLeaf(rightLeaf));
     // Inclusion proof for the left leaf: sibling is the right node (dir = 0).
-    val proofLeft: MerkleStep = { dir: 0, sibling: rightLeaf, next: null };
+    val proofLeft: MerkleStep = { dir: 0, sibling: hashLeaf(rightLeaf), next: null };
     expect(anchor.verifyInclusion(leftLeaf, root, proofLeft.toCell())).toBeTrue();
     expect(anchor.computeRoot(leftLeaf, proofLeft.toCell())).toEqual(root);
 
     // Inclusion proof for the right leaf: sibling is the left node (dir = 1).
-    val proofRight: MerkleStep = { dir: 1, sibling: leftLeaf, next: null };
+    val proofRight: MerkleStep = { dir: 1, sibling: hashLeaf(leftLeaf), next: null };
     expect(anchor.verifyInclusion(rightLeaf, root, proofRight.toCell())).toBeTrue();
 
     // A tampered leaf must NOT verify against the same proof.

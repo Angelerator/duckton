@@ -403,4 +403,10 @@ pub enum BindingError {
     Expired,
     #[error("ton_proof payload does not bind this node/nonce")]
     PayloadMismatch,
+    #[error("ton_proof domain does not match the expected app domain")]
+    DomainMismatch,
+    #[error("ton_proof timestamp is stale or too far in the future")]
+    ProofExpired,
+    #[error("wallet public key does not derive the claimed wallet address")]
+    WalletAddressMismatch,
 }

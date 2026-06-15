@@ -16,6 +16,7 @@ use p2p_node::{
 use p2p_node::{IdentitySigner, MembershipTable};
 use p2p_proto::AttestationLevel;
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
+use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
     mint_pow, now_ts, sign_capability_ad, CapabilityDraft, InMemoryTrustStore, TrustStore,
 };
@@ -236,6 +237,7 @@ async fn phase2_receipts_accumulate_reputation() {
 fn build_ad(w: &WorkerHandle) -> p2p_proto::CapabilityAd {
     let id = w._transport.identity();
     let pk = id.public_key_bytes();
+    let ts = now_ts();
     let draft = CapabilityDraft {
         addr: w.addr.to_string(),
         free_mem_bytes: 1 << 30,
@@ -244,8 +246,8 @@ fn build_ad(w: &WorkerHandle) -> p2p_proto::CapabilityAd {
         attestation_level: AttestationLevel::L0,
         price: 0,
         recent_receipts_root: None,
-        pow: mint_pow(&pk, 8, 1_000_000).unwrap(),
-        ts: now_ts(),
+        pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
+        ts,
     };
     sign_capability_ad(draft, &IdentitySigner(id))
 }
@@ -289,4 +291,99 @@ async fn insufficient_workers_when_trust_gate_excludes_all() {
 
     let err = coord.run_query("SELECT 1", Default::default()).await.unwrap_err();
     assert!(matches!(err, CoordinatorError::InsufficientWorkers { .. }), "got {err:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Loser cancellation timing — a losing worker that is still computing when the
+// race is decided must be aborted PROMPTLY (its stream reset BEFORE the winner's
+// result is downloaded), not left to run for the whole winner transfer. We
+// verify the loser's engine never reaches completion even after we wait well
+// past its (long) execution delay.
+// ---------------------------------------------------------------------------
+mod cancel_timing {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use async_trait::async_trait;
+    use p2p_node::{EngineError, ExecLease, QueryEngine};
+    use p2p_proto::{ResultSet, Value};
+
+    /// An engine that sleeps `delay` and only THEN records a completion. If its
+    /// execution future is dropped (the worker aborted a cancelled job) the
+    /// counter is never incremented — exactly what we assert for a loser.
+    struct SlowCountingEngine {
+        delay: Duration,
+        completed: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl QueryEngine for SlowCountingEngine {
+        async fn execute(&self, _sql: &str, _lease: ExecLease) -> Result<ResultSet, EngineError> {
+            tokio::time::sleep(self.delay).await;
+            // Reached only if NOT cancelled mid-execution.
+            self.completed.fetch_add(1, Ordering::SeqCst);
+            Ok(ResultSet::new(
+                vec!["k".into(), "v".into()],
+                (0..3u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+            ))
+        }
+        fn version(&self) -> String {
+            // Same version as the fast workers so hashes can agree on identical rows.
+            "mock-1".to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn losing_worker_is_cancelled_before_winner_download() {
+        // Two fast workers (instant) form the quorum and provide the winner; the
+        // result they return is identical to what the slow engine WOULD return
+        // (same rows), so all three would agree — the slow one only loses on speed.
+        let fast_rows = ResultSet::new(
+            vec!["k".into(), "v".into()],
+            (0..3u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+        );
+        let mut fix = HashMap::new();
+        fix.insert("SELECT loser_cancel".to_string(), fast_rows);
+        let fast1 = spawn_worker(Arc::new(MockEngine::with_fixtures(fix.clone()))).await;
+        let fast2 = spawn_worker(Arc::new(MockEngine::with_fixtures(fix))).await;
+
+        let completed = Arc::new(AtomicUsize::new(0));
+        let loser_delay = Duration::from_millis(1500);
+        let slow = spawn_worker(Arc::new(SlowCountingEngine {
+            delay: loser_delay,
+            completed: completed.clone(),
+        }))
+        .await;
+
+        // replicas=3 (dispatch to all), quorum=2 (the two fast workers).
+        let mut c = (*test_config(3, 2)).clone();
+        // Keep the host execution deadline generous so the loser is stopped by the
+        // CANCEL, not by a job timeout (we are testing cancellation, not timeout).
+        c.host.job_timeout_ms = 60_000;
+        let cfg = Arc::new(c);
+        let st = store();
+        let coord = make_coordinator(&[&fast1, &fast2, &slow], cfg, st).await;
+
+        let start = std::time::Instant::now();
+        let outcome = coord.run_query("SELECT loser_cancel", Default::default()).await.unwrap();
+        // The fast workers decided the race well before the loser's delay elapsed.
+        assert!(outcome.verified);
+        assert_ne!(outcome.winner.as_ref(), Some(&slow.node_id), "slow worker must not win");
+        assert!(
+            start.elapsed() < loser_delay,
+            "race should resolve before the loser would finish ({:?})",
+            start.elapsed()
+        );
+        // The loser had NOT completed at decision time.
+        assert_eq!(completed.load(Ordering::SeqCst), 0, "loser should not have completed yet");
+
+        // Wait well past the loser's would-be completion: if it were left running
+        // (cancelled only after the winner download, or not raced against cancel),
+        // the counter would tick to 1. With prompt cancellation it stays 0.
+        tokio::time::sleep(loser_delay + Duration::from_millis(750)).await;
+        assert_eq!(
+            completed.load(Ordering::SeqCst),
+            0,
+            "losing worker kept computing after being cancelled (no prompt abort)"
+        );
+    }
 }

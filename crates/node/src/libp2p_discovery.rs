@@ -85,6 +85,49 @@ pub struct Libp2pDiscoveryConfig {
     /// Prefer a diverse bootstrap/relay set (shuffle entry points) to resist
     /// eclipse. Built from `[antiabuse.gossip].diverse_bootstrap`.
     pub diverse_bootstrap: bool,
+    /// Connection limits (DoS / resource-exhaustion hardening): hard caps on the
+    /// number of simultaneous connections the swarm will keep, enforced by a
+    /// [`libp2p::connection_limits::Behaviour`]. Bounds inbound connection
+    /// flooding and per-peer connection abuse. Derived from the membership/mesh
+    /// sizing in [`from_grid`](Self::from_grid) so they scale with the configured
+    /// overlay rather than being magic numbers.
+    pub conn_limits: ConnLimits,
+}
+
+/// Hard caps on simultaneous swarm connections (resource-exhaustion / connection
+/// -flood hardening). `None` would mean "unlimited"; we always set a finite cap.
+#[derive(Debug, Clone)]
+pub struct ConnLimits {
+    pub max_established_incoming: u32,
+    pub max_established_outgoing: u32,
+    pub max_established_per_peer: u32,
+    pub max_pending_incoming: u32,
+    pub max_pending_outgoing: u32,
+}
+
+impl Default for ConnLimits {
+    fn default() -> Self {
+        Self {
+            max_established_incoming: 512,
+            max_established_outgoing: 512,
+            // A peer needs very few connections to us (typically 1-2). A handful
+            // tolerates transient dial races without permitting per-peer flooding.
+            max_established_per_peer: 4,
+            max_pending_incoming: 128,
+            max_pending_outgoing: 128,
+        }
+    }
+}
+
+impl ConnLimits {
+    fn to_connection_limits(&self) -> libp2p::connection_limits::ConnectionLimits {
+        libp2p::connection_limits::ConnectionLimits::default()
+            .with_max_established_incoming(Some(self.max_established_incoming))
+            .with_max_established_outgoing(Some(self.max_established_outgoing))
+            .with_max_established_per_peer(Some(self.max_established_per_peer))
+            .with_max_pending_incoming(Some(self.max_pending_incoming))
+            .with_max_pending_outgoing(Some(self.max_pending_outgoing))
+    }
 }
 
 /// Resolved NAT-traversal parameters for the overlay (parsed from
@@ -196,6 +239,19 @@ impl Libp2pDiscoveryConfig {
             nat: NatParams::from_config(&cfg.discovery.nat)?,
             gossip_peer_scoring: cfg.antiabuse.enabled && cfg.antiabuse.gossip.peer_scoring,
             diverse_bootstrap: cfg.antiabuse.gossip.diverse_bootstrap,
+            // Scale the connection caps off the configured membership view so
+            // they track the overlay's intended size (with a sane floor/ceiling)
+            // instead of being magic numbers: a node never needs far more live
+            // connections than the peers it is willing to remember.
+            conn_limits: {
+                let cap = cfg.limits.peer_cache_capacity.max(1);
+                let established = (cap as u32).clamp(64, 4096);
+                ConnLimits {
+                    max_established_incoming: established,
+                    max_established_outgoing: established,
+                    ..ConnLimits::default()
+                }
+            },
         })
     }
 }
@@ -282,6 +338,9 @@ pub fn evaluate_ad(
 /// `[discovery.nat]` config without changing the transport or swarm type.
 #[derive(libp2p::swarm::NetworkBehaviour)]
 struct DiscoveryBehaviour {
+    /// Hard caps on simultaneous connections (DoS / connection-flood hardening).
+    /// Enforced before any per-protocol behaviour sees the connection.
+    connection_limits: libp2p::connection_limits::Behaviour,
     gossipsub: gossipsub::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     identify: identify::Behaviour,
@@ -341,6 +400,8 @@ impl Libp2pDiscovery {
         // the original `cfg.nat` is reused afterwards for listen/external-addr
         // wiring.
         let nat = cfg.nat.clone();
+        let conn_limits = cfg.conn_limits.clone();
+        let score_topic = cfg.topic.clone();
 
         // Transport stack: TCP+Noise+Yamux *and* QUIC (UDP) — DCUtR hole punching
         // and direct dials use QUIC/UDP — plus a Circuit Relay v2 *client*
@@ -370,22 +431,49 @@ impl Libp2pDiscovery {
                     .mesh_n_high(mesh_high)
                     .validation_mode(gossipsub::ValidationMode::Strict)
                     .build()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                    .map_err(|e| std::io::Error::other(e.to_string()))?;
                 let mut gossipsub = gossipsub::Behaviour::new(
                     gossipsub::MessageAuthenticity::Signed(key.clone()),
                     gossip_cfg,
                 )
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
                 // Eclipse/gossip hardening: enable gossipsub peer scoring so
                 // misbehaving mesh peers are penalized and pruned (ARCHITECTURE
-                // "Abuse resistance"). Default-lenient library params; off unless
-                // [antiabuse.gossip].peer_scoring is set.
+                // "Abuse resistance"). Off unless [antiabuse.gossip].peer_scoring.
+                //
+                // We DON'T ship the bare library defaults (which carry an EMPTY
+                // per-topic map, so the per-topic P1-P4 signals — including the
+                // crucial invalid-message penalty — never apply to our topic).
+                // Instead we populate real params:
+                //  * the topic-independent defaults already give a negative
+                //    IP-colocation factor (Sybil/eclipse from one host) and a
+                //    negative behaviour penalty (protocol abuse / gossip
+                //    misbehaviour), with decay — keep those;
+                //  * add per-topic params for the discovery topic that REWARD
+                //    honest mesh time + first deliveries and PENALIZE invalid
+                //    messages, but DISABLE mesh-delivery-rate scoring
+                //    (`mesh_message_deliveries_weight = 0`): capability ads are
+                //    far too low-rate for delivery-rate thresholds to be anything
+                //    but a false-positive generator against honest peers.
                 if peer_scoring {
-                    let params = gossipsub::PeerScoreParams::default();
+                    let mut params = gossipsub::PeerScoreParams::default();
+                    let topic_hash = gossipsub::IdentTopic::new(score_topic.clone()).hash();
+                    let mut topic_params = gossipsub::TopicScoreParams::default();
+                    // Disable the high-traffic delivery-rate penalty (P3/P3b).
+                    topic_params.mesh_message_deliveries_weight = 0.0;
+                    topic_params.mesh_message_deliveries_threshold = 0.0;
+                    topic_params.mesh_failure_penalty_weight = 0.0;
+                    params.topics.insert(topic_hash, topic_params);
+                    params
+                        .validate()
+                        .map_err(std::io::Error::other)?;
                     let thresholds = gossipsub::PeerScoreThresholds::default();
+                    thresholds
+                        .validate()
+                        .map_err(std::io::Error::other)?;
                     gossipsub
                         .with_peer_score(params, thresholds)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                        .map_err(|e| std::io::Error::other(e.to_string()))?;
                 }
 
                 // Kademlia in server mode with configured replication/parallelism.
@@ -431,7 +519,14 @@ impl Libp2pDiscovery {
                     None
                 });
 
+                // Connection limits: enforced first so a flood of inbound dials is
+                // rejected before reaching the per-protocol behaviours.
+                let connection_limits = libp2p::connection_limits::Behaviour::new(
+                    conn_limits.to_connection_limits(),
+                );
+
                 Ok(DiscoveryBehaviour {
+                    connection_limits,
                     gossipsub,
                     kademlia,
                     identify,

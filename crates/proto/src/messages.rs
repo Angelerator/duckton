@@ -205,6 +205,46 @@ pub struct ResultManifest {
     pub parts: u32,
 }
 
+impl ResultManifest {
+    /// Defense-in-depth sanity check on the **attacker-controlled** size fields
+    /// before the receiver allocates any reassembly buffer or enters its
+    /// `accept_uni` loop. The winning worker is untrusted, so a malicious manifest
+    /// declaring a huge `total_len`/`uncompressed_len`/`parts` must be rejected
+    /// *before* it can drive an unbounded allocation (OOM).
+    ///
+    /// `max_bytes`/`max_parts` are the receiver's configured ceilings; both are
+    /// additionally clamped to the absolute [`crate::MAX_RESULT_BYTES`] /
+    /// [`crate::MAX_RESULT_PARTS`].
+    pub fn validate(&self, max_bytes: u64, max_parts: u32) -> Result<(), crate::ProtoError> {
+        let bytes_ceiling = max_bytes.min(crate::MAX_RESULT_BYTES);
+        let parts_ceiling = max_parts.min(crate::MAX_RESULT_PARTS);
+        if self.parts == 0 {
+            return Err(crate::ProtoError::InvalidFrame(
+                "result manifest declares 0 parts".into(),
+            ));
+        }
+        if self.parts > parts_ceiling {
+            return Err(crate::ProtoError::InvalidFrame(format!(
+                "result parts {} exceeds limit {}",
+                self.parts, parts_ceiling
+            )));
+        }
+        if self.total_len > bytes_ceiling {
+            return Err(crate::ProtoError::InvalidFrame(format!(
+                "result total_len {} exceeds limit {}",
+                self.total_len, bytes_ceiling
+            )));
+        }
+        if self.uncompressed_len > bytes_ceiling {
+            return Err(crate::ProtoError::InvalidFrame(format!(
+                "result uncompressed_len {} exceeds limit {}",
+                self.uncompressed_len, bytes_ceiling
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Step 5: a chunk of the inline bulk result stream (winner only, `parts == 1`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResultChunk {
@@ -440,6 +480,37 @@ mod tests {
             Wire::Offer(o) => assert_eq!(o.nonce, 1),
             other => panic!("expected Offer, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn result_manifest_validate_rejects_oversize_and_zero_parts() {
+        let base = ResultManifest {
+            job_id: JobId::new(),
+            compression: Compression::None,
+            uncompressed_len: 1024,
+            total_len: 1024,
+            parts: 1,
+        };
+        // Well-formed manifest within limits is accepted.
+        assert!(base.validate(1 << 20, 16).is_ok());
+        // Zero parts is rejected (would skip the accept loop / be malformed).
+        let mut zero = base.clone();
+        zero.parts = 0;
+        assert!(zero.validate(1 << 20, 16).is_err());
+        // A huge total_len (attacker forcing a pre-allocation) is rejected.
+        let mut huge = base.clone();
+        huge.total_len = u64::MAX;
+        assert!(huge.validate(1 << 20, 16).is_err());
+        // A huge uncompressed_len (decompression bomb) is rejected.
+        let mut bomb = base.clone();
+        bomb.uncompressed_len = u64::MAX;
+        assert!(bomb.validate(1 << 20, 16).is_err());
+        // Too many parts (unbounded accept_uni loop) is rejected.
+        let mut many = base.clone();
+        many.parts = 100_000;
+        assert!(many.validate(1 << 20, 16).is_err());
+        // The configured ceiling is clamped to the absolute MAX_RESULT_BYTES.
+        assert!(base.validate(u64::MAX, u32::MAX).is_ok());
     }
 
     #[test]

@@ -58,8 +58,8 @@ pub use estimator::{
 };
 #[cfg(feature = "discovery-libp2p")]
 pub use libp2p_discovery::{
-    evaluate_ad, AdOutcome, DiscoveryError, Libp2pDiscovery, Libp2pDiscoveryConfig, NatParams,
-    RelayLimits,
+    evaluate_ad, AdOutcome, ConnLimits, DiscoveryError, Libp2pDiscovery, Libp2pDiscoveryConfig,
+    NatParams, RelayLimits,
 };
 pub use liveness::{
     now_ms, IndirectProber, LivenessFilteredDiscovery, LivenessView, Prober, SwimVerdict,

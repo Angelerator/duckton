@@ -12,7 +12,8 @@ path = "src/lib.rs"
 default = ["discovery-libp2p"]
 # Real locked-down DuckDB execution engine (bundles + compiles DuckDB from
 # source). Off by default so the protocol/trust tests build fast with the mock.
-duckdb-engine = ["dep:duckdb"]
+# Pulls in `tempfile` for the per-job private (0700) temp/spill directory.
+duckdb-engine = ["dep:duckdb", "dep:tempfile"]
 # Real libp2p (Kademlia DHT + gossipsub) cross-swarm discovery propagation.
 # On by default; disable with `--no-default-features` for a slim build that uses
 # only the static / in-memory `Discovery` impls.
@@ -33,9 +34,16 @@ p2p-proto = { version = "0.2.0", path = "../proto" }
 p2p-settlement = { version = "0.2.0", path = "../settlement" }
 p2p-transport = { version = "0.2.0", path = "../transport" }
 p2p-trust = { version = "0.2.0", path = "../trust" }
+# QUIC error codes (`VarInt`) for abruptly RESETting loser/stalled dispatch
+# streams. Pinned to the same version `p2p-transport` uses so the `SendStream`/
+# `RecvStream` types (re-exported from there) and our `VarInt` are identical.
+quinn = "0.11.9"
 rand = "0.8"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+# Per-job private (0700) temp/spill directory for the real DuckDB engine. Only
+# pulled in by the `duckdb-engine` feature (also a dev-dependency for tests).
+tempfile = { version = "3.27.0", optional = true }
 thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"

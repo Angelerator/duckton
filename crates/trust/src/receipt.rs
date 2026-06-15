@@ -5,7 +5,7 @@
 //! `Receipt` data type lives in `p2p-proto`; this module provides the canonical
 //! signing-byte derivation plus sign/verify.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use p2p_proto::{JobId, NodeId, QueryHash, Receipt, Verdict};
 
 /// Abstraction over "something that can sign with the node identity key", so the
@@ -136,7 +136,11 @@ pub fn verify_receipt(r: &Receipt) -> bool {
         r.latency_ms,
         r.ts,
     );
-    verifying_key.verify(&msg, &signature).is_ok()
+    // `verify_strict` (not `verify`) rejects signature malleability and
+    // low-order / small-subgroup public keys, so a valid signature is unique and
+    // cannot be mauled into a second distinct-but-valid `sig` (which would defeat
+    // dedup-by-signature on gossiped receipts). See ed25519-dalek VerifyingKey.
+    verifying_key.verify_strict(&msg, &signature).is_ok()
 }
 
 #[cfg(test)]

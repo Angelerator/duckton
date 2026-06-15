@@ -10,10 +10,11 @@
 //! node identity with no certificate authority.
 
 use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey};
-use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use p2p_proto::NodeId;
 use rand::rngs::OsRng;
 use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+use zeroize::Zeroizing;
 
 use crate::error::{Result, TransportError};
 
@@ -23,7 +24,10 @@ pub struct NodeIdentity {
     signing_key: SigningKey,
     node_id: NodeId,
     cert_der: Vec<u8>,
-    key_pkcs8_der: Vec<u8>,
+    /// Raw PKCS#8 DER private key, scrubbed on drop. (`SigningKey` itself is
+    /// zeroized via the ed25519-dalek `zeroize` feature; this keeps the second
+    /// in-memory copy from outliving the identity unscrubbed.)
+    key_pkcs8_der: Zeroizing<Vec<u8>>,
 }
 
 impl NodeIdentity {
@@ -44,12 +48,11 @@ impl NodeIdentity {
     }
 
     /// Serialize the private key to PKCS#8 PEM (for persisting an identity).
-    pub fn to_pem(&self) -> Result<String> {
-        Ok(self
-            .signing_key
+    /// Returned in a `Zeroizing` wrapper so the PEM text is scrubbed on drop.
+    pub fn to_pem(&self) -> Result<Zeroizing<String>> {
+        self.signing_key
             .to_pkcs8_pem(Default::default())
-            .map_err(|e| TransportError::Identity(e.to_string()))?
-            .to_string())
+            .map_err(|e| TransportError::Identity(e.to_string()))
     }
 
     /// Build an identity (and its self-signed cert) from an Ed25519 signing key.
@@ -62,7 +65,7 @@ impl NodeIdentity {
         let pkcs8 = signing_key
             .to_pkcs8_der()
             .map_err(|e| TransportError::Identity(format!("pkcs8 encode: {e}")))?;
-        let key_pkcs8_der = pkcs8.as_bytes().to_vec();
+        let key_pkcs8_der = Zeroizing::new(pkcs8.as_bytes().to_vec());
 
         let pki_key = PrivatePkcs8KeyDer::from(key_pkcs8_der.as_slice());
         let rcgen_key =
@@ -112,9 +115,10 @@ impl NodeIdentity {
     /// Verify a signature against this identity's own public key.
     pub fn verify(&self, msg: &[u8], sig: &[u8; 64]) -> bool {
         let sig = ed25519_dalek::Signature::from_bytes(sig);
+        // strict verification: reject malleable signatures / weak keys.
         self.signing_key
             .verifying_key()
-            .verify(msg, &sig)
+            .verify_strict(msg, &sig)
             .is_ok()
     }
 
@@ -125,7 +129,7 @@ impl NodeIdentity {
 
     /// The private key in PKCS#8 DER form for the rustls config.
     pub fn private_key_der(&self) -> PrivatePkcs8KeyDer<'static> {
-        PrivatePkcs8KeyDer::from(self.key_pkcs8_der.clone())
+        PrivatePkcs8KeyDer::from(self.key_pkcs8_der.to_vec())
     }
 }
 

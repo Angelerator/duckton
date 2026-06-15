@@ -1052,15 +1052,23 @@ impl HostEngine {
     fn run(sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
         let conn = Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
-        // Budget + defense-in-depth extension hardening (no auto-install/-load of
-        // extensions, no unsigned extensions, no network egress). Mirrors the
-        // node's locked-down local engine; local fixtures/remote reads are not
-        // opened on this free path.
+        // Budget + the SAME lockdown the node's strict local engine applies
+        // (`crate::duckdb_engine` in p2p-node): no auto-install/-load of
+        // extensions, no community/unsigned extensions, NO network egress
+        // (`enable_external_access=false`), and the local filesystem disabled
+        // entirely (`disabled_filesystems='LocalFileSystem'`) since this free
+        // local path opens NO fixtures and must not be able to read local files
+        // (e.g. `read_csv_auto('/etc/passwd')`). Finally `lock_configuration=true`
+        // so the untrusted query cannot re-open any of it with a later `SET`.
         conn.execute_batch(&format!(
             "SET memory_limit='{mb}MB'; SET threads={}; \
              SET autoinstall_known_extensions=false; \
              SET autoload_known_extensions=false; \
-             SET allow_unsigned_extensions=false;",
+             SET allow_community_extensions=false; \
+             SET allow_unsigned_extensions=false; \
+             SET enable_external_access=false; \
+             SET disabled_filesystems='LocalFileSystem'; \
+             SET lock_configuration=true;",
             lease.threads.max(1)
         ))
         .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;

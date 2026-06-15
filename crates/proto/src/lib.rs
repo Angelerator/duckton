@@ -41,12 +41,35 @@ pub enum ProtoError {
 /// dedicated chunk messages, so control frames should never approach this.
 pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
+/// Absolute upper bound on a single transferred result payload (8 GiB).
+///
+/// This is a hard, defense-in-depth ceiling on the **attacker-controlled** size
+/// fields carried in a [`messages::ResultManifest`] (`total_len` /
+/// `uncompressed_len`). The bulk result path deliberately transfers bytes
+/// *outside* the [`MAX_FRAME_BYTES`] control-frame cap, so without this ceiling a
+/// malicious/compromised winning worker could declare a huge size and drive the
+/// receiver to pre-allocate unbounded memory (OOM). Receivers SHOULD additionally
+/// impose a tighter, configurable per-job cap; see
+/// [`messages::ResultManifest::validate`].
+pub const MAX_RESULT_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Absolute upper bound on the number of parallel result streams a manifest may
+/// declare — defense-in-depth against an unbounded `accept_uni` accept loop on
+/// the receiver driven by an attacker-supplied `parts` count.
+pub const MAX_RESULT_PARTS: u32 = 4096;
+
 /// Encode a serializable value to its canonical JSON wire bytes.
 pub fn to_bytes<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, ProtoError> {
     Ok(serde_json::to_vec(value)?)
 }
 
 /// Decode a value from JSON wire bytes.
+///
+/// SAFETY/DoS NOTE: this assumes `bytes` is already length-capped by the caller
+/// (the framed transport path enforces [`MAX_FRAME_BYTES`] before calling this).
+/// `serde_json` recurses on nested structures, so feeding it an arbitrarily large
+/// or deeply-nested *un-capped* buffer can exhaust memory / the stack. Do not call
+/// this on un-framed, attacker-controlled input without a prior size bound.
 pub fn from_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, ProtoError> {
     Ok(serde_json::from_slice(bytes)?)
 }

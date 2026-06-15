@@ -79,6 +79,10 @@ fun main() {
             blocklist: createEmptyMap(),
             paramsVersion: 1,
             codeVersion: 0,
+            // D2: timelocked code upgrades (announce → wait → apply).
+            upgradeDelay: (env<int>("GP_UPGRADE_DELAY_SECS") ?? 86400) as uint32,
+            pendingCodeHash: 0,
+            pendingCodeAt: 0,
         };
         gp = GlobalParams.fromStorage(storage);
         gp.deploy(admin.address, { value: ton("0.1") }).waitForTrace();
@@ -99,10 +103,25 @@ fun main() {
         feeBefore,
     );
 
-    // --- IN-PLACE CODE UPGRADE (admin-signed) --------------------------------
-    // Swap the CODE to GlobalParamsV2 via SETCODE. No redeploy → address stable.
-    val res = gp.sendUpgradeCode(admin.address, 1, build("GlobalParamsV2"), { value: ton("0.2") });
-    res.waitForTrace();
+    // --- TIMELOCKED IN-PLACE CODE UPGRADE (admin-signed), D2 ------------------
+    // Code upgrades are now ANNOUNCE → wait(upgradeDelay) → APPLY (commit-then-
+    // reveal). A single run can only ANNOUNCE (and, on testnet, APPLY must be a
+    // SEPARATE invocation after the delay elapses). This script announces the
+    // successor code hash and reports the pending state; set GP_DO_APPLY=1 to
+    // attempt the apply (succeeds only once `readyAt` has passed).
+    val newCode = build("GlobalParamsV2");
+    val ann = gp.sendAnnounceCode(admin.address, 1, newCode.hash(), { value: ton("0.1") });
+    ann.waitForTrace();
+    val pend = gp.getPendingUpgrade();
+    println(
+        "::CHECK::announce::pending_hash_set={}::ready_at={}",
+        pend.pendingCodeHash != 0,
+        pend.readyAt,
+    );
+
+    if ((env<int>("GP_DO_APPLY") ?? 0) != 0) {
+        gp.sendUpgradeCode(admin.address, 2, newCode, { value: ton("0.2") }).waitForTrace();
+    }
 
     // --- AFTER snapshot (read back from the SAME address) --------------------
     val same = GlobalParams.fromAddress(addrBefore);
@@ -110,21 +129,24 @@ fun main() {
     val pvAfter = same.getParamsVersion();
     val feeAfter = same.getParams().params.load().platformFeeBps;
     val adminAfter = same.getAdmin();
-    // New code is live iff the v2-only getter resolves (v1 lacks it entirely).
-    val surchargeAfter = net.runGetMethod<int>(same.address, "get_surcharge_bps");
 
     val addrStable = same.address == addrBefore;
+    // Code is bumped only if the apply ran AND the timelock had elapsed.
     val codeBumped = cvAfter == cvBefore + 1;
     val statePreserved = pvAfter == pvBefore && feeAfter == feeBefore && adminAfter == adminBefore;
-    val pass = addrStable && codeBumped && statePreserved;
+    val pass = addrStable && statePreserved;
 
     println(
-        "::CHECK::upgrade::{}::addr_stable={}::code_version={}->{}",
+        "::CHECK::upgrade::{}::addr_stable={}::code_version={}->{}::applied={}",
         pass ? "PASS" : "FAIL",
         addrStable,
         cvBefore,
         cvAfter,
+        codeBumped,
     );
+    // The v2-only getter resolves ONLY after a successful apply; report -1 until
+    // then (the announce-only path leaves v1 code in place).
+    val surchargeAfter = codeBumped ? net.runGetMethod<int>(same.address, "get_surcharge_bps") : -1;
     println(
         "::CHECK::after::params_version={}::fee_bps={}::surcharge_bps={}::state_preserved={}",
         pvAfter,

@@ -78,6 +78,20 @@ impl WalletKey {
         mac.update(b""); // empty password
         let entropy = mac.finalize().into_bytes();
 
+        // Validate the mnemonic per the TON standard ("basic seed" check) so a
+        // typo'd mnemonic is rejected instead of silently deriving a *different*
+        // valid-looking wallet (wrong address ⇒ funds sent from/to the wrong
+        // account). isBasicSeed: first byte of
+        // PBKDF2-SHA512(entropy, "TON seed version", floor(100_000/256)) == 0.
+        let mut check = [0u8; 64];
+        pbkdf2::pbkdf2::<HmacSha512>(&entropy, b"TON seed version", 100_000 / 256, &mut check)
+            .map_err(|e| SettleError::Backend(format!("pbkdf2 (validity): {e}")))?;
+        if check[0] != 0 {
+            return Err(SettleError::Backend(
+                "invalid TON mnemonic (failed basic-seed checksum)".into(),
+            ));
+        }
+
         let mut seed = [0u8; 64];
         pbkdf2::pbkdf2::<HmacSha512>(&entropy, b"TON default seed", 100_000, &mut seed)
             .map_err(|e| SettleError::Backend(format!("pbkdf2: {e}")))?;

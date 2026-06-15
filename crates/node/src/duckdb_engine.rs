@@ -146,6 +146,7 @@ impl DuckDbEngine {
         conn.execute_batch(
             "SET autoinstall_known_extensions=false; \
              SET autoload_known_extensions=false; \
+             SET allow_community_extensions=false; \
              SET allow_unsigned_extensions=false;",
         )
         .map_err(|e| EngineError::Rejected(format!("extension hardening: {e}")))
@@ -160,13 +161,20 @@ impl DuckDbEngine {
         let conn = Connection::open_in_memory()
             .map_err(|e| EngineError::Exec(format!("open: {e}")))?;
 
-        // 1. Budget + ephemeral temp dir.
+        // 1. Budget + ephemeral temp dir. Each job gets its OWN private temp dir
+        // (0700, unique name) that is removed when this `TempDir` drops at the end
+        // of `run_locked` — never a long-lived shared per-process dir that would
+        // leak spill files across jobs (and across tenants). `tempfile` creates it
+        // with `0700` on Unix.
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
-        let tmp = std::env::temp_dir().join(format!("duckdb-p2p-{}", std::process::id()));
+        let job_tmp = tempfile::Builder::new()
+            .prefix("duckdb-p2p-job-")
+            .tempdir()
+            .map_err(|e| EngineError::Rejected(format!("temp dir: {e}")))?;
+        let tmp_path = job_tmp.path().to_string_lossy().replace('\'', "''");
         conn.execute_batch(&format!(
-            "SET memory_limit='{mb}MB'; SET threads={}; SET temp_directory='{}';",
+            "SET memory_limit='{mb}MB'; SET threads={}; SET temp_directory='{tmp_path}';",
             lease.threads.max(1),
-            tmp.display()
         ))
         .map_err(|e| EngineError::Rejected(format!("budget setup: {e}")))?;
 
@@ -192,6 +200,15 @@ impl DuckDbEngine {
                 .join(", ");
             conn.execute_batch(&format!("SET allowed_directories=[{list}];"))
                 .map_err(|e| EngineError::Rejected(format!("allowed_directories: {e}")))?;
+        } else {
+            // Strict profile: NO local fixtures are configured, so disable the
+            // local filesystem entirely (defense-in-depth on top of
+            // `enable_external_access=false`). Not set when fixtures ARE allowed,
+            // since it would block reading them. The temp dir lives on
+            // `LocalFileSystem` too, but `temp_directory`/spill is exempt from
+            // `disabled_filesystems`.
+            conn.execute_batch("SET disabled_filesystems='LocalFileSystem';")
+                .map_err(|e| EngineError::Rejected(format!("disabled_filesystems: {e}")))?;
         }
 
         // 6. Per-job at-rest keys + scoped, short-lived storage secret.
@@ -373,5 +390,51 @@ mod tests {
         let eng = DuckDbEngine::new().unwrap();
         let r = eng.execute("INSTALL httpfs", lease()).await;
         assert!(r.is_err(), "INSTALL should be blocked under lockdown");
+    }
+
+    #[tokio::test]
+    async fn lockdown_blocks_community_extensions() {
+        // `allow_community_extensions=false` + locked config: installing from the
+        // community repository must be refused.
+        let eng = DuckDbEngine::new().unwrap();
+        let r = eng
+            .execute("INSTALL faker FROM community", lease())
+            .await;
+        assert!(r.is_err(), "community extension install should be blocked");
+    }
+
+    #[tokio::test]
+    async fn lockdown_cannot_be_reopened_by_query() {
+        // `lock_configuration=true` means an untrusted query cannot re-enable
+        // external access to read a local file.
+        let eng = DuckDbEngine::new().unwrap();
+        let r = eng
+            .execute(
+                "SET enable_external_access=true; SELECT * FROM read_csv_auto('/etc/passwd')",
+                lease(),
+            )
+            .await;
+        assert!(r.is_err(), "locked config must reject re-opening external access");
+    }
+
+    #[tokio::test]
+    async fn allowed_local_paths_still_readable() {
+        // When local fixture paths ARE configured, the local filesystem must NOT
+        // be disabled (otherwise fixtures could not be read). Write a CSV inside a
+        // permitted directory and confirm the strict-but-scoped engine reads it.
+        let dir = tempfile::tempdir().unwrap();
+        let csv = dir.path().join("fixture.csv");
+        std::fs::write(&csv, "a,b\n1,hi\n2,yo\n").unwrap();
+
+        let mut setup = StorageSetup::strict();
+        setup.allowed_local_paths = vec![dir.path().to_string_lossy().to_string()];
+        let eng = DuckDbEngine::with_setup(setup).unwrap();
+
+        let sql = format!(
+            "SELECT count(*) AS n FROM read_csv_auto('{}')",
+            csv.display().to_string().replace('\'', "''")
+        );
+        let rs = eng.execute(&sql, lease()).await.unwrap();
+        assert_eq!(rs.rows[0][0], Value::Int(2), "fixture should be readable: {rs:?}");
     }
 }

@@ -64,6 +64,10 @@ parallelism       = 1                     # concurrent uni-streams per large res
                                           # (1 = inline; overridable per p2p_query call)
 # chunk_bytes     = 262144                # override [network].result_chunk_bytes
 parallel_min_bytes = 1048576              # only fan out results >= 1 MiB
+max_result_bytes  = 2147483648            # reject a result manifest larger than 2 GiB
+                                          # (untrusted winner; bypasses the frame cap —
+                                          # clamped to p2p_proto::MAX_RESULT_BYTES = 8 GiB)
+max_result_parts  = 1024                  # max parallel result streams accepted per result
 
 [transport.compression]
 algorithm     = "none"                    # "none" | "lz4" | "zstd"

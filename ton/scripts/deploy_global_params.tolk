@@ -65,6 +65,11 @@ fun main() {
         // Fresh deploy = original code (never upgraded); every `upgrade_code`
         // bumps it in place (TVM SETCODE, address unchanged).
         codeVersion: 0,
+        // D2: code upgrades are TIMELOCKED — announce, wait upgradeDelay, apply.
+        // Default 24h; no announcement pending at deploy.
+        upgradeDelay: (env<int>("GP_UPGRADE_DELAY_SECS") ?? 86400) as uint32,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
     };
 
     val gp = GlobalParams.fromStorage(storage);

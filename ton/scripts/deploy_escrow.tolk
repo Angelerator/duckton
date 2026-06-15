@@ -47,7 +47,17 @@ fun main() {
     // ecosystem params govern settlement / disputes). `0` = unbound.
     val paramsVersion = (env<int>("ESCROW_PARAMS_VERSION") ?? 0) as uint32;
 
-    val terms: EscrowTerms = { treasury: treasury, expectedHash: expectedHash, paramsVersion: paramsVersion };
+    // B1: the requester pre-commits to the payout-eligible candidate set; settle
+    // can only pay members of it. Provide the commitment (hash of the candidate
+    // map cell) via env; `0` = unbound (no candidate restriction set yet).
+    val candidatesHash = env<int>("ESCROW_CANDIDATES_HASH") ?? 0;
+
+    val terms: EscrowTerms = {
+        treasury: treasury,
+        expectedHash: expectedHash,
+        candidatesHash: candidatesHash,
+        paramsVersion: paramsVersion,
+    };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,
@@ -55,6 +65,7 @@ fun main() {
         deadline: deadline,
         settled: false,
         terms: terms.toCell(),
+        pending: createEmptyMap(),
     };
 
     val escrow = JobEscrow.fromStorage(storage);

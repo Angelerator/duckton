@@ -54,7 +54,21 @@ pub fn decompress(
     match codec {
         Compression::None => Ok(data.to_vec()),
         Compression::Lz4 => {
-            lz4_flex::decompress_size_prepended(data).map_err(|e| format!("lz4 decompress: {e}"))
+            // `lz4_flex::decompress_size_prepended` trusts the attacker-prepended
+            // 4-byte size and pre-allocates that many bytes — an OOM vector when
+            // the sender is untrusted. Mirror the Zstd clamp: read the prepended
+            // size, REJECT it if it exceeds the manifest's `uncompressed_len`
+            // (the source of truth), then decompress with the bounded size.
+            if data.len() < 4 {
+                return Err("lz4 decompress: truncated size prefix".into());
+            }
+            let prepended = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+            if prepended > uncompressed_len {
+                return Err(format!(
+                    "lz4 prepended size {prepended} exceeds declared uncompressed_len {uncompressed_len}"
+                ));
+            }
+            lz4_flex::decompress(&data[4..], prepended).map_err(|e| format!("lz4 decompress: {e}"))
         }
         Compression::Zstd => zstd::decode_all(data)
             .map(|mut v| {
@@ -89,5 +103,26 @@ mod tests {
             let back = decompress(applied, data.len(), &out).unwrap();
             assert_eq!(back, data);
         }
+    }
+
+    #[test]
+    fn lz4_rejects_oversized_prepended_size() {
+        // A malicious LZ4 payload that prepends a huge size must be rejected
+        // against the declared `uncompressed_len` BEFORE allocating (mirrors the
+        // zstd clamp). Craft a valid compression of a small payload, then forge
+        // the 4-byte LE prefix to claim a gigantic uncompressed length.
+        let data = vec![7u8; 4096];
+        let (_, mut out) = maybe_compress(Compression::Lz4, 3, 0, &data);
+        // Forge the prepended size to ~4 GiB (u32::MAX), far above the declared
+        // uncompressed_len of 4096.
+        out[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        let err = decompress(Compression::Lz4, data.len(), &out).unwrap_err();
+        assert!(err.contains("exceeds declared uncompressed_len"), "got: {err}");
+    }
+
+    #[test]
+    fn lz4_truncated_prefix_is_rejected() {
+        let err = decompress(Compression::Lz4, 1024, &[0u8; 2]).unwrap_err();
+        assert!(err.contains("truncated size prefix"), "got: {err}");
     }
 }

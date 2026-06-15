@@ -42,22 +42,25 @@ const M5 = 0xf005
 const M6 = 0x1006
 const M7 = 0x2007
 
+// MERKLE v2 (A7): leaves are domain-separated via hashLeaf before pairing.
 fun tree8Left(): int {
-    return hashPair(hashPair(M0, M1), hashPair(M2, M3));
+    return hashPair(hashPair(hashLeaf(M0), hashLeaf(M1)), hashPair(hashLeaf(M2), hashLeaf(M3)));
 }
 
 fun tree8Right(): int {
-    return hashPair(hashPair(M4, M5), hashPair(M6, M7));
+    return hashPair(hashPair(hashLeaf(M4), hashLeaf(M5)), hashPair(hashLeaf(M6), hashLeaf(M7)));
 }
 
 fun tree8Root(): int {
     return hashPair(tree8Left(), tree8Right());
 }
 
+// Proof for interior leaf M5: the verifier seeds acc = hashLeaf(M5); the level-0
+// sibling is therefore hashLeaf(M4) (a leaf-domain hash), the rest are node hashes.
 fun proofForM5(): Cell<MerkleStep>? {
     val top: MerkleStep = { dir: 1, sibling: tree8Left(), next: null };
-    val mid: MerkleStep = { dir: 0, sibling: hashPair(M6, M7), next: top.toCell() };
-    val bottom: MerkleStep = { dir: 1, sibling: M4, next: mid.toCell() };
+    val mid: MerkleStep = { dir: 0, sibling: hashPair(hashLeaf(M6), hashLeaf(M7)), next: top.toCell() };
+    val bottom: MerkleStep = { dir: 1, sibling: hashLeaf(M4), next: mid.toCell() };
     return bottom.toCell();
 }
 
@@ -103,6 +106,9 @@ fun deployGlobalParams(admin: address): GlobalParams {
         blocklist: createEmptyMap(),
         paramsVersion: 1,
         codeVersion: 0,
+        upgradeDelay: 86400,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
     };
     val gp = GlobalParams.fromStorage(storage);
     expect(gp.deploy(admin, { value: ton("1") })).toHaveSuccessfulDeploy({ to: gp.address });
@@ -125,6 +131,7 @@ fun deployVault(owner: address, slasher: address): StakeVault {
         keeperGrace: 86400,
         keeperBountyBps: 200,
         slasher: slasher,
+        upgradeAuthority: slasher,
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -137,14 +144,27 @@ fun deployVault(owner: address, slasher: address): StakeVault {
         bindingHash: 0xDEADBEEF,
         config: cfg.toCell(),
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
     val vault = StakeVault.fromStorage(storage);
     expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
     return vault;
 }
 
-fun deployEscrow(requester: address, arbiter: address): JobEscrow {
-    val terms: EscrowTerms = { treasury: requester, expectedHash: RESULT_HASH, paramsVersion: 1 };
+// Build the requester-committed candidate set (B1) + its commitment.
+fun candidateSet(a: address): map<address, uint1> {
+    var c: map<address, uint1> = createEmptyMap();
+    c.set(a, 1);
+    return c;
+}
+
+fun deployEscrow(requester: address, arbiter: address, winner: address): JobEscrow {
+    val terms: EscrowTerms = {
+        treasury: requester,
+        expectedHash: RESULT_HASH,
+        candidatesHash: candidatesCommitment(candidateSet(winner)),
+        paramsVersion: 1,
+    };
     val storage: EscrowStorage = {
         requester: requester,
         arbiter: arbiter,
@@ -152,24 +172,31 @@ fun deployEscrow(requester: address, arbiter: address): JobEscrow {
         deadline: 1_700_000_500,
         settled: false,
         terms: terms.toCell(),
+        pending: createEmptyMap(),
     };
     val escrow = JobEscrow.fromStorage(storage);
     expect(escrow.deploy(requester, { value: ton("102") })).toHaveSuccessfulDeploy({ to: escrow.address });
     return escrow;
 }
 
-fun deployAnchor(authority: address): RecordAnchor {
+fun deployAnchor(authority: address, keeper: address): RecordAnchor {
+    val auth: AnchorAuthorities = {
+        treasury: authority,
+        keeper: keeper,
+        upgradeAuthority: authority,
+    };
     val cfg: AnchorConfig = {
         minStakeWeight: ton("100"),
         disputeBondMin: ton("1"),
         verdictAuthority: authority,
-        treasury: authority,
+        auth: auth.toCell(),
     };
     val storage: AnchorStorage = {
         currentEpoch: 0,
         lastRoot: 0,
         nextDisputeId: 0,
         disputes: createEmptyMap(),
+        roots: createEmptyMap(),
         config: cfg.toCell(),
         codeVersion: 0,
     };
@@ -249,39 +276,44 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
     expect(jd.jettonContent.hash()).toEqual(buildReceiptJettonContent().hash());
 
     // -- 2. JobEscrow: HTLC settle on the agreed result hash -----------------
-    val escrow = deployEscrow(deployer.address, deployer.address);
+    // B1: the winner must be in the requester-committed candidate set and cannot
+    // be the arbiter, so use a distinct winner wallet.
+    val winner = randomAddress("winner");
+    val escrow = deployEscrow(deployer.address, deployer.address, winner);
     var participants: map<address, coins> = createEmptyMap();
-    participants.set(deployer.address, ton("1"));
     expect(
         escrow.sendEscrowSettle(
             deployer.address,
             2,
             RESULT_HASH,
-            deployer.address,
+            winner,
             ton("60"),
             ton("2"),
             participants,
+            candidateSet(winner),
             { value: ton("1") },
         ),
     ).toHaveSuccessfulTx<EscrowSettle>({ from: deployer.address, to: escrow.address });
     expect(escrow.getEscrowState().settled).toBeTrue();
 
     // -- 3. RecordAnchor: chained single-leaf + multi-leaf inclusion ---------
-    val anchor = deployAnchor(deployer.address);
+    // A3: a configured keeper anchors; here the deployer is the keeper.
+    val anchor = deployAnchor(deployer.address, deployer.address);
 
-    // Single-leaf epoch 1 (leaf == root, empty proof).
+    // Single-leaf epoch 1: MERKLE v2 → a 1-leaf tree's root is hashLeaf(leaf).
+    val singleRoot = hashLeaf(RESULT_HASH);
     expect(
         anchor.sendAnchorSubmitRoot(
             deployer.address,
             3,
             1,
-            RESULT_HASH,
+            singleRoot,
             0,
             ton("100"),
             { value: ton("1") },
         ),
     ).toHaveSuccessfulTx<AnchorSubmitRoot>({ from: deployer.address, to: anchor.address });
-    expect(anchor.verifyInclusion(RESULT_HASH, RESULT_HASH, null)).toBeTrue();
+    expect(anchor.verifyInclusion(RESULT_HASH, singleRoot, null)).toBeTrue();
 
     // Multi-leaf epoch 2, chained to epoch 1; verify interior leaf M5.
     val mlRoot = tree8Root();
@@ -291,7 +323,7 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
             31,
             2,
             mlRoot,
-            RESULT_HASH,
+            singleRoot,
             ton("100"),
             { value: ton("1") },
         ),

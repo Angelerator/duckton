@@ -7,1400 +7,2583 @@ services:
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: &id001
+    - /tmp:exec,mode=1777
+    - /node/state:exec,mode=0700
+    security_opt: &id002
+    - no-new-privileges:true
+    cap_drop: &id003
+    - ALL
   seed2:
     image: p2p-node:latest
     hostname: seed2
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
   seed3:
     image: p2p-node:latest
     hostname: seed3
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
   node1:
     image: p2p-node:latest
     hostname: node1
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node2:
     image: p2p-node:latest
     hostname: node2
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node3:
     image: p2p-node:latest
     hostname: node3
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node4:
     image: p2p-node:latest
     hostname: node4
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node5:
     image: p2p-node:latest
     hostname: node5
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node6:
     image: p2p-node:latest
     hostname: node6
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node7:
     image: p2p-node:latest
     hostname: node7
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node8:
     image: p2p-node:latest
     hostname: node8
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node9:
     image: p2p-node:latest
     hostname: node9
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node10:
     image: p2p-node:latest
     hostname: node10
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node11:
     image: p2p-node:latest
     hostname: node11
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node12:
     image: p2p-node:latest
     hostname: node12
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node13:
     image: p2p-node:latest
     hostname: node13
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node14:
     image: p2p-node:latest
     hostname: node14
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node15:
     image: p2p-node:latest
     hostname: node15
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node16:
     image: p2p-node:latest
     hostname: node16
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node17:
     image: p2p-node:latest
     hostname: node17
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node18:
     image: p2p-node:latest
     hostname: node18
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node19:
     image: p2p-node:latest
     hostname: node19
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node20:
     image: p2p-node:latest
     hostname: node20
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node21:
     image: p2p-node:latest
     hostname: node21
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node22:
     image: p2p-node:latest
     hostname: node22
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node23:
     image: p2p-node:latest
     hostname: node23
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node24:
     image: p2p-node:latest
     hostname: node24
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node25:
     image: p2p-node:latest
     hostname: node25
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node26:
     image: p2p-node:latest
     hostname: node26
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node27:
     image: p2p-node:latest
     hostname: node27
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node28:
     image: p2p-node:latest
     hostname: node28
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node29:
     image: p2p-node:latest
     hostname: node29
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node30:
     image: p2p-node:latest
     hostname: node30
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node31:
     image: p2p-node:latest
     hostname: node31
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node32:
     image: p2p-node:latest
     hostname: node32
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node33:
     image: p2p-node:latest
     hostname: node33
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node34:
     image: p2p-node:latest
     hostname: node34
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node35:
     image: p2p-node:latest
     hostname: node35
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node36:
     image: p2p-node:latest
     hostname: node36
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node37:
     image: p2p-node:latest
     hostname: node37
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node38:
     image: p2p-node:latest
     hostname: node38
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node39:
     image: p2p-node:latest
     hostname: node39
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node40:
     image: p2p-node:latest
     hostname: node40
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node41:
     image: p2p-node:latest
     hostname: node41
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node42:
     image: p2p-node:latest
     hostname: node42
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node43:
     image: p2p-node:latest
     hostname: node43
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node44:
     image: p2p-node:latest
     hostname: node44
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node45:
     image: p2p-node:latest
     hostname: node45
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node46:
     image: p2p-node:latest
     hostname: node46
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node47:
     image: p2p-node:latest
     hostname: node47
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node48:
     image: p2p-node:latest
     hostname: node48
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node49:
     image: p2p-node:latest
     hostname: node49
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node50:
     image: p2p-node:latest
     hostname: node50
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node51:
     image: p2p-node:latest
     hostname: node51
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node52:
     image: p2p-node:latest
     hostname: node52
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node53:
     image: p2p-node:latest
     hostname: node53
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node54:
     image: p2p-node:latest
     hostname: node54
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node55:
     image: p2p-node:latest
     hostname: node55
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node56:
     image: p2p-node:latest
     hostname: node56
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node57:
     image: p2p-node:latest
     hostname: node57
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node58:
     image: p2p-node:latest
     hostname: node58
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node59:
     image: p2p-node:latest
     hostname: node59
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node60:
     image: p2p-node:latest
     hostname: node60
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node61:
     image: p2p-node:latest
     hostname: node61
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node62:
     image: p2p-node:latest
     hostname: node62
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node63:
     image: p2p-node:latest
     hostname: node63
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node64:
     image: p2p-node:latest
     hostname: node64
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node65:
     image: p2p-node:latest
     hostname: node65
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node66:
     image: p2p-node:latest
     hostname: node66
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node67:
     image: p2p-node:latest
     hostname: node67
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node68:
     image: p2p-node:latest
     hostname: node68
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node69:
     image: p2p-node:latest
     hostname: node69
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node70:
     image: p2p-node:latest
     hostname: node70
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node71:
     image: p2p-node:latest
     hostname: node71
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node72:
     image: p2p-node:latest
     hostname: node72
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node73:
     image: p2p-node:latest
     hostname: node73
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node74:
     image: p2p-node:latest
     hostname: node74
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node75:
     image: p2p-node:latest
     hostname: node75
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node76:
     image: p2p-node:latest
     hostname: node76
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node77:
     image: p2p-node:latest
     hostname: node77
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node78:
     image: p2p-node:latest
     hostname: node78
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node79:
     image: p2p-node:latest
     hostname: node79
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node80:
     image: p2p-node:latest
     hostname: node80
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node81:
     image: p2p-node:latest
     hostname: node81
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node82:
     image: p2p-node:latest
     hostname: node82
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node83:
     image: p2p-node:latest
     hostname: node83
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node84:
     image: p2p-node:latest
     hostname: node84
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node85:
     image: p2p-node:latest
     hostname: node85
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node86:
     image: p2p-node:latest
     hostname: node86
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node87:
     image: p2p-node:latest
     hostname: node87
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node88:
     image: p2p-node:latest
     hostname: node88
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node89:
     image: p2p-node:latest
     hostname: node89
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node90:
     image: p2p-node:latest
     hostname: node90
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node91:
     image: p2p-node:latest
     hostname: node91
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node92:
     image: p2p-node:latest
     hostname: node92
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node93:
     image: p2p-node:latest
     hostname: node93
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node94:
     image: p2p-node:latest
     hostname: node94
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node95:
     image: p2p-node:latest
     hostname: node95
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node96:
     image: p2p-node:latest
     hostname: node96
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
   node97:
     image: p2p-node:latest
     hostname: node97
     environment:
       P2P_BIND_ADDR: 0.0.0.0:9494
       P2P_SHARE_MEMORY: 512MB
-      P2P_SHARE_MAXJOBS: "4"
-      BOOTSTRAP: "quic://seed1:9494,quic://seed2:9494,quic://seed3:9494"
-    networks: [grid]
+      P2P_SHARE_MAXJOBS: '4'
+      BOOTSTRAP: quic://seed1:9494,quic://seed2:9494,quic://seed3:9494
+    networks:
+    - grid
     mem_limit: 224m
     cpus: 0.4
     pids_limit: 64
-    restart: "no"
+    restart: 'no'
     stop_grace_period: 2s
+    read_only: true
+    tmpfs: *id001
+    security_opt: *id002
+    cap_drop: *id003
+    depends_on:
+      seed1:
+        condition: service_healthy
+      seed2:
+        condition: service_healthy
+      seed3:
+        condition: service_healthy
 networks:
   grid:
     driver: bridge

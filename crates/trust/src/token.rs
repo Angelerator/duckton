@@ -11,7 +11,7 @@
 //!
 //! Verification needs only the trusted issuer's public key — no central server.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 const DOMAIN: &[u8] = b"duckdb-p2p-capability-v1";
@@ -84,6 +84,43 @@ pub enum TokenError {
     CaveatFailed,
     #[error("holder key does not match current holder")]
     NotHolder,
+    #[error("token has no ExpiresAt caveat (unbounded lifetime is not allowed)")]
+    MissingExpiry,
+}
+
+/// Canonical, explicit TLV encoding of caveats for the signature.
+///
+/// Hand-rolled (not `serde_json`) so the signed bytes are stable regardless of
+/// the serde / serde_json versions or any future struct-derived field ordering —
+/// JSON is not a canonical form, so signing over `serde_json::to_vec` is fragile.
+fn encode_caveats(caveats: &[Caveat]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&(caveats.len() as u64).to_le_bytes());
+    for c in caveats {
+        match c {
+            Caveat::ExpiresAt(t) => {
+                buf.push(1);
+                buf.extend_from_slice(&t.to_le_bytes());
+            }
+            Caveat::Operation(op) => {
+                buf.push(2);
+                let b = op.as_bytes();
+                buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+                buf.extend_from_slice(b);
+            }
+            Caveat::ResourcePrefix(p) => {
+                buf.push(3);
+                let b = p.as_bytes();
+                buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+                buf.extend_from_slice(b);
+            }
+            Caveat::MaxRows(m) => {
+                buf.push(4);
+                buf.extend_from_slice(&m.to_le_bytes());
+            }
+        }
+    }
+    buf
 }
 
 fn layer_bytes(
@@ -96,8 +133,7 @@ fn layer_bytes(
     buf.extend_from_slice(DOMAIN);
     buf.extend_from_slice(&(index as u64).to_le_bytes());
     buf.extend_from_slice(holder_pubkey);
-    // canonical caveat encoding via serde_json (stable for our enum)
-    let cav = serde_json::to_vec(caveats).expect("caveats serialize");
+    let cav = encode_caveats(caveats);
     buf.extend_from_slice(&(cav.len() as u64).to_le_bytes());
     buf.extend_from_slice(&cav);
     buf.extend_from_slice(&(prev_sig.len() as u64).to_le_bytes());
@@ -175,6 +211,10 @@ impl CapabilityToken {
         }
         let mut prev_sig: Vec<u8> = Vec::new();
         let mut expected_signer = *trusted_issuer_pubkey;
+        // A token must carry at least one expiry — an unbounded-lifetime token is
+        // rejected even if every other caveat passes (capability-token best
+        // practice: always time-box authority).
+        let mut saw_expiry = false;
 
         for (i, layer) in self.layers.iter().enumerate() {
             let signer = decode_key(&layer.signer_pubkey)?;
@@ -190,10 +230,15 @@ impl CapabilityToken {
             let sig = Signature::from_bytes(&decode_sig(&layer.sig)?);
             let vk = VerifyingKey::from_bytes(&signer).map_err(|_| TokenError::Encoding)?;
             let msg = layer_bytes(i, &holder, &layer.caveats, &prev_sig);
-            vk.verify(&msg, &sig).map_err(|_| TokenError::BadSignature(i))?;
+            // strict verification rejects malleable signatures / weak keys.
+            vk.verify_strict(&msg, &sig)
+                .map_err(|_| TokenError::BadSignature(i))?;
 
             // every caveat across all layers must hold
             for cav in &layer.caveats {
+                if matches!(cav, Caveat::ExpiresAt(_)) {
+                    saw_expiry = true;
+                }
                 if !cav.satisfied_by(ctx) {
                     return Err(TokenError::CaveatFailed);
                 }
@@ -201,6 +246,10 @@ impl CapabilityToken {
 
             expected_signer = holder; // next layer must be signed by this holder
             prev_sig = decode_sig(&layer.sig)?.to_vec();
+        }
+
+        if !saw_expiry {
+            return Err(TokenError::MissingExpiry);
         }
 
         self.holder()
@@ -288,7 +337,7 @@ mod tests {
         let root = CapabilityToken::mint(
             &issuer,
             &holder.verifying_key().to_bytes(),
-            vec![Caveat::Operation("query".into())],
+            vec![Caveat::Operation("query".into()), Caveat::ExpiresAt(2000)],
         );
         // holder delegates to `delegate`, adding a row cap
         let attenuated = root
@@ -305,6 +354,23 @@ mod tests {
         assert_eq!(
             attenuated.verify(&issuer.verifying_key().to_bytes(), &over),
             Err(TokenError::CaveatFailed)
+        );
+    }
+
+    #[test]
+    fn token_without_expiry_is_rejected() {
+        // A token whose caveats all pass but that carries no ExpiresAt is invalid
+        // (unbounded-lifetime tokens are not allowed).
+        let issuer = SigningKey::generate(&mut OsRng);
+        let holder = SigningKey::generate(&mut OsRng);
+        let token = CapabilityToken::mint(
+            &issuer,
+            &holder.verifying_key().to_bytes(),
+            vec![Caveat::Operation("query".into())],
+        );
+        assert_eq!(
+            token.verify(&issuer.verifying_key().to_bytes(), &ctx()),
+            Err(TokenError::MissingExpiry)
         );
     }
 

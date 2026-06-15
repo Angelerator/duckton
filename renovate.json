@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["rust", "debian"],
+      "description": "Keep Dockerfile base images current; digest-pin via Renovate",
+      "pinDigests": true,
+      "automerge": false
+    },
+    {
+      "matchManagers": ["cargo"],
+      "description": "Auto-merge patch-level Cargo dependency updates",
+      "matchUpdateTypes": ["patch"],
+      "automerge": true
+    }
+  ],
+  "dockerfile": {
+    "enabled": true
+  },
+  "cargo": {
+    "enabled": true
+  }
+}

@@ -47,11 +47,19 @@ struct PersistObs {
     ts: u64,
     correct: bool,
     weight: f64,
+    /// Source-receipt fingerprint (for replay dedup + eviction cleanup).
+    #[serde(default)]
+    fp: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistWorker {
     obs: Vec<PersistObs>,
+    /// Fingerprints of receipts already counted, for replay dedup. Pruned in
+    /// lock step with `obs` on FIFO eviction so it stays bounded. `#[serde(default)]`
+    /// keeps older on-disk records readable.
+    #[serde(default)]
+    seen: Vec<u64>,
     voucher_trust: f64,
     penalty: f64,
     /// Insertion sequence (for FIFO eviction).
@@ -62,6 +70,7 @@ impl Default for PersistWorker {
     fn default() -> Self {
         Self {
             obs: Vec::new(),
+            seen: Vec::new(),
             voucher_trust: 0.0,
             penalty: 0.0,
             seq: 0,
@@ -155,7 +164,8 @@ impl RedbTrustStore {
 
             f(&mut state);
             while state.obs.len() > self.max_obs_per_worker {
-                state.obs.remove(0);
+                let removed = state.obs.remove(0);
+                state.seen.retain(|&x| x != removed.fp);
             }
             let encoded = serde_json::to_vec(&state).map_err(map_err)?;
             workers.insert(key, encoded.as_slice()).map_err(map_err)?;
@@ -196,11 +206,18 @@ impl TrustStore for RedbTrustStore {
         }
         let correct = receipt.verdict.is_correct();
         let ts = receipt.ts;
+        let fp = crate::reputation::receipt_fingerprint(receipt);
         let _ = self.mutate(&receipt.worker_id, |s| {
+            // Replay defense: count each unique (job, requester) receipt once.
+            if s.seen.contains(&fp) {
+                return;
+            }
+            s.seen.push(fp);
             s.obs.push(PersistObs {
                 ts,
                 correct,
                 weight: 1.0,
+                fp,
             });
         });
     }

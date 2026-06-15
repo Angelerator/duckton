@@ -25,9 +25,22 @@ use p2p_config::PinningMode;
 /// Extract the node id from a presented certificate by reading the raw Ed25519
 /// public key out of its SubjectPublicKeyInfo and hashing it with BLAKE3.
 pub fn node_id_from_cert(cert: &CertificateDer<'_>) -> Result<NodeId, String> {
+    use x509_parser::oid_registry::OID_SIG_ED25519;
+
     let (_, parsed) = x509_parser::parse_x509_certificate(cert.as_ref())
         .map_err(|e| format!("x509 parse: {e}"))?;
     let spki = parsed.public_key();
+    // The SPKI `AlgorithmIdentifier` MUST declare Ed25519 (OID 1.3.101.112).
+    // Without this check, any 32-byte SubjectPublicKey (e.g. an X25519 key, or a
+    // future curve) would be accepted on length alone and hashed into an
+    // "authenticated" node id — weakening the invariant that an identity is
+    // always an Ed25519 key the peer proved possession of via CertificateVerify.
+    if spki.algorithm.algorithm != OID_SIG_ED25519 {
+        return Err(format!(
+            "expected Ed25519 SPKI algorithm (OID {OID_SIG_ED25519}), got {}",
+            spki.algorithm.algorithm
+        ));
+    }
     let key_bytes = spki.subject_public_key.data.as_ref();
     // Ed25519 SPKI subjectPublicKey is the raw 32-byte key.
     if key_bytes.len() != 32 {

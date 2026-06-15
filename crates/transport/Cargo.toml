@@ -26,3 +26,4 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 x509-parser = "0.18.1"
+zeroize = "1"

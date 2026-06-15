@@ -9,7 +9,7 @@
 //! attestation quote, so the key is released *only* to a genuine enclave.
 
 use chacha20poly1305::aead::{Aead, KeyInit};
-use chacha20poly1305::{ChaCha20Poly1305, Nonce};
+use chacha20poly1305::{ChaCha20Poly1305, Nonce, XChaCha20Poly1305, XNonce};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -87,15 +87,21 @@ pub fn seal_to(recipient_pub: &[u8; 32], plaintext: &[u8]) -> SealedBlob {
 
 /// Encrypt data at rest with a symmetric 32-byte data key (Parquet-Modular-
 /// Encryption stand-in for local-file tests, architecture §9.2). Output is
-/// `nonce(12) ‖ ciphertext`.
+/// `nonce(24) ‖ ciphertext`.
+///
+/// Uses **XChaCha20-Poly1305** (192-bit nonce): unlike the 96-bit
+/// ChaCha20-Poly1305 nonce — which has a non-negligible collision probability
+/// after ~2³² messages under a single key — a random 192-bit nonce is safe to
+/// reuse across an effectively unbounded number of files under one long-lived
+/// at-rest data key (no per-key message-count budget to track).
 pub fn encrypt_at_rest(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let mut nonce = [0u8; 12];
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let mut nonce = [0u8; 24];
     OsRng.fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext)
+        .encrypt(XNonce::from_slice(&nonce), plaintext)
         .expect("encryption never fails for valid key/nonce");
-    let mut out = Vec::with_capacity(12 + ct.len());
+    let mut out = Vec::with_capacity(24 + ct.len());
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ct);
     out
@@ -104,12 +110,12 @@ pub fn encrypt_at_rest(key: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
 /// Decrypt data produced by [`encrypt_at_rest`]. Returns `None` if the key is
 /// wrong or the ciphertext was tampered with.
 pub fn decrypt_at_rest(key: &[u8; 32], blob: &[u8]) -> Option<Vec<u8>> {
-    if blob.len() < 12 {
+    if blob.len() < 24 {
         return None;
     }
-    let (nonce, ct) = blob.split_at(12);
-    let cipher = ChaCha20Poly1305::new(key.into());
-    cipher.decrypt(Nonce::from_slice(nonce), ct).ok()
+    let (nonce, ct) = blob.split_at(24);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    cipher.decrypt(XNonce::from_slice(nonce), ct).ok()
 }
 
 fn derive_key(shared: &[u8; 32], ephemeral_pub: &[u8; 32], recipient_pub: &[u8; 32]) -> [u8; 32] {

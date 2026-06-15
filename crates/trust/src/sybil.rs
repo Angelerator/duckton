@@ -2,17 +2,29 @@
 //! and a web-of-trust vouching scheme.
 //!
 //! * **PoW minting** — a new `node_id` must accompany a nonce such that
-//!   `BLAKE3(domain ‖ pubkey ‖ nonce)` has at least `difficulty_bits` leading
-//!   zero bits. This raises the cost of mass-producing identities.
+//!   `BLAKE3(domain ‖ pubkey ‖ epoch ‖ nonce)` has at least `difficulty_bits`
+//!   leading zero bits. Binding a coarse time **epoch** into the preimage means a
+//!   single solved nonce is only valid for ~one day, so a Sybil fleet must
+//!   re-mint every epoch — raising the *ongoing* (not one-time) cost.
 //! * **Vouching** — an existing trusted node signs a `Vouch{subject, weight}`,
 //!   lending bootstrap trust to a newcomer.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2p_proto::NodeId;
 use serde::{Deserialize, Serialize};
 
-const POW_DOMAIN: &[u8] = b"duckdb-p2p-identity-pow-v1";
+const POW_DOMAIN: &[u8] = b"duckdb-p2p-identity-pow-v2";
 const VOUCH_DOMAIN: &[u8] = b"duckdb-p2p-vouch-v1";
+
+/// Length of a PoW epoch in seconds (1 day). The PoW preimage binds the epoch a
+/// capability ad's `ts` falls in, so a solved nonce expires after ~one day and
+/// mass identities must re-mint each epoch.
+pub const POW_EPOCH_SECS: u64 = 24 * 3600;
+
+/// The PoW epoch a unix-seconds timestamp falls in.
+pub fn pow_epoch(ts: u64) -> u64 {
+    ts / POW_EPOCH_SECS
+}
 
 /// Count leading zero bits across a byte slice.
 fn leading_zero_bits(bytes: &[u8]) -> u32 {
@@ -28,11 +40,12 @@ fn leading_zero_bits(bytes: &[u8]) -> u32 {
     count
 }
 
-/// Compute the PoW digest for a public key + nonce.
-fn pow_digest(pubkey: &[u8; 32], nonce: u64) -> [u8; 32] {
+/// Compute the PoW digest for a public key bound to a time epoch + nonce.
+fn pow_digest(pubkey: &[u8; 32], epoch: u64, nonce: u64) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     hasher.update(POW_DOMAIN);
     hasher.update(pubkey);
+    hasher.update(&epoch.to_le_bytes());
     hasher.update(&nonce.to_le_bytes());
     *hasher.finalize().as_bytes()
 }
@@ -48,9 +61,14 @@ pub struct PowStamp {
 ///
 /// Returns `None` if no nonce is found within `max_iters` (only relevant for
 /// pathological difficulties; callers normally loop until success).
-pub fn mint_pow(pubkey: &[u8; 32], difficulty_bits: u32, max_iters: u64) -> Option<PowStamp> {
+pub fn mint_pow(
+    pubkey: &[u8; 32],
+    epoch: u64,
+    difficulty_bits: u32,
+    max_iters: u64,
+) -> Option<PowStamp> {
     for nonce in 0..max_iters {
-        if leading_zero_bits(&pow_digest(pubkey, nonce)) >= difficulty_bits {
+        if leading_zero_bits(&pow_digest(pubkey, epoch, nonce)) >= difficulty_bits {
             return Some(PowStamp {
                 nonce,
                 difficulty_bits,
@@ -60,12 +78,12 @@ pub fn mint_pow(pubkey: &[u8; 32], difficulty_bits: u32, max_iters: u64) -> Opti
     None
 }
 
-/// Verify a PoW stamp meets at least `required_bits`.
-pub fn verify_pow(pubkey: &[u8; 32], stamp: &PowStamp, required_bits: u32) -> bool {
+/// Verify a PoW stamp meets at least `required_bits` for the given `epoch`.
+pub fn verify_pow(pubkey: &[u8; 32], epoch: u64, stamp: &PowStamp, required_bits: u32) -> bool {
     if stamp.difficulty_bits < required_bits {
         return false;
     }
-    leading_zero_bits(&pow_digest(pubkey, stamp.nonce)) >= required_bits
+    leading_zero_bits(&pow_digest(pubkey, epoch, stamp.nonce)) >= required_bits
 }
 
 /// A signed vouch lending trust to a subject node.
@@ -110,7 +128,7 @@ pub fn verify_vouch(vouch: &Vouch) -> Option<f64> {
     let sig_arr: [u8; 64] = sig_bytes.try_into().ok()?;
     let sig = Signature::from_bytes(&sig_arr);
     let msg = vouch_signing_bytes(&pk, &vouch.subject, vouch.weight_milli);
-    vk.verify(&msg, &sig).ok()?;
+    vk.verify_strict(&msg, &sig).ok()?;
     Some(vouch.weight_milli as f64 / 1000.0)
 }
 
@@ -122,24 +140,41 @@ mod tests {
     #[test]
     fn pow_mint_and_verify_small_difficulty() {
         let pubkey = [42u8; 32];
-        let stamp = mint_pow(&pubkey, 12, 1_000_000).expect("should find nonce");
-        assert!(verify_pow(&pubkey, &stamp, 12));
+        let stamp = mint_pow(&pubkey, 0, 12, 1_000_000).expect("should find nonce");
+        assert!(verify_pow(&pubkey, 0, &stamp, 12));
         // Higher requirement than minted should fail.
-        assert!(!verify_pow(&pubkey, &stamp, 24) || stamp.difficulty_bits >= 24);
+        assert!(!verify_pow(&pubkey, 0, &stamp, 24) || stamp.difficulty_bits >= 24);
     }
 
     #[test]
     fn pow_rejects_wrong_pubkey() {
-        let stamp = mint_pow(&[1u8; 32], 10, 1_000_000).unwrap();
-        assert!(!verify_pow(&[2u8; 32], &stamp, 10));
+        let stamp = mint_pow(&[1u8; 32], 0, 10, 1_000_000).unwrap();
+        assert!(!verify_pow(&[2u8; 32], 0, &stamp, 10));
     }
 
     #[test]
     fn pow_rejects_understated_difficulty() {
         let pubkey = [7u8; 32];
-        let stamp = mint_pow(&pubkey, 8, 1_000_000).unwrap();
+        let stamp = mint_pow(&pubkey, 0, 8, 1_000_000).unwrap();
         // claims only 8 bits, but policy requires 16
-        assert!(!verify_pow(&pubkey, &stamp, 16));
+        assert!(!verify_pow(&pubkey, 0, &stamp, 16));
+    }
+
+    #[test]
+    fn pow_is_bound_to_epoch() {
+        // A nonce solved for one epoch must NOT validate in a different epoch,
+        // forcing periodic re-mint (the Sybil-cost fix).
+        let pubkey = [9u8; 32];
+        let stamp = mint_pow(&pubkey, 7, 12, 1_000_000).unwrap();
+        assert!(verify_pow(&pubkey, 7, &stamp, 12));
+        assert!(!verify_pow(&pubkey, 8, &stamp, 12), "stamp must not cross epochs");
+    }
+
+    #[test]
+    fn pow_epoch_buckets_by_day() {
+        assert_eq!(pow_epoch(0), 0);
+        assert_eq!(pow_epoch(POW_EPOCH_SECS - 1), 0);
+        assert_eq!(pow_epoch(POW_EPOCH_SECS), 1);
     }
 
     #[test]

@@ -27,13 +27,34 @@ type AllowedMessageToVaultV2 =
     | StakeWithdraw
     | StakeKeeperWithdraw
     | StakeSlash
+    | StakeClaim
     | ProvideWalletAddress
     | ReceiptTopUp
     | StakeAnnounceUpgrade
     | StakeApplyUpgrade
     | StakeCancelUpgrade
 
-fun onBouncedMessage(_in: InMessageBounced) {}
+// C1/C2 bounce-safety (mirrors v1).
+fun onBouncedMessage(in: InMessageBounced) {
+    var body = in.bouncedBody;
+    body.skipBouncedPrefix();
+    val op = body.loadUint(32);
+    var storage = lazy VaultStorage.load();
+
+    if (op == OP_JETTON_TRANSFER_INTERNAL) {
+        body.skipBits(64);
+        val amount = body.loadCoins();
+        val backOut = min(amount, storage.staked);
+        storage.staked -= backOut;
+        storage.totalSupply -= amount;
+        storage.save();
+    } else if (op == OP_STAKE_PAYOUT) {
+        val prev = storage.pending.get(in.senderAddress);
+        val had: coins = prev.isFound ? prev.loadValue() : 0;
+        storage.pending.set(in.senderAddress, had + in.valueCoins);
+        storage.save();
+    }
+}
 
 fun onInternalMessage(in: InMessage) {
     val msg = lazy AllowedMessageToVaultV2.fromSlice(in.body);
@@ -44,11 +65,13 @@ fun onInternalMessage(in: InMessage) {
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
             assert (in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE) throw ErrCode.NOT_ENOUGH_GAS;
 
+            val cfg = storage.config.load();
+            validateVaultConfig(cfg);
+
             storage.staked += msg.amount;
             storage.totalSupply += msg.amount;
             storage.save();
 
-            val cfg = storage.config.load();
             mintReceipt(
                 storage.owner,
                 contract.getAddress(),
@@ -91,7 +114,7 @@ fun onInternalMessage(in: InMessage) {
                 amount,
                 msg.queryId,
             );
-            payout(storage.owner, amount);
+            payoutLiquidRemainder(storage.owner, storage.staked, msg.queryId);
         }
 
         StakeKeeperWithdraw => {
@@ -115,10 +138,11 @@ fun onInternalMessage(in: InMessage) {
                 amount,
                 msg.queryId,
             );
-            payout(storage.owner, amount - bounty);
+            reserveToncoinsOnBalance(storage.staked + MIN_TONS_FOR_STORAGE, RESERVE_MODE_EXACT_AMOUNT);
             if (bounty > 0) {
-                payout(in.senderAddress, bounty);
+                payout(in.senderAddress, bounty, msg.queryId);
             }
+            payoutRemainderNoReserve(storage.owner, msg.queryId);
         }
 
         StakeSlash => {
@@ -141,7 +165,18 @@ fun onInternalMessage(in: InMessage) {
                 msg.amount,
                 msg.queryId,
             );
-            applySlashSplit(cfg.slash.load(), msg.amount, msg.challenger);
+            applySlashSplit(cfg.slash.load(), msg.amount, msg.challenger, msg.queryId);
+        }
+
+        StakeClaim => {
+            var storage = lazy VaultStorage.load();
+            val found = storage.pending.get(msg.recipient);
+            assert (found.isFound) throw ErrCode.NO_UNBONDING;
+            val amount = found.loadValue();
+            assert (amount > 0) throw ErrCode.NO_UNBONDING;
+            storage.pending.delete(msg.recipient);
+            storage.save();
+            payout(msg.recipient, amount, msg.queryId);
         }
 
         ProvideWalletAddress => {
@@ -176,7 +211,7 @@ fun onInternalMessage(in: InMessage) {
         StakeAnnounceUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.slasher) throw ErrCode.NOT_SLASHER;
+            assert (in.senderAddress == cfg.upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
 
             var up = storage.upgrade.load();
             up.pendingCodeHash = msg.newCodeHash;
@@ -188,7 +223,7 @@ fun onInternalMessage(in: InMessage) {
         StakeApplyUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.slasher) throw ErrCode.NOT_SLASHER;
+            assert (in.senderAddress == cfg.upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
 
             var up = storage.upgrade.load();
             assert (up.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
@@ -207,7 +242,7 @@ fun onInternalMessage(in: InMessage) {
         StakeCancelUpgrade => {
             var storage = lazy VaultStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.slasher) throw ErrCode.NOT_SLASHER;
+            assert (in.senderAddress == cfg.upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
 
             var up = storage.upgrade.load();
             assert (up.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
@@ -230,7 +265,7 @@ fun onInternalMessage(in: InMessage) {
 fun mintReceipt(owner: address, master: address, walletCode: cell, amount: coins, queryId: int) {
     val dest = calcDeployedReceiptWallet(owner, master, walletCode);
     val m = createMessage({
-        bounce: BounceMode.NoBounce,
+        bounce: BounceMode.Only256BitsOfBody,
         dest: dest,
         value: MIN_TONS_FOR_STORAGE,
         body: JettonInternalTransfer {
@@ -259,16 +294,32 @@ fun burnReceipt(owner: address, master: address, walletCode: cell, amount: coins
     m.send(SEND_MODE_PAY_FEES_SEPARATELY | SEND_MODE_IGNORE_ERRORS);
 }
 
-fun payout(to: address, amount: coins) {
+fun payout(to: address, amount: coins, queryId: int) {
     val m = createMessage({
-        bounce: BounceMode.NoBounce,
+        bounce: BounceMode.Only256BitsOfBody,
         dest: to,
         value: amount,
+        body: StakePayout { queryId: queryId as uint64 },
     });
-    m.send(SEND_MODE_PAY_FEES_SEPARATELY | SEND_MODE_IGNORE_ERRORS);
+    m.send(SEND_MODE_PAY_FEES_SEPARATELY);
 }
 
-fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
+fun payoutLiquidRemainder(to: address, keepReserved: coins, queryId: int) {
+    reserveToncoinsOnBalance(keepReserved + MIN_TONS_FOR_STORAGE, RESERVE_MODE_EXACT_AMOUNT);
+    payoutRemainderNoReserve(to, queryId);
+}
+
+fun payoutRemainderNoReserve(to: address, queryId: int) {
+    val m = createMessage({
+        bounce: BounceMode.Only256BitsOfBody,
+        dest: to,
+        value: 0,
+        body: StakePayout { queryId: queryId as uint64 },
+    });
+    m.send(SEND_MODE_CARRY_ALL_BALANCE);
+}
+
+fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address, queryId: int) {
     val sum = sc.splitChallengerBps + sc.splitRedundancyBps + sc.splitBurnBps + sc.splitTreasuryBps;
     assert (sum == BPS_DENOM) throw ErrCode.INVALID_SPLIT;
 
@@ -277,13 +328,13 @@ fun applySlashSplit(sc: SlashConfig, amount: coins, challenger: address) {
     val treasuryAmt = mulDivFloor(amount, sc.splitTreasuryBps, BPS_DENOM);
 
     if (challengerAmt > 0) {
-        payout(challenger, challengerAmt);
+        payout(challenger, challengerAmt, queryId);
     }
     if (redundancyAmt > 0) {
-        payout(sc.redundancyPool, redundancyAmt);
+        payout(sc.redundancyPool, redundancyAmt, queryId);
     }
     if (treasuryAmt > 0) {
-        payout(sc.treasury, treasuryAmt);
+        payout(sc.treasury, treasuryAmt, queryId);
     }
 }
 
@@ -339,6 +390,16 @@ get fun get_slasher(): address {
 get fun get_binding_hash(): int {
     val storage = lazy VaultStorage.load();
     return storage.bindingHash;
+}
+
+// C1: the queued/bounced pull-balance for a recipient (0 if none).
+get fun get_pending(recipient: address): int {
+    val storage = lazy VaultStorage.load();
+    val found = storage.pending.get(recipient);
+    if (!found.isFound) {
+        return 0;
+    }
+    return found.loadValue();
 }
 
 get fun get_receipt_wallet_address(owner: address): address {

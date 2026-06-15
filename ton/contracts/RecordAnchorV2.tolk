@@ -24,7 +24,23 @@ type AllowedMessageToAnchorV2 =
     | AnchorResolveDispute
     | AnchorUpgradeCode
 
-fun onBouncedMessage(_in: InMessageBounced) {}
+// A1 bounce-safety (mirrors v1): a bounced bond refund re-opens its dispute.
+fun onBouncedMessage(in: InMessageBounced) {
+    var body = in.bouncedBody;
+    body.skipBouncedPrefix();
+    val op = body.loadUint(32);
+    if (op == OP_ANCHOR_BOND_REFUND) {
+        val disputeId = body.loadUint(32) as uint32;
+        var storage = lazy AnchorStorage.load();
+        val found = storage.disputes.get(disputeId);
+        if (found.isFound) {
+            var dispute = found.loadValue();
+            dispute.status = 0;
+            storage.disputes.set(disputeId, dispute);
+            storage.save();
+        }
+    }
+}
 
 fun onInternalMessage(in: InMessage) {
     val msg = lazy AllowedMessageToAnchorV2.fromSlice(in.body);
@@ -34,12 +50,16 @@ fun onInternalMessage(in: InMessage) {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
 
+            assert (in.senderAddress == cfg.auth.load().keeper) throw ErrCode.NOT_ANCHOR_KEEPER;
+            validateAnchorConfig(cfg);
+            assert (msg.root != 0) throw ErrCode.ZERO_ROOT;
             assert (msg.epoch == storage.currentEpoch + 1) throw ErrCode.EPOCH_REGRESSION;
             assert (msg.prevRoot == storage.lastRoot) throw ErrCode.BAD_PREV_ROOT;
             assert (msg.stakeWeight >= cfg.minStakeWeight) throw ErrCode.INSUFFICIENT_ANCHOR_STAKE;
 
             storage.currentEpoch = msg.epoch;
             storage.lastRoot = msg.root;
+            storage.roots.set(msg.epoch, msg.root);
             storage.save();
         }
 
@@ -48,8 +68,12 @@ fun onInternalMessage(in: InMessage) {
             val cfg = storage.config.load();
             assert (in.valueCoins >= cfg.disputeBondMin) throw ErrCode.DISPUTE_BOND_TOO_LOW;
 
+            val rootFound = storage.roots.get(msg.epoch);
+            assert (rootFound.isFound) throw ErrCode.UNKNOWN_EPOCH;
+            val anchoredRoot = rootFound.loadValue();
+
             val recomputed = computeRootFromProof(msg.leaf, msg.proof);
-            assert (recomputed == msg.claimedRoot) throw ErrCode.BAD_INCLUSION_PROOF;
+            assert (recomputed == anchoredRoot) throw ErrCode.BAD_INCLUSION_PROOF;
 
             val id = storage.nextDisputeId;
             storage.nextDisputeId = id + 1;
@@ -76,22 +100,27 @@ fun onInternalMessage(in: InMessage) {
             val found = storage.disputes.get(msg.disputeId);
             assert (found.isFound) throw ErrCode.NO_SUCH_DISPUTE;
             var dispute = found.loadValue();
+            assert (dispute.status == 0) throw ErrCode.DISPUTE_NOT_OPEN;
 
             if (msg.upheld) {
                 dispute.status = 1;
-                refund(dispute.challenger, dispute.bond);
             } else {
                 dispute.status = 2;
-                refund(cfg.treasury, dispute.bond);
             }
             storage.disputes.set(msg.disputeId, dispute);
             storage.save();
+
+            if (msg.upheld) {
+                refundBond(dispute.challenger, dispute.bond, msg.disputeId);
+            } else {
+                refundBond(cfg.auth.load().treasury, dispute.bond, msg.disputeId);
+            }
         }
 
         AnchorUpgradeCode => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.verdictAuthority) throw ErrCode.NOT_VERDICT_AUTHORITY;
+            assert (in.senderAddress == cfg.auth.load().upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
             storage.save();
@@ -103,13 +132,14 @@ fun onInternalMessage(in: InMessage) {
     }
 }
 
-fun refund(to: address, amount: coins) {
+fun refundBond(to: address, amount: coins, disputeId: int) {
     val m = createMessage({
-        bounce: BounceMode.NoBounce,
+        bounce: BounceMode.Only256BitsOfBody,
         dest: to,
         value: amount,
+        body: AnchorBondRefund { disputeId: disputeId as uint32 },
     });
-    m.send(SEND_MODE_PAY_FEES_SEPARATELY | SEND_MODE_IGNORE_ERRORS);
+    m.send(SEND_MODE_PAY_FEES_SEPARATELY);
 }
 
 // ---------------------------------------------------------------------------

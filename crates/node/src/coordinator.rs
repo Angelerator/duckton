@@ -38,6 +38,11 @@ use crate::planner::{is_resource_exhaustion, LocalExecutor, LocalOrRemotePlanner
 use crate::retry::{Backoff, FaultTally, TokenBucket};
 use crate::signer::IdentitySigner;
 
+/// QUIC application error code used when the coordinator abruptly RESETs a
+/// loser's (or a stalled winner's) dispatch stream. The worker maps a reset on
+/// the dispatch stream to a prompt job abort (it does not interpret the code).
+const LOSER_RESET_CODE: quinn::VarInt = quinn::VarInt::from_u32(7);
+
 /// Errors from running a query on the grid.
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinatorError {
@@ -772,6 +777,10 @@ impl Coordinator {
         };
         let stall_to = Duration::from_millis(stall_ms.max(1));
         let attempt_deadline = Duration::from_millis(cfg.scheduler.attempt_deadline_ms.max(1));
+        // Idle/transfer deadline for the WINNER's result download (step 7b). A
+        // silent winner must not hang the query forever; reuse the same idle
+        // budget the requester already applies to commit collection.
+        let result_xfer_to = stall_to;
         let selected: Vec<NodeId> = scored.iter().map(|(w, _, _)| w.clone()).collect();
 
         let collect_futs = scored.iter().map(|(worker, _, _)| {
@@ -824,6 +833,25 @@ impl Coordinator {
                 (fastest, false)
             }
             (None, VerifyMode::Quorum) => {
+                if outcome.split {
+                    // Equivocation: two or more distinct result hashes EACH reached
+                    // quorum (`agreed_hash` is therefore already `None`). There is
+                    // no single safe winner — surface it loudly instead of silently
+                    // picking a side, and treat the attempt as a verification
+                    // disagreement (terminal, no provider penalty).
+                    tracing::warn!(
+                        job = %job_id,
+                        query = %query_hash.0,
+                        agreement = outcome.agreement,
+                        quorum = outcome.quorum,
+                        "quorum SPLIT (equivocation): multiple distinct hashes each reached quorum; treating as inconclusive"
+                    );
+                    self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
+                    return Ok(AttemptResult::QuorumDisagreement {
+                        agreement: outcome.agreement,
+                        quorum: outcome.quorum,
+                    });
+                }
                 if outcome.reached() {
                     (outcome.agreed_hash.clone(), true)
                 } else if cfg.antiabuse.fault_attribution_active()
@@ -915,8 +943,86 @@ impl Coordinator {
         // while the job was feasible — fined for the broken commitment (below).
         let mut commitment_failers: Vec<NodeId> = Vec::new();
 
-        for (i, mut f) in inflight.into_iter().enumerate() {
-            if i != winner_idx && f.hash == agreed && !non_verifiable {
+        // Pull the winner out so every remaining `InFlight` is a loser. Order of
+        // the rest is irrelevant to the verdict (it only depends on `f.hash`), so
+        // a cheap `swap_remove` is fine.
+        let mut winner = inflight.swap_remove(winner_idx);
+        let mut losers = inflight; // renamed for clarity
+
+        // 7a. RESET the losers IMMEDIATELY — BEFORE we await the winner's (possibly
+        // large) result download. A graceful `finish()` would only close our send
+        // half *after* the whole winner transfer; the loser would keep computing
+        // for the entire download. Instead we abruptly QUIC-reset both directions
+        // of each loser's dispatch stream (`send.reset` + `recv.stop`), which the
+        // worker observes promptly and aborts on (see `worker::execute_with_progress`'s
+        // cancel-watch). A best-effort `Cancel` frame is still written first so a
+        // worker that happens to be blocked reading gets a clean reason; the reset
+        // is the hard guarantee.
+        for f in losers.iter_mut() {
+            let _ = write_msg(
+                &mut f.send,
+                &Wire::Cancel(Cancel {
+                    job_id: job_id.clone(),
+                    reason: "lost race".into(),
+                }),
+            )
+            .await;
+            // Hard, immediate teardown of both directions (do NOT wait for a
+            // graceful finish): stop reading the worker's result stream and reset
+            // our send half so the worker's next read/write fails at once.
+            let _ = f.recv.stop(LOSER_RESET_CODE);
+            let _ = f.send.reset(LOSER_RESET_CODE);
+        }
+
+        // 7b. Now Ack the winner and download its result under an idle/transfer
+        // deadline. A silent winner must NOT hang the whole query forever.
+        let _ = write_msg(
+            &mut winner.send,
+            &Wire::Ack(Ack {
+                job_id: job_id.clone(),
+                ok: true,
+                detail: "proceed".into(),
+            }),
+        )
+        .await;
+        if let Some(conn) = conns.get(&winner.worker) {
+            match tokio::time::timeout(
+                result_xfer_to,
+                crate::result_stream::recv_result(
+                    conn,
+                    &mut winner.recv,
+                    cfg.transport.result.max_result_bytes,
+                    cfg.transport.result.max_result_parts,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(rs)) => result = Some(rs),
+                Ok(Err(e)) => {
+                    debug!(job = %job_id, worker = %winner.worker, "winner result transfer failed: {e}");
+                }
+                Err(_) => {
+                    // Winner went silent mid/at-start of the transfer: abandon this
+                    // attempt as inconclusive (job-fault, no provider penalty) and
+                    // re-dispatch. Reset the stalled stream so the worker stops.
+                    tracing::warn!(
+                        job = %job_id,
+                        worker = %winner.worker,
+                        timeout_ms = result_xfer_to.as_millis() as u64,
+                        "winner result transfer timed out; treating attempt as inconclusive"
+                    );
+                    let _ = winner.recv.stop(LOSER_RESET_CODE);
+                    let _ = winner.send.reset(LOSER_RESET_CODE);
+                }
+            }
+        }
+        let _ = winner.send.finish();
+
+        // 7c. Verdict + receipt accounting for ALL committed providers (winner +
+        // losers). Streams are already settled above.
+        for f in std::iter::once(&winner).chain(losers.iter()) {
+            let is_winner = std::ptr::eq(f, &winner);
+            if !is_winner && f.hash == agreed && !non_verifiable {
                 agreeing_non_winners.push(f.worker.clone());
             }
             let verdict = if non_verifiable {
@@ -926,34 +1032,6 @@ impl Coordinator {
             } else {
                 Verdict::Incorrect
             };
-
-            if i == winner_idx {
-                let _ = write_msg(
-                    &mut f.send,
-                    &Wire::Ack(Ack {
-                        job_id: job_id.clone(),
-                        ok: true,
-                        detail: "proceed".into(),
-                    }),
-                )
-                .await;
-                if let Some(conn) = conns.get(&f.worker) {
-                    if let Ok(rs) = crate::result_stream::recv_result(conn, &mut f.recv).await {
-                        result = Some(rs);
-                    }
-                }
-                let _ = f.send.finish();
-            } else {
-                let _ = write_msg(
-                    &mut f.send,
-                    &Wire::Cancel(Cancel {
-                        job_id: job_id.clone(),
-                        reason: "lost race".into(),
-                    }),
-                )
-                .await;
-                let _ = f.send.finish();
-            }
 
             // A provider that committed a NON-matching hash on a verified-feasible
             // job broke its commitment (distinct from being merely slow).
@@ -972,18 +1050,42 @@ impl Coordinator {
 
         // Broken-commitment accounting for SELECTED providers that accepted the
         // job but never delivered a valid result, ON A FEASIBLE JOB (a verified
-        // quorum was reached). They get a Timeout receipt (reputation drops) and,
-        // for a PAID job, are fined (slashed) below. A non-verified / inconclusive
-        // / infeasible job never reaches here, so a query problem is never blamed
-        // on a provider.
+        // quorum was reached). A non-verified / inconclusive / infeasible job
+        // never reaches here, so a query problem is never blamed on a provider.
+        //
+        // Two distinct cases must NOT be conflated (bid→dispatch TOCTOU):
+        //  * SILENT providers (accepted the offer, then vanished without any
+        //    response) genuinely broke their commitment → `Timeout` (provider
+        //    fault): reputation drops and, for a paid job, they are slashed.
+        //  * Providers that EXPLICITLY responded with a failure/decline at
+        //    dispatch carry a CLASSIFIED verdict (`classify_failure`). A dispatch
+        //    -time capacity/admission rejection ("at capacity") classifies as
+        //    `Inconclusive` (neutral) — an honest, non-fault decline, NOT a broken
+        //    commitment. Resource/infeasible classes are likewise blameless. We
+        //    therefore honor the classified verdict and only treat it as a
+        //    commitment failure (Timeout + slash) when it is an actual PROVIDER
+        //    fault — never penalizing a worker that simply declined.
         if verified {
-            for node in silent.iter().chain(failed.iter().map(|(n, _)| n)) {
+            for node in &silent {
                 receipts.push(self.make_receipt(job_id, node, query_hash, "", Verdict::Timeout, 0));
                 let penalty = penalty_for(true);
                 if penalty > 0.0 {
                     self.trust_store.penalize(node, penalty);
                 }
                 commitment_failers.push(node.clone());
+            }
+            for (node, verdict) in &failed {
+                // Use the classified verdict (neutral for an "at capacity" decline,
+                // resource/infeasible for a job fault). Only an actual provider
+                // fault penalizes / counts as a broken commitment.
+                receipts.push(self.make_receipt(job_id, node, query_hash, "", *verdict, 0));
+                if verdict.is_provider_fault() {
+                    let penalty = penalty_for(true);
+                    if penalty > 0.0 {
+                        self.trust_store.penalize(node, penalty);
+                    }
+                    commitment_failers.push(node.clone());
+                }
             }
         }
 

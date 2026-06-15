@@ -29,15 +29,17 @@ const M5 = 0xf005
 const M6 = 0x1006
 const M7 = 0x2007
 
-fun tree8Left(): int { return hashPair(hashPair(M0, M1), hashPair(M2, M3)); }
-fun tree8Right(): int { return hashPair(hashPair(M4, M5), hashPair(M6, M7)); }
+// MERKLE v2 (A7): leaves are domain-separated via hashLeaf before pairing.
+fun tree8Left(): int { return hashPair(hashPair(hashLeaf(M0), hashLeaf(M1)), hashPair(hashLeaf(M2), hashLeaf(M3))); }
+fun tree8Right(): int { return hashPair(hashPair(hashLeaf(M4), hashLeaf(M5)), hashPair(hashLeaf(M6), hashLeaf(M7))); }
 fun tree8Root(): int { return hashPair(tree8Left(), tree8Right()); }
 
-// Inclusion proof for interior leaf M5 (mixed directions across 3 levels).
+// Inclusion proof for interior leaf M5 (mixed directions across 3 levels); the
+// verifier seeds acc = hashLeaf(M5), so the level-0 sibling is hashLeaf(M4).
 fun proofForM5(): Cell<MerkleStep>? {
     val top: MerkleStep = { dir: 1, sibling: tree8Left(), next: null };
-    val mid: MerkleStep = { dir: 0, sibling: hashPair(M6, M7), next: top.toCell() };
-    val bottom: MerkleStep = { dir: 1, sibling: M4, next: mid.toCell() };
+    val mid: MerkleStep = { dir: 0, sibling: hashPair(hashLeaf(M6), hashLeaf(M7)), next: top.toCell() };
+    val bottom: MerkleStep = { dir: 1, sibling: hashLeaf(M4), next: mid.toCell() };
     return bottom.toCell();
 }
 
@@ -54,17 +56,24 @@ fun main() {
         anchor = RecordAnchor.fromAddress(pinned!);
         println("Reusing pinned RecordAnchor at {}", anchor.address);
     } else {
+        val authority = env<address>("ANCHOR_AUTHORITY") ?? deployer.address;
+        val auth: AnchorAuthorities = {
+            treasury: env<address>("ANCHOR_TREASURY") ?? deployer.address,
+            keeper: env<address>("ANCHOR_KEEPER") ?? authority,
+            upgradeAuthority: env<address>("ANCHOR_UPGRADE_AUTHORITY") ?? authority,
+        };
         val cfg: AnchorConfig = {
             minStakeWeight: env<coins>("ANCHOR_MIN_WEIGHT") ?? ton("0"),
             disputeBondMin: env<coins>("ANCHOR_BOND_MIN") ?? ton("0.05"),
-            verdictAuthority: env<address>("ANCHOR_AUTHORITY") ?? deployer.address,
-            treasury: env<address>("ANCHOR_TREASURY") ?? deployer.address,
+            verdictAuthority: authority,
+            auth: auth.toCell(),
         };
         val storage: AnchorStorage = {
             currentEpoch: 0,
             lastRoot: 0,
             nextDisputeId: 0,
             disputes: createEmptyMap(),
+            roots: createEmptyMap(),
             config: cfg.toCell(),
             codeVersion: 0,
         };
@@ -79,7 +88,8 @@ fun main() {
     // Epochs/prevRoot are taken from the live state so this is reuse-safe.
     val s0 = anchor.getAnchorState();
     val leaf = 0xABCDEF;
-    val root = leaf;
+    // MERKLE v2: a single-leaf tree's root is hashLeaf(leaf).
+    val root = hashLeaf(leaf);
     val e1 = (s0.currentEpoch + 1) as uint32;
     anchor.sendAnchorSubmitRoot(deployer.address, 1, e1, root, s0.lastRoot, stakeWeight, { value: ton("0.1") }).waitForTrace();
     val s1 = anchor.getAnchorState();
@@ -98,7 +108,7 @@ fun main() {
 
     // -- 3. Bonded dispute: open + authority resolve (uphold). ---------------
     val bond = env<coins>("DISPUTE_BOND") ?? ton("0.1");
-    anchor.sendAnchorOpenDispute(deployer.address, 3, s1.currentEpoch, leaf, root, null, { value: bond + ton("0.1") }).waitForTrace();
+    anchor.sendAnchorOpenDispute(deployer.address, 3, s1.currentEpoch, leaf, null, { value: bond + ton("0.1") }).waitForTrace();
     val mid = anchor.getAnchorState();
     val disputeId = (mid.nextDisputeId - 1) as uint32;
     anchor.sendAnchorResolveDispute(deployer.address, 4, disputeId, true, { value: ton("0.1") }).waitForTrace();

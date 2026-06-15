@@ -78,12 +78,13 @@ const M5 = 0xf005
 const M6 = 0x1006
 const M7 = 0x2007
 
+// MERKLE v2 (A7): leaves are domain-separated via hashLeaf before pairing.
 fun tree8Left(): int {
-    return hashPair(hashPair(M0, M1), hashPair(M2, M3));
+    return hashPair(hashPair(hashLeaf(M0), hashLeaf(M1)), hashPair(hashLeaf(M2), hashLeaf(M3)));
 }
 
 fun tree8Right(): int {
-    return hashPair(hashPair(M4, M5), hashPair(M6, M7));
+    return hashPair(hashPair(hashLeaf(M4), hashLeaf(M5)), hashPair(hashLeaf(M6), hashLeaf(M7)));
 }
 
 fun tree8Root(): int {
@@ -91,8 +92,9 @@ fun tree8Root(): int {
 }
 
 // Inclusion proof for the interior leaf M5 (index 5), mixed directions across 3
-// levels (matches `tests/anchor.test.tolk::proofForM5`):
-//   level 0: M5 is the RIGHT child of (M4,M5) -> sibling M4 on the LEFT  (dir = 1)
+// levels (matches `tests/anchor.test.tolk::proofForM5`). The verifier seeds
+// acc = hashLeaf(M5), so the level-0 sibling is hashLeaf(M4):
+//   level 0: M5 is the RIGHT child of (M4,M5) -> sibling hashLeaf(M4) LEFT (dir = 1)
 //   level 1: hash(M4,M5) is the LEFT child of (h45,h67) -> sibling h67 RIGHT (dir = 0)
 //   level 2: B is the RIGHT child of (A,B) -> sibling A on the LEFT (dir = 1)
 fun proofForM5(): Cell<MerkleStep>? {
@@ -103,12 +105,12 @@ fun proofForM5(): Cell<MerkleStep>? {
     };
     val mid: MerkleStep = {
         dir: 0,
-        sibling: hashPair(M6, M7),
+        sibling: hashPair(hashLeaf(M6), hashLeaf(M7)),
         next: top.toCell(),
     };
     val bottom: MerkleStep = {
         dir: 1,
-        sibling: M4,
+        sibling: hashLeaf(M4),
         next: mid.toCell(),
     };
     return bottom.toCell();
@@ -241,6 +243,16 @@ fun main() {
         participants.set(participant, participantAmount);
     }
 
+    // B1: the candidate set the requester pre-committed to (winner + participants).
+    // NOTE: for a real settle the escrow's terms.candidatesHash must equal
+    // candidatesCommitment(this set) AND `winner` must differ from the arbiter —
+    // configure SETTLE_WINNER / the escrow's ESCROW_CANDIDATES_HASH accordingly.
+    var candidates: map<address, uint1> = createEmptyMap();
+    candidates.set(winner, 1);
+    if (participantAmount > 0) {
+        candidates.set(participant, 1);
+    }
+
     val escrow = JobEscrow.fromAddress(escrowAddr);
     val settleRes = escrow.sendEscrowSettle(
         deployer.address,
@@ -250,6 +262,7 @@ fun main() {
         winnerAmount,
         platformFee,
         participants,
+        candidates,
         { value: ton("0.1") },
     );
     settleRes.waitForTrace();
@@ -262,10 +275,12 @@ fun main() {
     val anchor = RecordAnchor.fromAddress(anchorAddr);
     val before = anchor.getAnchorState();
     val nextEpoch = (before.currentEpoch + 1) as uint32;
-    // For a single-leaf epoch tree the root equals the leaf and the inclusion
-    // proof is empty (computeRootFromProof(leaf, null) == leaf).
-    val root = env<int>("ANCHOR_ROOT") ?? resultHash;
-    val leaf = env<int>("ANCHOR_LEAF") ?? root;
+    // MERKLE v2: for a single-leaf epoch tree the root is hashLeaf(leaf) (the
+    // verifier seeds the accumulator with hashLeaf, so computeRootFromProof(leaf,
+    // null) == hashLeaf(leaf)). Default the leaf to the result hash and derive the
+    // root; an explicit ANCHOR_ROOT/ANCHOR_LEAF override is still honored.
+    val leaf = env<int>("ANCHOR_LEAF") ?? resultHash;
+    val root = env<int>("ANCHOR_ROOT") ?? hashLeaf(leaf);
     val stakeWeight = env<coins>("ANCHOR_STAKE_WEIGHT") ?? ton("100");
 
     val submitRes = anchor.sendAnchorSubmitRoot(
@@ -321,12 +336,13 @@ fun main() {
     // -- 5. Optional bonded dispute round ------------------------------------
     if (env<bool>("E2E_RUN_DISPUTE") ?? false) {
         val bond = env<coins>("DISPUTE_BOND") ?? ton("0.2");
+        // A2: the dispute proof now verifies against the STORED epoch root; the
+        // contract derives "which root" itself (no attacker-supplied claimedRoot).
         val openRes = anchor.sendAnchorOpenDispute(
             deployer.address,
             4,
             after.currentEpoch,
             leaf,
-            root,
             null,
             { value: bond + ton("0.1") },
         );

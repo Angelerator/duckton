@@ -2897,6 +2897,7 @@ dependencies = [
  "p2p-settlement",
  "p2p-transport",
  "p2p-trust",
+ "quinn",
  "rand 0.8.6",
  "serde",
  "serde_json",
@@ -2958,6 +2959,7 @@ dependencies = [
  "tokio",
  "tracing",
  "x509-parser 0.18.1",
+ "zeroize",
 ]
 
 [[package]]

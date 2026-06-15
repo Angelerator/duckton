@@ -21,20 +21,30 @@ fun main() {
 
     val authority = env<address>("ANCHOR_AUTHORITY") ?? deployer.address;
     val treasury = env<address>("ANCHOR_TREASURY") ?? deployer.address;
+    // A3: the authorized root-submission keeper (defaults to the authority).
+    val keeper = env<address>("ANCHOR_KEEPER") ?? authority;
+    // D2: distinct upgrade authority (defaults to the authority; set to a multisig).
+    val upgradeAuthority = env<address>("ANCHOR_UPGRADE_AUTHORITY") ?? authority;
     val minWeight = env<coins>("ANCHOR_MIN_WEIGHT") ?? ton("100");
     val bondMin = env<coins>("ANCHOR_BOND_MIN") ?? ton("1");
 
+    val auth: AnchorAuthorities = {
+        treasury: treasury,
+        keeper: keeper,
+        upgradeAuthority: upgradeAuthority,
+    };
     val cfg: AnchorConfig = {
         minStakeWeight: minWeight,
         disputeBondMin: bondMin,
         verdictAuthority: authority,
-        treasury: treasury,
+        auth: auth.toCell(),
     };
     val storage: AnchorStorage = {
         currentEpoch: 0,
         lastRoot: 0,
         nextDisputeId: 0,
         disputes: createEmptyMap(),
+        roots: createEmptyMap(),
         config: cfg.toCell(),
         // Fresh deploy = original code; `upgrade_code` bumps it in place.
         codeVersion: 0,

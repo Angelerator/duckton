@@ -26,6 +26,10 @@ enum ExecOutcome {
     Ok(ResultSet),
     /// The host execution deadline was exceeded — the job is abandoned.
     Abandoned,
+    /// The requester cancelled this job mid-execution (it lost the hedged race,
+    /// or the dispatch stream was reset). We stop computing immediately instead
+    /// of finishing the now-useless query, freeing the budget for other jobs.
+    Cancelled,
     /// Execution errored (forwarded as an `Ack { ok: false }` to the requester).
     Err(EngineError),
 }
@@ -204,6 +208,23 @@ impl Worker {
     /// worker behaves exactly as before.
     pub fn with_sandbox(mut self, cfg: &p2p_config::GridConfig) -> Self {
         let sandbox = sandbox::build(&cfg.sandbox);
+        // LOUD warning: with the no-op sandbox backend there is NO OS-level
+        // process isolation or egress control — `enter_job` is a documented
+        // no-op, so untrusted queries run in-process. If remote object-storage
+        // access is ALSO enabled, the only thing standing between a malicious
+        // query and arbitrary network/filesystem egress is the DuckDB
+        // configuration lockdown (which cannot scope network egress). Make sure
+        // the operator does not believe the deployment is OS-sandboxed.
+        if sandbox.name() == "noop" && cfg.storage.enable_remote_access {
+            warn!(
+                sandbox_backend = sandbox.name(),
+                "NO OS-LEVEL SANDBOX: storage.enable_remote_access=true but the effective \
+                 sandbox backend is 'noop' (no process isolation, no egress filtering). \
+                 Untrusted queries run in-process and DuckDB cannot restrict network egress \
+                 to specific endpoints. Run hosts behind an OS-level egress firewall, or \
+                 enable a real sandbox backend ([sandbox]), before exposing remote reads."
+            );
+        }
         self.sandbox = SandboxPolicy {
             sandbox,
             cfg: Arc::new(cfg.sandbox.clone()),
@@ -412,6 +433,7 @@ impl Worker {
         threads: u32,
         ctx: &crate::engine::JobContext,
         send: &mut SendStream,
+        recv: &mut RecvStream,
         worker_id: &p2p_proto::NodeId,
         start: Instant,
     ) -> ExecOutcome {
@@ -424,6 +446,16 @@ impl Worker {
             ctx,
         );
         tokio::pin!(exec);
+
+        // A loser is cancelled by the coordinator BEFORE it would finish: it
+        // resets the dispatch stream (or sends a `Cancel`). Racing a read of the
+        // dispatch stream against the engine lets a mid-execution loser abort
+        // promptly and release its budget, even when `progress_interval == 0`
+        // (no ticks would otherwise observe the teardown). Pre-commit the
+        // requester sends nothing on this stream, so any readable byte / reset /
+        // EOF here is a cancellation signal — never a false positive.
+        let cancel_watch = read_msg(recv);
+        tokio::pin!(cancel_watch);
 
         let interval = self.params.progress_interval;
         let deadline = self.params.job_timeout;
@@ -456,6 +488,12 @@ impl Worker {
                         Ok(rs) => ExecOutcome::Ok(rs),
                         Err(e) => ExecOutcome::Err(e),
                     };
+                }
+                // Coordinator cancelled / reset the dispatch stream while we were
+                // still computing: abandon immediately (loser of the hedged race).
+                _ = &mut cancel_watch => {
+                    debug!(job = %dispatch.job_id, "dispatch cancelled mid-execution; aborting job");
+                    return ExecOutcome::Cancelled;
                 }
                 _ = timeout, if !deadline.is_zero() => {
                     return ExecOutcome::Abandoned;
@@ -547,8 +585,12 @@ impl Worker {
         // no-op guard (the hard, kill-the-job-not-the-node enforcement is the
         // process-per-job `Sandbox::command` path); when disabled it is a pure
         // no-op so behavior is unchanged.
+        // Per-JOB writable scope (not a shared per-process dir): scope the OS
+        // sandbox's writable path to this job only. The real DuckDB engine creates
+        // its own private 0700 temp dir under here per execution and removes it at
+        // job end (see `duckdb_engine::run_locked`).
         let temp_dir = std::env::temp_dir()
-            .join(format!("duckdb-p2p-{}", std::process::id()))
+            .join(format!("duckdb-p2p-{}-{}", std::process::id(), dispatch.job_id))
             .display()
             .to_string();
         let sandbox_spec = SandboxSpec {
@@ -584,7 +626,9 @@ impl Worker {
         // host ABANDONS the job if it exceeds `job_timeout` (the requester then
         // re-dispatches): we simply stop and drop the stream — no commit.
         let exec = self
-            .execute_with_progress(&dispatch, mem, threads, &ctx, &mut send, &worker_id, start)
+            .execute_with_progress(
+                &dispatch, mem, threads, &ctx, &mut send, &mut recv, &worker_id, start,
+            )
             .await;
 
         let result = match exec {
@@ -593,6 +637,12 @@ impl Worker {
                 // Over the host deadline: abandon. Drop the stream so the
                 // requester observes a stall/no-commit and re-dispatches.
                 debug!(job = %dispatch.job_id, "host job_timeout exceeded; abandoning job");
+                return Ok(());
+            }
+            ExecOutcome::Cancelled => {
+                // Lost the hedged race while still executing: the coordinator
+                // already cancelled/reset this stream. Stop now and let the lease
+                // release on scope exit — no commit, no wasted further compute.
                 return Ok(());
             }
             ExecOutcome::Err(e) => {

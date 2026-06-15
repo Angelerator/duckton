@@ -26,23 +26,52 @@
 //! the data is byte-aligned. Reference values for this reduction are pinned in
 //! the unit tests against the contract's own `hashPair` output.
 //!
-//! Leaves are used raw (the contract's verifier folds from the bare `leaf`
-//! integer; see `computeRootFromProof`), so a leaf is just its 32-byte
-//! [`JobRecord::leaf`](crate::types::JobRecord::leaf) commitment interpreted as a
-//! 256-bit big-endian integer — there is no separate leaf-hashing step on either
-//! side. Domain separation between the leaf layer and the node layer is provided
-//! naturally by the differing hash constructions (BLAKE3 record leaves vs SHA-256
-//! cell-hash nodes); the concatenation order (`left ‖ right`) matches `dir`
-//! handling in the contract (`dir = 0` ⇒ sibling on the right).
+//! ### Leaf domain separation (second-preimage resistance)
+//!
+//! Leaves are **domain-separated** from internal nodes: a leaf is hashed as a TON
+//! cell holding exactly one 256-bit integer (descriptor `00 40`), while a node is
+//! a cell holding two (descriptor `00 80`). The contract's verifier therefore
+//! starts the fold with `acc = hashLeaf(leaf)`:
+//!
+//! ```tolk
+//! hashLeaf(x) = beginCell().storeUint(x, 256).endCell().hash()  // = sha256(00 40 ‖ x)
+//! hashPair(l, r) = beginCell().storeUint(l,256).storeUint(r,256).endCell().hash()
+//! ```
+//!
+//! Without this, a 32-byte internal-node value could be presented as a *leaf*
+//! (the classic Merkle second-preimage), letting an attacker fabricate inclusion
+//! proofs for nodes that were never real leaves. With `hashLeaf` a node value can
+//! never equal a leaf value.
+//!
+//! ### Odd levels: promotion, not duplication
+//!
+//! An odd node is **promoted unchanged** to the next level (NOT hashed with a
+//! copy of itself). Self-duplication is the RFC-6962 anti-pattern that lets trees
+//! of N and N+1 leaves collide; promotion avoids it. The concatenation order
+//! (`left ‖ right`) matches `dir` handling in the contract (`dir = 0` ⇒ sibling
+//! on the right).
 
 use sha2::{Digest, Sha256};
 
 use crate::types::{Hash32, InclusionProof};
 
-/// Cell descriptor for an ordinary, ref-less cell holding exactly 512 data bits:
-/// `d1 = 0`, `d2 = 0x80`. Prepended before `left ‖ right` to reproduce the TON
-/// cell representation hash (see module docs).
+/// Cell descriptor for an ordinary, ref-less cell holding exactly 512 data bits
+/// (two `uint256`): `d1 = 0`, `d2 = 0x80`. Prepended before `left ‖ right`.
 const PAIR_CELL_DESCRIPTOR: [u8; 2] = [0x00, 0x80];
+
+/// Cell descriptor for an ordinary, ref-less cell holding exactly 256 data bits
+/// (one `uint256`): `d1 = 0`, `d2 = 0x40`. Prepended before the leaf value. This
+/// is what domain-separates a leaf from an internal node.
+const LEAF_CELL_DESCRIPTOR: [u8; 2] = [0x00, 0x40];
+
+/// Hash a raw leaf value (a 32-byte `uint256` commitment) into its
+/// domain-separated leaf-layer hash, matching the on-chain `hashLeaf`.
+pub(crate) fn hash_leaf(value: &Hash32) -> Hash32 {
+    let mut h = Sha256::new();
+    h.update(LEAF_CELL_DESCRIPTOR);
+    h.update(value);
+    h.finalize().into()
+}
 
 /// Hash two child nodes into their parent, matching the on-chain `RecordAnchor`
 /// verifier's TON cell-representation hash (`hashPair`). See module docs.
@@ -54,57 +83,82 @@ pub fn hash_node(left: &Hash32, right: &Hash32) -> Hash32 {
     h.finalize().into()
 }
 
-/// Build a Merkle tree over `leaves` and return all levels (level 0 = leaves).
-/// Odd nodes are promoted by duplication. An empty input yields the zero root.
-fn levels(leaves: &[Hash32]) -> Vec<Vec<Hash32>> {
-    if leaves.is_empty() {
-        return vec![vec![[0u8; 32]]];
+/// Build a Merkle tree over the raw leaf `values` and return all levels (level 0
+/// = the **domain-separated** leaf hashes). Odd nodes are promoted unchanged.
+/// Returns `None` for an empty input (there is no tree / root for an empty epoch).
+fn levels(values: &[Hash32]) -> Option<Vec<Vec<Hash32>>> {
+    if values.is_empty() {
+        return None;
     }
-    let mut all = vec![leaves.to_vec()];
+    let level0: Vec<Hash32> = values.iter().map(hash_leaf).collect();
+    let mut all = vec![level0];
     while all.last().unwrap().len() > 1 {
         let cur = all.last().unwrap();
         let mut next = Vec::with_capacity(cur.len().div_ceil(2));
         let mut i = 0;
         while i < cur.len() {
-            let l = cur[i];
-            let r = if i + 1 < cur.len() { cur[i + 1] } else { cur[i] };
-            next.push(hash_node(&l, &r));
+            if i + 1 < cur.len() {
+                next.push(hash_node(&cur[i], &cur[i + 1]));
+            } else {
+                // Odd lone node: promote unchanged (no self-duplication).
+                next.push(cur[i]);
+            }
             i += 2;
         }
         all.push(next);
     }
-    all
+    Some(all)
 }
 
-/// Compute the Merkle root of `leaves`.
-pub fn merkle_root(leaves: &[Hash32]) -> Hash32 {
-    *levels(leaves).last().unwrap().first().unwrap()
+/// Compute the Merkle root of the raw leaf `values`.
+///
+/// Returns the all-zero hash for an empty input as a *query* convenience (so the
+/// `epoch_root` accessor has a value). Callers that **submit** a root on-chain
+/// MUST use [`try_merkle_root`] and refuse an empty epoch — anchoring the zero
+/// root would collide with the genesis `lastRoot == 0` and bypass the chained
+/// prev-root check.
+pub fn merkle_root(values: &[Hash32]) -> Hash32 {
+    try_merkle_root(values).unwrap_or([0u8; 32])
 }
 
-/// Build an inclusion proof for `index` within `leaves`.
-pub fn build_proof(leaves: &[Hash32], index: usize) -> Option<InclusionProof> {
-    if index >= leaves.len() {
+/// Compute the Merkle root, or `None` for an empty epoch (nothing to anchor).
+pub fn try_merkle_root(values: &[Hash32]) -> Option<Hash32> {
+    Some(*levels(values)?.last().unwrap().first().unwrap())
+}
+
+/// Build an inclusion proof for `index` within the raw leaf `values`. The
+/// returned `proof.leaf` is the **raw** value; the verifier re-applies
+/// `hashLeaf` (so a node value can't masquerade as a leaf).
+pub fn build_proof(values: &[Hash32], index: usize) -> Option<InclusionProof> {
+    if index >= values.len() {
         return None;
     }
-    let all = levels(leaves);
+    let all = levels(values)?;
     let mut siblings = Vec::new();
     let mut idx = index;
     for level in &all[..all.len() - 1] {
-        let (sib_idx, sib_is_left) = if idx % 2 == 0 {
-            // current is the left child; sibling is on the right (duplicate if odd)
-            (if idx + 1 < level.len() { idx + 1 } else { idx }, false)
+        if idx % 2 == 0 {
+            // Left child: sibling on the right — unless this node was promoted
+            // (no right neighbor at this level), in which case there is no step.
+            if idx + 1 < level.len() {
+                siblings.push((false, level[idx + 1]));
+            }
         } else {
-            (idx - 1, true)
-        };
-        siblings.push((sib_is_left, level[sib_idx]));
+            // Right child: sibling on the left.
+            siblings.push((true, level[idx - 1]));
+        }
         idx /= 2;
     }
-    Some(InclusionProof { leaf: leaves[index], siblings })
+    Some(InclusionProof {
+        leaf: values[index],
+        siblings,
+    })
 }
 
-/// Verify an inclusion proof against an anchored `root`.
+/// Verify an inclusion proof against an anchored `root`. Mirrors the on-chain
+/// `computeRootFromProof`: start from `hashLeaf(leaf)`, then fold siblings.
 pub fn verify_inclusion(root: &Hash32, proof: &InclusionProof) -> bool {
-    let mut acc = proof.leaf;
+    let mut acc = hash_leaf(&proof.leaf);
     for (sib_is_left, sib) in &proof.siblings {
         acc = if *sib_is_left {
             hash_node(sib, &acc)
@@ -143,17 +197,30 @@ mod tests {
             hex::encode(zero),
             "ac165244115ace66658b50e85fb073fb3c02e37f9d6349ed4c6c2b0cc5564c2d"
         );
-        // hashPair(0x1111, 0x2222)
+        // hashPair(0x1111, 0x2222) — internal-node hashing is unchanged by v2.
         let hp = hash_node(&leaf_u32(0x1111), &leaf_u32(0x2222));
         assert_eq!(
             hex::encode(hp),
             "df96613f475a40cceebaf4bfe1e15dc7ff2cedd5a4c148c600cde200896c5732"
         );
-        // ROOT = hashPair(hashPair(0x1111,0x2222), hashPair(0x3333,0x4444))
-        let root = merkle_root(&[leaf_u32(0x1111), leaf_u32(0x2222), leaf_u32(0x3333), leaf_u32(0x4444)]);
+        // v2 leaf domain separation: hashLeaf(x) = sha256(00 40 ‖ x_be32). These
+        // MUST equal the on-chain `hashLeaf` (= beginCell().storeUint(x,256)
+        // .endCell().hash()) — cross-checked against the RecordAnchor emulator.
+        assert_eq!(
+            hex::encode(hash_leaf(&leaf_u32(0x1111))),
+            "d8553b5eff29dfc8598e44d8a601afee996cfed09795dd92dc0bb3086a7b0f81"
+        );
+        assert_eq!(
+            hex::encode(hash_leaf(&leaf_u32(0x2222))),
+            "99baad8064aebe6fbbf291ef23e395a0fa374c8c677e4d73e019ab230bec039b"
+        );
+        // ROOT4 over the v2 tree (leaves are hashLeaf'd first):
+        // hashPair(hashPair(hashLeaf(L0),hashLeaf(L1)), hashPair(hashLeaf(L2),hashLeaf(L3))).
+        let root =
+            merkle_root(&[leaf_u32(0x1111), leaf_u32(0x2222), leaf_u32(0x3333), leaf_u32(0x4444)]);
         assert_eq!(
             hex::encode(root),
-            "5995dd67a4a2cf3d48e49b16734f6f94edaf5202e1f6ba8907e439b8086e4b72"
+            "d71883509985078d4b68f441a4647296db9a1c514c913a1ceacfe35458918824"
         );
     }
 
@@ -166,13 +233,37 @@ mod tests {
         let leaves = [leaf_u32(0x1111), leaf_u32(0x2222), leaf_u32(0x3333), leaf_u32(0x4444)];
         let root = merkle_root(&leaves);
         let proof = build_proof(&leaves, 0).unwrap();
-        // Both siblings are to the RIGHT (dir = 0 on-chain).
+        // Both siblings are to the RIGHT (dir = 0 on-chain). Level-0 siblings are
+        // the domain-separated leaf hashes (not the raw leaf values).
         assert_eq!(proof.siblings.len(), 2);
         assert!(!proof.siblings[0].0, "L1 is the right sibling");
-        assert_eq!(proof.siblings[0].1, leaf_u32(0x2222));
-        assert!(!proof.siblings[1].0, "hashPair(L2,L3) is the right sibling");
-        assert_eq!(proof.siblings[1].1, hash_node(&leaf_u32(0x3333), &leaf_u32(0x4444)));
+        assert_eq!(proof.siblings[0].1, hash_leaf(&leaf_u32(0x2222)));
+        assert!(!proof.siblings[1].0, "hashPair(hashLeaf(L2),hashLeaf(L3)) is the right sibling");
+        assert_eq!(
+            proof.siblings[1].1,
+            hash_node(&hash_leaf(&leaf_u32(0x3333)), &hash_leaf(&leaf_u32(0x4444)))
+        );
         assert!(verify_inclusion(&root, &proof));
+    }
+
+    #[test]
+    fn empty_tree_has_no_root() {
+        assert_eq!(try_merkle_root(&[]), None, "an empty epoch has no anchorable root");
+        assert_eq!(merkle_root(&[]), [0u8; 32], "query convenience only");
+        assert!(build_proof(&[], 0).is_none());
+    }
+
+    #[test]
+    fn node_value_cannot_masquerade_as_leaf() {
+        // Second-preimage: an internal-node hash presented as a leaf must NOT
+        // verify, because the verifier re-applies hashLeaf to proof.leaf.
+        let leaves = [leaf_u32(1), leaf_u32(2)];
+        let root = merkle_root(&leaves);
+        let node = hash_node(&hash_leaf(&leaf_u32(1)), &hash_leaf(&leaf_u32(2))); // == root
+        assert_eq!(node, root);
+        // Forge a "proof" claiming the node value is itself a leaf with no siblings.
+        let forged = InclusionProof { leaf: node, siblings: vec![] };
+        assert!(!verify_inclusion(&root, &forged), "node-as-leaf must be rejected");
     }
 
     #[test]
@@ -189,7 +280,7 @@ mod tests {
     /// e2e never exercised — it only used single-leaf trees where root == leaf).
     /// Every leaf must produce a proof that folds to the anchored root, and a
     /// tampered leaf OR a tampered sibling must be rejected. Covers both even and
-    /// odd leaf counts (odd promotes the last node by self-duplication).
+    /// odd leaf counts (odd promotes the last node unchanged).
     #[test]
     fn multi_leaf_jobrecord_inclusion_and_tamper() {
         use crate::types::JobRecord;
@@ -244,6 +335,7 @@ mod tests {
         let root = merkle_root(&leaves);
         let proof = build_proof(&leaves, 0).unwrap();
         assert!(verify_inclusion(&root, &proof));
-        assert_eq!(root, leaf(7));
+        // Single-leaf root is the domain-separated leaf hash, NOT the raw leaf.
+        assert_eq!(root, hash_leaf(&leaf(7)));
     }
 }

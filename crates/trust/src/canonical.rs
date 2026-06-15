@@ -91,12 +91,19 @@ fn update_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
 /// The outcome of tallying committed result hashes (architecture §11 step 5).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuorumOutcome {
-    /// The hash that reached quorum, if any.
+    /// The hash that reached quorum, if any. `None` when no hash reached quorum
+    /// **or** when the result is a [`split`](Self::split) (equivocation).
     pub agreed_hash: Option<String>,
-    /// How many workers reported the agreed hash.
+    /// How many workers reported the most-agreed hash (deterministic: the highest
+    /// count, ties broken by the lexicographically smallest hash).
     pub agreement: usize,
     /// The required quorum size.
     pub quorum: usize,
+    /// `true` when **two or more distinct** hashes each independently reached
+    /// quorum — a genuine equivocation/split. In that case `agreed_hash` is
+    /// deliberately `None` (there is no single safe winner) and the caller should
+    /// treat the attempt as inconclusive rather than silently picking a side.
+    pub split: bool,
 }
 
 impl QuorumOutcome {
@@ -106,7 +113,13 @@ impl QuorumOutcome {
 }
 
 /// Given each worker's committed result hash, determine whether any hash reached
-/// quorum `q`. Returns the most-agreed hash and its count.
+/// quorum `q`.
+///
+/// Determinism: the tally is resolved by (count desc, hash asc) so two honest
+/// verifiers given the same multiset always agree on the winner and the reported
+/// `agreement` count — no reliance on `HashMap` iteration order. If more than one
+/// distinct hash reaches quorum the outcome is flagged as a [`split`] with no
+/// `agreed_hash` (equivocation is surfaced, not silently coin-flipped).
 pub fn evaluate_quorum<'a, I>(hashes: I, quorum: usize) -> QuorumOutcome
 where
     I: IntoIterator<Item = &'a str>,
@@ -115,23 +128,36 @@ where
     for h in hashes {
         *tally.entry(h).or_insert(0) += 1;
     }
-    let best = tally.iter().max_by_key(|(_, c)| **c);
-    match best {
-        Some((hash, count)) if *count >= quorum => QuorumOutcome {
-            agreed_hash: Some((*hash).to_string()),
-            agreement: *count,
-            quorum,
-        },
-        Some((_, count)) => QuorumOutcome {
+    // Deterministic ordering: highest count first, ties broken by smallest hash.
+    let mut entries: Vec<(&str, usize)> = tally.into_iter().collect();
+    entries.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+
+    let meeting = entries.iter().filter(|(_, c)| *c >= quorum).count();
+    let best_count = entries.first().map(|(_, c)| *c).unwrap_or(0);
+
+    if meeting > 1 {
+        // Equivocation: multiple distinct hashes each reached quorum.
+        QuorumOutcome {
             agreed_hash: None,
-            agreement: *count,
+            agreement: best_count,
             quorum,
-        },
-        None => QuorumOutcome {
+            split: true,
+        }
+    } else if meeting == 1 {
+        let (hash, count) = entries[0];
+        QuorumOutcome {
+            agreed_hash: Some(hash.to_string()),
+            agreement: count,
+            quorum,
+            split: false,
+        }
+    } else {
+        QuorumOutcome {
             agreed_hash: None,
-            agreement: 0,
+            agreement: best_count,
             quorum,
-        },
+            split: false,
+        }
     }
 }
 
@@ -196,5 +222,25 @@ mod tests {
     fn quorum_not_reached_when_split() {
         let out = evaluate_quorum(["h1", "h2", "h3"], 2);
         assert!(!out.reached());
+        assert!(!out.split, "no hash reached quorum, so it is not an equivocation");
+    }
+
+    #[test]
+    fn equivocation_is_flagged_as_split_not_silently_resolved() {
+        // Two distinct hashes each reach quorum=2: must be surfaced as a split
+        // with no agreed hash, never coin-flipped to one side.
+        let out = evaluate_quorum(["h1", "h1", "h2", "h2"], 2);
+        assert!(out.split);
+        assert!(!out.reached());
+        assert_eq!(out.agreed_hash, None);
+    }
+
+    #[test]
+    fn quorum_is_deterministic_regardless_of_order() {
+        let a = evaluate_quorum(["h1", "h1", "h2"], 2);
+        let b = evaluate_quorum(["h2", "h1", "h1"], 2);
+        assert_eq!(a, b);
+        assert_eq!(a.agreed_hash.as_deref(), Some("h1"));
+        assert!(!a.split);
     }
 }

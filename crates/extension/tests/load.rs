@@ -204,6 +204,70 @@ fn extension_p2p_query_local_execution_end_to_end() {
     );
 }
 
+/// The free **local-execution** engine (`HostEngine`) must be locked down exactly
+/// like the node's strict engine: no network egress and NO local-filesystem
+/// access. A `p2p_query` that tries to read a local file off the free path must
+/// FAIL — otherwise an untrusted query could exfiltrate `/etc/passwd` et al.
+#[test]
+fn extension_local_path_blocks_local_file_reads() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_lockdown_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    let ext = out_ext.display().to_string();
+    let cfg_dir = tmp_dir.join("cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+
+    // Plant a secret file the sandboxed query must NOT be able to read.
+    let secret = tmp_dir.join("secret.csv");
+    std::fs::write(&secret, "col\ntopsecret\n").unwrap();
+    let secret_path = secret.display().to_string().replace('\'', "''");
+
+    let run = |sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", &cfg_dir)
+            .output()
+            .expect("run duckdb lockdown");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // Sanity: a pure in-memory query still works on the free local path.
+    let (ok, stdout, stderr) = run("FROM p2p_query('SELECT 1 AS x');");
+    assert!(ok, "in-memory local query should still work: {stderr}");
+    assert_eq!(stdout, "1");
+
+    // Reading a local file off the free local path must be BLOCKED (disabled
+    // filesystem / external access off), and must NOT leak the file contents.
+    let (ok, stdout, stderr) = run(&format!(
+        "FROM p2p_query('SELECT * FROM read_csv_auto(''{secret_path}'')');"
+    ));
+    assert!(
+        !ok,
+        "local file read should be blocked on the free local path; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("topsecret") && !stderr.contains("topsecret"),
+        "secret file contents must not leak; stdout={stdout} stderr={stderr}"
+    );
+}
+
 /// The host/swarm surface is callable from SQL and drives the live node:
 /// `p2p_join` persists seeds + rebuilds discovery; `p2p_share` persists the
 /// donated budget and spawns the worker accept loop (the node binds a real

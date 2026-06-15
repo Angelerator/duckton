@@ -5,7 +5,7 @@
 //! committed hash doesn't match the known answer is marked `Incorrect` and
 //! penalized. Canaries police even non-redundant jobs, cheaply and randomly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use p2p_proto::{QueryHash, Verdict};
@@ -34,37 +34,53 @@ pub fn judge_canary(expected_hash: &str, observed_hash: &str) -> Verdict {
 /// A bounded book of known-good answers (`query_hash -> canonical result hash`).
 /// Used to recognize canary queries and judge results.
 pub struct CanaryBook {
-    inner: Mutex<HashMap<QueryHash, String>>,
+    inner: Mutex<Inner>,
     capacity: usize,
+}
+
+struct Inner {
+    map: HashMap<QueryHash, String>,
+    /// Insertion order for FIFO eviction (so the *oldest* canary is dropped, not
+    /// an arbitrary one — keeps recently-registered canaries effective).
+    order: VecDeque<QueryHash>,
 }
 
 impl CanaryBook {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(HashMap::new()),
+            inner: Mutex::new(Inner {
+                map: HashMap::new(),
+                order: VecDeque::new(),
+            }),
             capacity: capacity.max(1),
         }
     }
 
     /// Record a known answer for a query.
     pub fn insert(&self, query: QueryHash, result_hash: String) {
-        let mut map = self.inner.lock().unwrap();
-        if map.len() >= self.capacity && !map.contains_key(&query) {
-            // drop an arbitrary entry to stay bounded
-            if let Some(k) = map.keys().next().cloned() {
-                map.remove(&k);
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.map.contains_key(&query) {
+            // evict oldest entries (FIFO) to stay bounded
+            while inner.map.len() >= self.capacity {
+                match inner.order.pop_front() {
+                    Some(old) => {
+                        inner.map.remove(&old);
+                    }
+                    None => break,
+                }
             }
+            inner.order.push_back(query.clone());
         }
-        map.insert(query, result_hash);
+        inner.map.insert(query, result_hash);
     }
 
     /// Look up the known answer for a query, if this is a canary.
     pub fn expected(&self, query: &QueryHash) -> Option<String> {
-        self.inner.lock().unwrap().get(query).cloned()
+        self.inner.lock().unwrap().map.get(query).cloned()
     }
 
     pub fn is_canary(&self, query: &QueryHash) -> bool {
-        self.inner.lock().unwrap().contains_key(query)
+        self.inner.lock().unwrap().map.contains_key(query)
     }
 }
 
@@ -107,8 +123,10 @@ mod tests {
         assert_eq!(book.expected(&q1).as_deref(), Some("h1"));
         book.insert(QueryHash::compute("b", "t"), "h2".into());
         book.insert(QueryHash::compute("c", "t"), "h3".into());
-        // capacity 2 -> at most 2 retained
-        let map = book.inner.lock().unwrap();
-        assert!(map.len() <= 2);
+        // capacity 2 -> at most 2 retained; FIFO drops the oldest (q1)
+        let inner = book.inner.lock().unwrap();
+        assert!(inner.map.len() <= 2);
+        assert!(!inner.map.contains_key(&q1), "oldest canary evicted first");
+        assert_eq!(inner.order.len(), inner.map.len(), "order stays in sync");
     }
 }

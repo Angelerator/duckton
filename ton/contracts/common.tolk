@@ -64,10 +64,24 @@ enum ErrCode: int32 {
     DISPUTE_BOND_TOO_LOW = 244 // challenger bond below the configured minimum
     NO_SUCH_DISPUTE = 245      // verdict for an unknown dispute id
     NOT_VERDICT_AUTHORITY = 246 // verdict from a non-authoritative source
+    // --- Appended (security hardening; never renumber the frozen codes above) ---
+    DISPUTE_NOT_OPEN = 247     // resolve a dispute that is not in the open (0) state (double-resolve)
+    UNKNOWN_EPOCH = 248        // dispute references an epoch that was never anchored
+    PROOF_TOO_DEEP = 249       // Merkle proof exceeds the max depth bound (gas-griefing guard)
+    NOT_ANCHOR_KEEPER = 250    // root submitted by an address that is not the authorized keeper
+    ZERO_ROOT = 251            // refuse anchoring an empty / all-zero root
+    BOND_FLOOR_TOO_LOW = 252   // configured disputeBondMin is below the on-chain floor (> 0)
 
     // Global params (platform-wide config)
     NOT_ADMIN = 260            // sender is not the configured admin (or multisig)
     PARAMS_OUT_OF_BOUNDS = 261 // proposed params violate a §12 invariant
+
+    // --- Appended: escrow / vault payout-authorization + bounce hardening ------
+    NOT_OWNER_SIG = 280        // settle split not authorized by the fund-owner (requester) commitment
+    SETTLE_POLICY_MISMATCH = 281 // settle payload does not match the requester's pre-committed policy hash
+    TOO_MANY_PARTICIPANTS = 282  // participants map exceeds the on-chain payout bound (action/gas safety)
+    UPGRADE_NOT_AUTHORITY = 283  // upgrade announced/applied by a non-upgrade-authority (separated from slasher)
+    BAD_BOUNTY_BPS = 284         // keeperBountyBps out of [0, BPS_DENOM] (config sanity)
 }
 
 // ---------------------------------------------------------------------------
@@ -93,3 +107,20 @@ const BPS_DENOM = 10000 // basis-points denominator for splits/fractions
 
 // Status bit flags for the stake-receipt wallet.
 const RECEIPT_STATUS_LOCKED = 1 // bit 0: outgoing transfers locked (default)
+
+// Max Merkle inclusion-proof depth the on-chain verifier will walk before
+// aborting (A4: an attacker-supplied proof chain is otherwise unbounded → gas
+// griefing). 32 levels = up to 2^32 leaves per epoch, far beyond any realistic
+// epoch batch, so this never rejects an honest proof.
+const MAX_MERKLE_PROOF_DEPTH = 32
+
+// On-chain floor for the dispute bond minimum (A5): a config that sets
+// disputeBondMin below this is rejected at deploy/validate time so near-zero-bond
+// griefing is impossible. 0.01 TON is a token but non-trivial anti-spam cost.
+const MIN_DISPUTE_BOND_FLOOR = ton("0.01")
+
+// Upper bound on the number of agreeing non-winners paid in a single settle
+// action phase (B4): bounding the participants map keeps the settle within the
+// TVM action/gas limit so a payout can never be partial. 32 covers the realistic
+// committee size (N_max=10) with wide headroom.
+const MAX_SETTLE_PARTICIPANTS = 32

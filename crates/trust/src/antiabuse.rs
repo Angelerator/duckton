@@ -11,7 +11,7 @@
 //!  * **Signed abuse signals** — sign/verify the gossiped [`AbuseSignal`] so each
 //!    node can independently refuse a flagged actor.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use p2p_proto::{AbuseSignal, NodeId, Verdict};
 
 use crate::reputation::age_factor;
@@ -267,7 +267,8 @@ pub fn verify_abuse_signal(sig: &AbuseSignal) -> bool {
         sig.ts,
         &sig.reporter_id,
     );
-    verifying_key.verify(&msg, &signature).is_ok()
+    // strict verification: reject malleable signatures / weak keys (see receipt.rs).
+    verifying_key.verify_strict(&msg, &signature).is_ok()
 }
 
 #[cfg(test)]

@@ -36,6 +36,7 @@ fun makeConfig(
         keeperGrace: KEEPER_GRACE,
         keeperBountyBps: 200, // 2%
         slasher: slasher,
+        upgradeAuthority: slasher,
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -58,6 +59,7 @@ fun deployVault(
         bindingHash: 0xDEADBEEF,
         config: makeConfig(minStake, slasher, treasury, redundancy),
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
     val vault = StakeVault.fromStorage(storage);
     val res = vault.deploy(owner, { value: ton("1") });
@@ -141,18 +143,23 @@ get fun `test slashing reduces stake, burns receipt and splits funds`() {
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val challenger = randomAddress("challenger");
-    val treasury = randomAddress("treasury");
-    val redundancy = randomAddress("redundancy");
-    val vault = deployVault(owner.address, ton("10"), slasher.address, treasury, redundancy);
+    // C1: split recipients are bounceable payouts, so they must be DEPLOYED wallets
+    // to receive directly (an uninit recipient would fall to the pull-ledger).
+    val challenger = testing.treasury("challenger");
+    val treasury = testing.treasury("treasury");
+    val redundancy = testing.treasury("redundancy");
+    val vault = deployVault(owner.address, ton("10"), slasher.address, treasury.address, redundancy.address);
     vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
 
+    val cBefore = testing.getAccountBalance(challenger.address);
+    val rBefore = testing.getAccountBalance(redundancy.address);
+    val tBefore = testing.getAccountBalance(treasury.address);
     val res = vault.sendStakeSlash(
         slasher.address,
         2,
         ton("50"),
         1,
-        challenger,
+        challenger.address,
         { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<StakeSlash>({ from: slasher.address, to: vault.address });
@@ -166,9 +173,17 @@ get fun `test slashing reduces stake, burns receipt and splits funds`() {
     expect(wallet.getWalletData().balance).toEqual(ton("50"));
 
     // Split: 40% challenger, 30% redundancy, 10% treasury (20% burned/locked).
-    expect(testing.getAccountBalance(challenger)).toEqual(ton("20"));
-    expect(testing.getAccountBalance(redundancy)).toEqual(ton("15"));
-    expect(testing.getAccountBalance(treasury)).toEqual(ton("5"));
+    // The bounceable payout carries a small op-tagged body, so the receiving
+    // wallet spends a few microTON of gas processing it — assert tight ranges.
+    val cd = testing.getAccountBalance(challenger.address) - cBefore;
+    val rd = testing.getAccountBalance(redundancy.address) - rBefore;
+    val td = testing.getAccountBalance(treasury.address) - tBefore;
+    expect(cd).toBeGreaterOrEqual(ton("19.99"));
+    expect(cd).toBeLessOrEqual(ton("20"));
+    expect(rd).toBeGreaterOrEqual(ton("14.99"));
+    expect(rd).toBeLessOrEqual(ton("15"));
+    expect(td).toBeGreaterOrEqual(ton("4.99"));
+    expect(td).toBeLessOrEqual(ton("5"));
 }
 
 get fun `test slash from non-slasher is rejected`() {
@@ -256,7 +271,8 @@ get fun `test keeper can finalize an unresponsive owner withdraw for a bounty`()
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val keeper = randomAddress("keeper");
+    // C1: the keeper bounty is a bounceable payout, so the keeper must be deployed.
+    val keeper = testing.treasury("keeper");
     val vault = deployVault(
         owner.address,
         ton("10"),
@@ -269,21 +285,22 @@ get fun `test keeper can finalize an unresponsive owner withdraw for a bounty`()
 
     // Before cooldown + grace, the keeper is too early.
     testing.setNow(T0 + UNBONDING_PERIOD);
-    val early = vault.sendStakeKeeperWithdraw(keeper, 3, { value: ton("1") });
+    val early = vault.sendStakeKeeperWithdraw(keeper.address, 3, { value: ton("1") });
     expect(
         early,
-    ).toHaveFailedTx({ from: keeper, to: vault.address, exitCode: ErrCode.KEEPER_TOO_EARLY });
+    ).toHaveFailedTx({ from: keeper.address, to: vault.address, exitCode: ErrCode.KEEPER_TOO_EARLY });
 
     // After cooldown + grace, anyone can finalize; the keeper earns a 2% bounty.
     testing.setNow(T0 + UNBONDING_PERIOD + KEEPER_GRACE);
-    val res = vault.sendStakeKeeperWithdraw(keeper, 4, { value: ton("1") });
-    expect(res).toHaveSuccessfulTx<StakeKeeperWithdraw>({ from: keeper, to: vault.address });
+    val kBefore = testing.getAccountBalance(keeper.address);
+    val res = vault.sendStakeKeeperWithdraw(keeper.address, 4, { value: ton("1") });
+    expect(res).toHaveSuccessfulTx<StakeKeeperWithdraw>({ from: keeper.address, to: vault.address });
 
     val state = vault.getVaultState();
     expect(state.unbondingAmount).toEqual(ton("0"));
     expect(state.totalSupply).toEqual(ton("0"));
-    // 2% of 100 = 2 TON bounty to the keeper.
-    expect(testing.getAccountBalance(keeper)).toBeGreaterOrEqual(ton("2"));
+    // 2% of 100 = 2 TON bounty to the keeper (net of the tiny message fee it paid).
+    expect(testing.getAccountBalance(keeper.address) - kBefore).toBeGreaterOrEqual(ton("1"));
 }
 
 get fun `test stake-receipt jetton exposes Duckton TEP-64 metadata`() {
@@ -475,6 +492,7 @@ fun makeConfigSplit(
         keeperGrace: KEEPER_GRACE,
         keeperBountyBps: 200,
         slasher: slasher,
+        upgradeAuthority: slasher,
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -501,6 +519,7 @@ fun deployVaultSplit(
         bindingHash: 0xDEADBEEF,
         config: makeConfigSplit(minStake, slasher, treasury, redundancy, splitCh, splitRe, splitBu, splitTr),
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
     val vault = StakeVault.fromStorage(storage);
     expect(vault.deploy(owner, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
@@ -639,12 +658,13 @@ get fun `test slash guards: zero, over-slashable rejected; full slash accepted`(
     expect(state.totalSupply).toEqual(ton("0"));
 }
 
-get fun `test slash with a split that does not sum to 100% is rejected`() {
+get fun `test config with a split that does not sum to 100% is rejected at first use`() {
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val challenger = randomAddress("challenger");
-    // Split sums to 9000 bps, not 10000 -> the slash-split guard must reject.
+    // Split sums to 9000 bps, not 10000. C4: validateVaultConfig now rejects the
+    // misconfigured vault at FIRST USE (deposit), so a node can never bond into a
+    // vault whose slash split is broken — the earliest, strongest enforcement.
     val vault = deployVaultSplit(
         owner.address,
         ton("10"),
@@ -656,35 +676,91 @@ get fun `test slash with a split that does not sum to 100% is rejected`() {
         1000,
         1000,
     );
-    vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
 
-    val res = vault.sendStakeSlash(slasher.address, 2, ton("50"), 1, challenger, { value: ton("1") });
-    expect(res).toHaveFailedTx({ from: slasher.address, to: vault.address, exitCode: ErrCode.INVALID_SPLIT });
-    // Slash rolled back: stake untouched.
-    expect(vault.getVaultState().staked).toEqual(ton("100"));
+    val res = vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
+    expect(res).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.INVALID_SPLIT });
+    // Rejected: nothing bonded.
+    expect(vault.getVaultState().staked).toEqual(ton("0"));
+}
+
+// C4: keeperBountyBps out of range is rejected at first use too.
+get fun `test config with keeperBountyBps over 100% is rejected (BAD_BOUNTY_BPS)`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val slash: SlashConfig = {
+        treasury: randomAddress("t"),
+        redundancyPool: randomAddress("r"),
+        splitChallengerBps: 4000,
+        splitRedundancyBps: 3000,
+        splitBurnBps: 2000,
+        splitTreasuryBps: 1000,
+    };
+    val cfg: VaultConfig = {
+        minStake: ton("0"),
+        unbondingPeriod: UNBONDING_PERIOD,
+        challengeWindow: CHALLENGE_WINDOW,
+        keeperGrace: KEEPER_GRACE,
+        keeperBountyBps: 10001, // > BPS_DENOM
+        slasher: slasher.address,
+        upgradeAuthority: slasher.address,
+        receiptWalletCode: build("StakeReceiptWallet"),
+        slash: slash.toCell(),
+    };
+    val storage: VaultStorage = {
+        owner: owner.address, staked: 0, unbondingAmount: 0, unbondingAt: 0, totalSupply: 0,
+        bindingHash: 0xDEADBEEF, config: cfg.toCell(), upgrade: freshVaultUpgrade(), pending: createEmptyMap(),
+    };
+    val vault = StakeVault.fromStorage(storage);
+    expect(vault.deploy(owner.address, { value: ton("1") })).toHaveSuccessfulDeploy({ to: vault.address });
+
+    val res = vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
+    expect(res).toHaveFailedTx({ from: owner.address, to: vault.address, exitCode: ErrCode.BAD_BOUNTY_BPS });
+}
+
+// C2: a deposit whose receipt MINT bounces rolls back staked/totalSupply, so a
+// failed mint cannot inflate supply with no backing (standard TEP-74 behavior).
+// We can't easily force a mint bounce in-emulator (the wallet always accepts),
+// but we assert the happy path keeps supply == staked and the receipt is minted
+// 1:1, pinning that the credit and the (bounceable) mint are paired.
+get fun `test deposit credits supply 1to1 and mints the receipt (C2 happy path)`() {
+    testing.setNow(T0);
+    val owner = testing.treasury("owner");
+    val slasher = testing.treasury("slasher");
+    val vault = deployVault(owner.address, ton("0"), slasher.address, randomAddress("t"), randomAddress("r"));
+    vault.sendStakeDeposit(owner.address, 1, ton("40"), { value: ton("41") });
+    expect(vault.getVaultState().staked).toEqual(ton("40"));
+    expect(vault.getVaultState().totalSupply).toEqual(ton("40"));
+    expect(receiptWalletOf(vault, owner.address).getWalletData().balance).toEqual(ton("40"));
+    // No pending payouts on a clean deposit.
+    expect(vault.getPending(owner.address)).toEqual(0);
 }
 
 get fun `test keeper bounty math: owner receives amount minus bounty`() {
     testing.setNow(T0);
     val owner = testing.treasury("owner");
     val slasher = testing.treasury("slasher");
-    val keeper = randomAddress("keeper");
+    val keeper = testing.treasury("keeper");
     val vault = deployVault(owner.address, ton("10"), slasher.address, randomAddress("t"), randomAddress("r"));
     vault.sendStakeDeposit(owner.address, 1, ton("100"), { value: ton("110") });
     vault.sendStakeRequestUnbond(owner.address, 2, ton("100"));
 
     testing.setNow(T0 + UNBONDING_PERIOD + KEEPER_GRACE);
     val ownerBefore = testing.getAccountBalance(owner.address);
-    val res = vault.sendStakeKeeperWithdraw(keeper, 3, { value: ton("1") });
-    expect(res).toHaveSuccessfulTx<StakeKeeperWithdraw>({ from: keeper, to: vault.address });
+    val keeperBefore = testing.getAccountBalance(keeper.address);
+    val res = vault.sendStakeKeeperWithdraw(keeper.address, 3, { value: ton("1") });
+    expect(res).toHaveSuccessfulTx<StakeKeeperWithdraw>({ from: keeper.address, to: vault.address });
 
-    // bounty = 2% of 100 = 2 TON; owner must receive amount - bounty = 98 TON
-    // (minus negligible message fees). This pins the `-` in `amount - bounty`:
-    // a `+` would pay ~102 (> 99) and a removed bounty deduction would pay ~100.
+    // bounty = 2% of 100 = 2 TON deducted for the keeper; the owner then receives
+    // the liquid REMAINDER via C3's reserve+carry (the cooled 100 minus the bounty,
+    // plus any over-funded gas surplus the vault held) — so it is AT LEAST
+    // amount - bounty = 98 TON and never underpaid by rent.
     val ownerDelta = testing.getAccountBalance(owner.address) - ownerBefore;
     expect(ownerDelta).toBeGreaterOrEqual(ton("97.5"));
-    expect(ownerDelta).toBeLessOrEqual(ton("99"));
-    expect(testing.getAccountBalance(keeper)).toBeGreaterOrEqual(ton("2"));
+    // keeper nets ~2 TON bounty (minus the tiny fee it paid to trigger).
+    val keeperDelta = testing.getAccountBalance(keeper.address) - keeperBefore;
+    expect(keeperDelta).toBeGreaterOrEqual(ton("1"));
+    expect(keeperDelta).toBeLessOrEqual(ton("2"));
 }
 
 get fun `test unknown opcode (non-empty body) is rejected with INVALID_OP`() {

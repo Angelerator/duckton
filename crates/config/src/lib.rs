@@ -341,9 +341,13 @@ impl Default for BdpConfig {
 
 impl BdpConfig {
     /// Bandwidth-delay product in bytes: `(mbps * 1e6 / 8) * (rtt_ms / 1000)`.
+    ///
+    /// Uses saturating arithmetic so a large operator-supplied
+    /// `bandwidth_mbps`/`rtt_ms` cannot overflow (and panic in debug / wrap in
+    /// release); the result is range-checked against `VARINT_MAX` in `validate()`.
     pub fn target_bytes(&self) -> u64 {
-        let bytes_per_sec = (self.bandwidth_mbps as u64) * 1_000_000 / 8;
-        (bytes_per_sec * self.rtt_ms as u64) / 1000
+        let bytes_per_sec = (self.bandwidth_mbps as u64).saturating_mul(1_000_000) / 8;
+        bytes_per_sec.saturating_mul(self.rtt_ms as u64) / 1000
     }
 }
 
@@ -361,6 +365,17 @@ pub struct ResultTransferConfig {
     /// Only split a result across multiple streams when its serialized size is at
     /// least this many bytes (avoids per-stream overhead for small results).
     pub parallel_min_bytes: usize,
+    /// Hard cap (bytes) on a single **received** result payload. The winning
+    /// worker is untrusted and the bulk transfer deliberately bypasses the
+    /// control-frame cap, so the receiver refuses to allocate a reassembly buffer
+    /// for any `ResultManifest` declaring more than this (additionally clamped to
+    /// `p2p_proto::MAX_RESULT_BYTES`). Defends against a malicious manifest
+    /// forcing an out-of-memory abort on the requester.
+    pub max_result_bytes: u64,
+    /// Hard cap on the number of parallel result streams the receiver will accept
+    /// for one result (additionally clamped to `p2p_proto::MAX_RESULT_PARTS`).
+    /// Bounds the inbound `accept_uni` loop against an attacker-supplied `parts`.
+    pub max_result_parts: u32,
 }
 
 impl Default for ResultTransferConfig {
@@ -369,6 +384,8 @@ impl Default for ResultTransferConfig {
             parallelism: 1,
             chunk_bytes: None,
             parallel_min_bytes: 1024 * 1024,
+            max_result_bytes: 2 * 1024 * 1024 * 1024,
+            max_result_parts: 1024,
         }
     }
 }
@@ -1926,11 +1943,44 @@ impl GridConfig {
         if self.budget.max_jobs == 0 {
             return inv("budget.max_jobs must be >= 1".into());
         }
+        if self.network.keepalive_ms == 0 {
+            return inv("network.keepalive_ms must be >= 1".into());
+        }
+        if self.network.idle_timeout_ms == 0 {
+            return inv("network.idle_timeout_ms must be >= 1 (0 would disable the idle timeout, letting a stuck connection live forever)".into());
+        }
         if self.network.keepalive_ms >= self.network.idle_timeout_ms {
             return inv("network.keepalive_ms must be < network.idle_timeout_ms".into());
         }
+        if self.network.connect_timeout_ms == 0 {
+            return inv("network.connect_timeout_ms must be >= 1 (0 would let a dial to an unresponsive peer hang forever)".into());
+        }
         if self.limits.worker_pool_size == 0 {
             return inv("limits.worker_pool_size must be >= 1".into());
+        }
+
+        // ---- identity / peer pinning ----
+        if matches!(self.identity.pinning_mode, PinningMode::Allowlist) {
+            if self.identity.allowlist.is_empty() {
+                return inv(
+                    "identity.allowlist must be non-empty when identity.pinning_mode = \"allowlist\" (otherwise the node rejects every peer)".into(),
+                );
+            }
+            for entry in &self.identity.allowlist {
+                let is_node_id = entry
+                    .strip_prefix("b3:")
+                    .map(|h| {
+                        h.len() == 64
+                            && h.bytes()
+                                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    })
+                    .unwrap_or(false);
+                if !is_node_id {
+                    return inv(format!(
+                        "identity.allowlist entry {entry:?} must be a node id of the form b3:<64 lowercase hex chars>"
+                    ));
+                }
+            }
         }
 
         // ---- storage / data sources ----
@@ -2029,6 +2079,12 @@ impl GridConfig {
             if c == 0 {
                 return inv("transport.result.chunk_bytes must be >= 1".into());
             }
+        }
+        if r.max_result_bytes == 0 {
+            return inv("transport.result.max_result_bytes must be >= 1".into());
+        }
+        if r.max_result_parts == 0 {
+            return inv("transport.result.max_result_parts must be >= 1".into());
         }
         let c = &self.transport.compression;
         if matches!(c.algorithm, CompressionAlgo::Zstd) && !(1..=22).contains(&c.level) {

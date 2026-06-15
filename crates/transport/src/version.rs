@@ -75,6 +75,15 @@ impl VersionInfo {
     /// since the newer side downgrades). On failure returns a typed error with a
     /// human-readable reason.
     pub fn negotiate(&self, peer: &Hello) -> Result<Negotiated, TransportError> {
+        // Wire schema tag must match (defense-in-depth on top of the per-frame
+        // schema check). The field carried in `Hello` is otherwise ignored, so a
+        // peer could advertise any schema with no effect; validate it here.
+        if peer.schema_version != SCHEMA_VERSION {
+            return Err(TransportError::IncompatibleVersion(format!(
+                "schema version mismatch: local {SCHEMA_VERSION} vs peer {}",
+                peer.schema_version
+            )));
+        }
         // Same MAJOR is required.
         if !self.version.same_major(&peer.protocol_version) {
             return Err(TransportError::IncompatibleVersion(format!(

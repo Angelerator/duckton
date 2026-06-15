@@ -18,6 +18,7 @@ use p2p_node::{
 };
 use p2p_proto::{Attestation, AttestationLevel, CapabilityAd, DataClass};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
+use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
     mint_pow, now_ts, sign_capability_ad, CapabilityDraft, InMemoryTrustStore, TrustStore,
 };
@@ -62,6 +63,7 @@ fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
         nat: test_nat(false),
         gossip_peer_scoring: false,
         diverse_bootstrap: true,
+        conn_limits: Default::default(),
     }
 }
 
@@ -77,7 +79,7 @@ fn signed_ad(addr: &str, ts: u64) -> CapabilityAd {
         attestation_level: AttestationLevel::L0,
         price: 0,
         recent_receipts_root: None,
-        pow: mint_pow(&pk, POW_BITS, 5_000_000).unwrap(),
+        pow: mint_pow(&pk, pow_epoch(ts), POW_BITS, 5_000_000).unwrap(),
         ts,
     };
     sign_capability_ad(draft, &IdentitySigner(&id))
@@ -319,6 +321,7 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
     let w_boot = worker_disc.wait_listeners(Duration::from_secs(5)).await;
     assert!(!w_boot.is_empty());
     let pk = worker_identity.public_key_bytes();
+    let ts = now_ts();
     let draft = CapabilityDraft {
         addr: worker_addr.to_string(),
         free_mem_bytes: 1 << 30,
@@ -327,8 +330,8 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
         attestation_level: AttestationLevel::L0,
         price: 0,
         recent_receipts_root: None,
-        pow: mint_pow(&pk, POW_BITS, 5_000_000).unwrap(),
-        ts: now_ts(),
+        pow: mint_pow(&pk, pow_epoch(ts), POW_BITS, 5_000_000).unwrap(),
+        ts,
     };
     let ad = sign_capability_ad(draft, &IdentitySigner(&worker_identity));
     worker_disc.publish_ad(&ad).await.unwrap();

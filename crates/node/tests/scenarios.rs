@@ -25,6 +25,7 @@ use p2p_node::{
     MockEngine, QueryEngine, StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_transport::{NodeIdentity, QuicTransport, Transport, VersionInfo};
+use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
     canonical_hash, mint_pow, now_ts, sign_capability_ad, CapabilityDraft, InMemoryTrustStore,
     TrustStore,
@@ -488,7 +489,7 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
             attestation_level: AttestationLevel::L0,
             price: 0,
             recent_receipts_root: None,
-            pow: mint_pow(&pk, 8, 1_000_000).unwrap(),
+            pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
             ts,
         };
         let ad = sign_capability_ad(draft, &p2p_node::IdentitySigner(&id));

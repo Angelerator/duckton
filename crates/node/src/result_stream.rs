@@ -185,7 +185,20 @@ async fn send_parallel(
 }
 
 /// Reassemble a result set from the peer, honoring the manifest's encoding.
-pub async fn recv_result(conn: &Conn, control: &mut RecvStream) -> p2p_transport::Result<ResultSet> {
+///
+/// The winning worker is **untrusted**: its [`ResultManifest`] carries
+/// attacker-controlled size fields (`total_len` / `uncompressed_len` / `parts`)
+/// that would otherwise drive an unbounded reassembly allocation or an unbounded
+/// `accept_uni` loop. Before allocating *anything* we validate the manifest
+/// against the receiver's configured ceilings (`max_bytes`/`max_parts`, each
+/// additionally clamped to the absolute [`p2p_proto::MAX_RESULT_BYTES`] /
+/// [`p2p_proto::MAX_RESULT_PARTS`]) and reject oversize / zero-part manifests.
+pub async fn recv_result(
+    conn: &Conn,
+    control: &mut RecvStream,
+    max_bytes: u64,
+    max_parts: u32,
+) -> p2p_transport::Result<ResultSet> {
     let manifest = match read_msg(control).await? {
         Wire::Manifest(m) => m,
         other => {
@@ -195,8 +208,15 @@ pub async fn recv_result(conn: &Conn, control: &mut RecvStream) -> p2p_transport
         }
     };
 
+    // Defense-in-depth: reject a malicious manifest BEFORE any allocation (the
+    // reassembly buffer and the parallel `accept_uni` loop are both sized from
+    // these fields).
+    manifest
+        .validate(max_bytes, max_parts)
+        .map_err(|e| TransportError::Stream(format!("result manifest rejected: {e}")))?;
+
     let payload = if manifest.parts <= 1 {
-        recv_inline(control).await?
+        recv_inline(control, manifest.total_len).await?
     } else {
         recv_parallel(conn, &manifest).await?
     };
@@ -210,9 +230,14 @@ pub async fn recv_result(conn: &Conn, control: &mut RecvStream) -> p2p_transport
     Ok(p2p_proto::from_bytes(&bytes)?)
 }
 
-/// Single-stream reassembly: read ordered chunks until `last`.
-async fn recv_inline(control: &mut RecvStream) -> p2p_transport::Result<Vec<u8>> {
-    let mut buf: Vec<u8> = Vec::new();
+/// Single-stream reassembly: read ordered chunks until `last`. `total_len` is the
+/// manifest's already-validated declared payload size; the accumulated chunk
+/// bytes may not exceed it (an untrusted worker must not be able to grow the
+/// buffer past the size it announced and we validated).
+async fn recv_inline(control: &mut RecvStream, total_len: u64) -> p2p_transport::Result<Vec<u8>> {
+    let total_len = total_len as usize;
+    // Pre-size to the (bounded, validated) declared length to avoid reallocs.
+    let mut buf: Vec<u8> = Vec::with_capacity(total_len);
     let mut expected_seq = 0u32;
     loop {
         match read_msg(control).await? {
@@ -221,6 +246,11 @@ async fn recv_inline(control: &mut RecvStream) -> p2p_transport::Result<Vec<u8>>
                     return Err(TransportError::Stream(format!(
                         "out-of-order chunk: expected {}, got {}",
                         expected_seq, chunk.seq
+                    )));
+                }
+                if buf.len() + chunk.payload.len() > total_len {
+                    return Err(TransportError::Stream(format!(
+                        "inline result exceeds declared total_len {total_len}"
                     )));
                 }
                 buf.extend_from_slice(&chunk.payload);

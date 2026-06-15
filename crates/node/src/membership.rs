@@ -116,6 +116,7 @@ mod tests {
     use super::*;
     use p2p_proto::AttestationLevel;
     use p2p_transport::NodeIdentity;
+    use p2p_trust::sybil::pow_epoch;
     use p2p_trust::{mint_pow, sign_capability_ad, CapabilityDraft};
 
     use crate::signer::IdentitySigner;
@@ -131,7 +132,9 @@ mod tests {
             attestation_level: AttestationLevel::L0,
             price: 0,
             recent_receipts_root: None,
-            pow: mint_pow(&pk, 8, 1_000_000).unwrap(),
+            // PoW epoch MUST match `pow_epoch(ad.ts)` or `verify_capability_ad`
+            // (which derives the epoch from `ad.ts`) rejects the ad.
+            pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
             ts,
         };
         sign_capability_ad(draft, &IdentitySigner(&id))

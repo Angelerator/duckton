@@ -16,6 +16,7 @@ use quinn::congestion::{BbrConfig, CubicConfig, NewRenoConfig};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use quinn::{ClientConfig, Endpoint, RecvStream, SendStream, ServerConfig, TransportConfig, VarInt};
 use rustls_pki_types::CertificateDer;
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 use crate::error::{Result, TransportError};
 use crate::identity::NodeIdentity;
@@ -36,12 +37,25 @@ pub trait Transport: Send + Sync + 'static {
     async fn accept(&self) -> Option<Result<Conn>>;
 }
 
+/// Channel capacity for completed inbound connections awaiting `accept()`.
+const ACCEPT_CHANNEL_CAP: usize = 256;
+/// Upper bound on concurrently in-flight inbound handshakes — a resource guard so
+/// a connection flood cannot spawn unbounded handshake tasks.
+const MAX_INFLIGHT_HANDSHAKES: usize = 512;
+
 /// A concrete Quinn-backed transport.
 #[derive(Clone)]
 pub struct QuicTransport {
     endpoint: Endpoint,
     identity: NodeIdentity,
     version: VersionInfo,
+    /// Completed inbound connections produced by the background accept loop. Each
+    /// connection's QUIC+TLS+version handshake runs concurrently in its own
+    /// (bounded, timed-out) task, so one slow/stalled peer cannot head-of-line
+    /// block the acceptance of other connections.
+    incoming: Arc<Mutex<mpsc::Receiver<Result<Conn>>>>,
+    /// Dial + handshake deadline, from `network.connect_timeout_ms`.
+    connect_timeout: Duration,
 }
 
 impl QuicTransport {
@@ -91,10 +105,13 @@ impl QuicTransport {
         .map_err(|e| TransportError::Tls(e.to_string()))?;
         server_crypto.alpn_protocols = vec![alpn.clone()];
         if quic.enable_0rtt {
-            // Accept TLS 1.3 early data (0-RTT) from resuming peers. We never put
-            // non-idempotent application bytes in early data (the version
-            // handshake runs on a fresh stream), so the standard 0-RTT replay
-            // risk does not apply to control/result traffic. See docs §caveats.
+            // Accept TLS 1.3 early data (0-RTT) from resuming peers. CAVEAT: 0-RTT
+            // early data is replayable by a network attacker. This is only safe if
+            // the application sends nothing non-idempotent before the handshake is
+            // confirmed — the version handshake itself is idempotent, but a higher
+            // layer MUST NOT push effectful control messages (Dispatch/Offer/…) on
+            // a resumed connection until `Connection::accepted_0rtt`/handshake
+            // completion. Keep `enable_0rtt = false` unless that holds.
             server_crypto.max_early_data_size = u32::MAX;
         }
 
@@ -135,10 +152,25 @@ impl QuicTransport {
         client_config.transport_config(transport_config);
         endpoint.set_default_client_config(client_config);
 
+        // Drive inbound handshakes concurrently in a background task (each bounded
+        // by `connect_timeout`), so a single slow/stalled peer cannot head-of-line
+        // block acceptance, and so a never-completing handshake cannot hang forever.
+        let connect_timeout = Duration::from_millis(net.connect_timeout_ms.max(1));
+        let (tx, rx) = mpsc::channel::<Result<Conn>>(ACCEPT_CHANNEL_CAP);
+        tokio::spawn(server_accept_loop(
+            endpoint.clone(),
+            version.clone(),
+            identity.node_id().clone(),
+            tx,
+            connect_timeout,
+        ));
+
         Ok(Self {
             endpoint,
             identity,
             version,
+            incoming: Arc::new(Mutex::new(rx)),
+            connect_timeout,
         })
     }
 
@@ -179,8 +211,15 @@ impl Transport for QuicTransport {
             .endpoint
             .connect(addr, "duckdb-p2p")
             .map_err(|e| TransportError::Connection(e.to_string()))?;
-        let connection = connecting
+        // Bound the dial so a black-hole / unresponsive peer cannot hang forever.
+        let connection = tokio::time::timeout(self.connect_timeout, connecting)
             .await
+            .map_err(|_| {
+                TransportError::Connection(format!(
+                    "connect to {addr} timed out after {:?}",
+                    self.connect_timeout
+                ))
+            })?
             .map_err(|e| TransportError::Connection(e.to_string()))?;
         let peer = peer_node_id(&connection)?;
         if let Some(exp) = expected {
@@ -192,14 +231,20 @@ impl Transport for QuicTransport {
                 });
             }
         }
-        // Version handshake (client role): we open the hello stream first.
-        match handshake_client(&connection, &self.version, self.identity.node_id().clone()).await {
-            Ok(negotiated) => Ok(Conn {
+        // Version handshake (client role): we open the hello stream first, bounded
+        // by the same deadline.
+        let hs = tokio::time::timeout(
+            self.connect_timeout,
+            handshake_client(&connection, &self.version, self.identity.node_id().clone()),
+        )
+        .await;
+        match hs {
+            Ok(Ok(negotiated)) => Ok(Conn {
                 connection,
                 peer,
                 negotiated,
             }),
-            Err(e) => {
+            Ok(Err(e)) => {
                 // If the peer rejected us with the incompatible-version close
                 // code, surface a typed error even if the stream-level
                 // VersionReject raced the connection close.
@@ -207,36 +252,91 @@ impl Transport for QuicTransport {
                 connection.close(VarInt::from_u32(2), b"incompatible-version");
                 Err(mapped)
             }
+            Err(_elapsed) => {
+                connection.close(VarInt::from_u32(3), b"handshake-timeout");
+                Err(TransportError::Connection(
+                    "outbound version handshake timed out".into(),
+                ))
+            }
         }
     }
 
     async fn accept(&self) -> Option<Result<Conn>> {
-        let incoming = self.endpoint.accept().await?;
-        let version = self.version.clone();
-        let my_id = self.identity.node_id().clone();
-        let result = async {
-            let connection = incoming
-                .accept()
-                .map_err(|e| TransportError::Connection(e.to_string()))?
-                .await
-                .map_err(|e| TransportError::Connection(e.to_string()))?;
-            let peer = peer_node_id(&connection)?;
-            // Version handshake (server role): we accept the hello stream and
-            // reply with our Hello, or a typed VersionReject.
-            match handshake_server(&connection, &version, my_id).await {
-                Ok(negotiated) => Ok(Conn {
-                    connection,
-                    peer,
-                    negotiated,
-                }),
-                Err(e) => {
-                    connection.close(VarInt::from_u32(2), b"incompatible-version");
-                    Err(e)
-                }
-            }
+        // The background accept loop performs the handshakes; we just hand back the
+        // next completed result. `None` once the endpoint closes (loop ends, the
+        // sender drops, and the channel returns `None`).
+        self.incoming.lock().await.recv().await
+    }
+}
+
+/// Background loop: pull raw inbound connection attempts off the endpoint and
+/// drive each one's QUIC+TLS+version handshake in its own bounded, timed task,
+/// forwarding the (possibly failed) result to the `accept()` channel. Running
+/// handshakes concurrently means one slow/stalled peer cannot head-of-line-block
+/// the acceptance of others.
+async fn server_accept_loop(
+    endpoint: Endpoint,
+    version: VersionInfo,
+    my_id: NodeId,
+    tx: mpsc::Sender<Result<Conn>>,
+    handshake_timeout: Duration,
+) {
+    let sem = Arc::new(Semaphore::new(MAX_INFLIGHT_HANDSHAKES));
+    while let Some(incoming) = endpoint.accept().await {
+        if tx.is_closed() {
+            break;
         }
-        .await;
-        Some(result)
+        // Bound concurrent in-flight handshakes.
+        let permit = match Arc::clone(&sem).acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        let tx = tx.clone();
+        let version = version.clone();
+        let my_id = my_id.clone();
+        tokio::spawn(async move {
+            let _permit = permit; // released when the handshake finishes
+            let result = accept_one(incoming, &version, my_id, handshake_timeout).await;
+            let _ = tx.send(result).await;
+        });
+    }
+}
+
+/// Complete one inbound connection: finish the QUIC/TLS handshake, then run the
+/// application version handshake under `handshake_timeout`.
+async fn accept_one(
+    incoming: quinn::Incoming,
+    version: &VersionInfo,
+    my_id: NodeId,
+    handshake_timeout: Duration,
+) -> Result<Conn> {
+    let connection = incoming
+        .accept()
+        .map_err(|e| TransportError::Connection(e.to_string()))?
+        .await
+        .map_err(|e| TransportError::Connection(e.to_string()))?;
+    let peer = peer_node_id(&connection)?;
+    // Version handshake (server role): accept the hello stream and reply with our
+    // Hello, or a typed VersionReject — bounded so a peer that opens a connection
+    // and then never speaks cannot hold a handshake slot forever.
+    match tokio::time::timeout(handshake_timeout, handshake_server(&connection, version, my_id))
+        .await
+    {
+        Ok(Ok(negotiated)) => Ok(Conn {
+            connection,
+            peer,
+            negotiated,
+        }),
+        Ok(Err(e)) => {
+            connection.close(VarInt::from_u32(2), b"incompatible-version");
+            Err(e)
+        }
+        Err(_elapsed) => {
+            connection.close(VarInt::from_u32(3), b"handshake-timeout");
+            Err(TransportError::Connection(
+                "inbound version handshake timed out".into(),
+            ))
+        }
     }
 }
 

@@ -22,6 +22,9 @@ const OP_RECEIPT_BURN = 0x534b_4b06
 const OP_STAKE_ANNOUNCE_UPGRADE = 0x534b_4b07
 const OP_STAKE_APPLY_UPGRADE = 0x534b_4b08
 const OP_STAKE_CANCEL_UPGRADE = 0x534b_4b09
+// Pull a queued/bounced payout (C1 bounce-safety) + the outgoing payout op tag.
+const OP_STAKE_CLAIM = 0x534b_4b0a
+const OP_STAKE_PAYOUT = 0x534b_4b0b
 // Mint uses the STANDARD TEP-74 internal_transfer op (0x178d4519), not a custom
 // one, so indexers recognize it; see `JettonInternalTransfer` below.
 
@@ -136,8 +139,27 @@ struct VaultConfig {
     keeperGrace: uint32     // extra secs after cooldown before a keeper may act
     keeperBountyBps: uint16 // keeper reward (bps of the withdrawn amount)
     slasher: address        // authorized slasher (the dispute contract)
+    // D1: distinct UPGRADE authority, separated from the slasher so a compromised
+    // slasher key cannot also announce/apply a code swap (which a timelock protects
+    // but should not be reachable by the slash key at all). Meant to be a multisig.
+    upgradeAuthority: address
     receiptWalletCode: cell // code of StakeReceiptWallet (for deterministic mint)
     slash: Cell<SlashConfig>
+}
+
+// C4: on-chain sanity bounds for the vault config (validated at first use, since
+// the config is set at deploy and has no on-chain setter). Mirrors the §12
+// invariants for the values this contract acts on directly.
+fun validateVaultConfig(cfg: VaultConfig) {
+    // keeper bounty is a bps fraction of the withdrawn amount → must be in range.
+    assert (cfg.keeperBountyBps <= BPS_DENOM) throw ErrCode.BAD_BOUNTY_BPS;
+    // unbonding must outlast the challenge window (§8.4) so a cheater cannot exit
+    // before a fraud proof can land.
+    assert (cfg.unbondingPeriod >= cfg.challengeWindow) throw ErrCode.PARAMS_OUT_OF_BOUNDS;
+    // slash split must sum to exactly 100% (also re-checked at slash time).
+    val sc = cfg.slash.load();
+    val sum = sc.splitChallengerBps + sc.splitRedundancyBps + sc.splitBurnBps + sc.splitTreasuryBps;
+    assert (sum == BPS_DENOM) throw ErrCode.INVALID_SPLIT;
 }
 
 // Timelocked code-upgrade state (§8.6), kept in a CHILD cell (a ^ref) for two
@@ -171,6 +193,15 @@ struct VaultStorage {
     // migration stays additive (append fields LAST) and would be staged inside
     // the apply handler before save() (SETCODE is postponed to after this run).
     upgrade: Cell<VaultUpgradeState>
+    // C1 bounce-safety: a pull-withdrawal ledger. If a pushed payout (slash split,
+    // keeper bounty, owner withdrawal) BOUNCES because the recipient could not
+    // accept it, `onBouncedMessage` credits the returned amount here keyed by the
+    // recipient, instead of losing it (the old NoBounce|IGNORE_ERRORS path). The
+    // recipient (or a keeper) later pulls it with `StakeClaim`. Empty `map`
+    // serializes as a single 0 bit → additive, address-stable layout. Note: a
+    // claimed/bounced payout is NOT re-credited to staked/totalSupply (those were
+    // already debited and the receipt burned); it is purely a TON re-delivery.
+    pending: map<address, coins>
 }
 
 // A fresh (never-upgraded, nothing-pending) upgrade child cell for a new vault
@@ -237,6 +268,21 @@ struct (0x534b_4b08) StakeApplyUpgrade {
 // Abort a pending announcement before it is applied (governance-gated safety
 // valve, e.g. if a bad upgrade was announced). Clears the pending state.
 struct (0x534b_4b09) StakeCancelUpgrade {
+    queryId: uint64
+}
+
+// C1 pull path: deliver a queued/bounced payout to the recipient it is keyed
+// under. Anyone may trigger it (keeper-friendly), but funds can only go to that
+// recipient — so it cannot redirect a payout.
+struct (0x534b_4b0a) StakeClaim {
+    queryId: uint64
+    recipient: address
+}
+
+// Outgoing payout body tag (C1). Carried on every pushed payout so a bounce is
+// recognizable in `onBouncedMessage`; the recipient is recovered from the bounce
+// sender, the amount from the bounce value, so the body only needs op + queryId.
+struct (0x534b_4b0b) StakePayout {
     queryId: uint64
 }
 

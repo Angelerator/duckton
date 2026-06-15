@@ -19,10 +19,33 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 use crate::types::{BindingError, NodeWalletBinding, TonProof, WalletAddress};
+use crate::wallet::WalletV5R1;
 
 const TON_PROOF_PREFIX: &[u8] = b"ton-proof-item-v2/";
 const TON_CONNECT_PREFIX: &[u8] = b"ton-connect";
 const NODE_BIND_DOMAIN: &[u8] = b"duckdb-p2p-wallet-bind-v1";
+
+/// The app domain this grid expects inside a `ton_proof` (TON Connect domain
+/// binding). A proof a user signed for any *other* dApp will not match, so a
+/// cross-app proof cannot be replayed here.
+pub const EXPECTED_TON_PROOF_DOMAIN: &str = "duckdb-p2p";
+
+/// Maximum accepted age of a `ton_proof` timestamp — the TON Connect standard
+/// backend window (15 minutes). Older proofs are rejected as replays.
+pub const MAX_TON_PROOF_AGE_SECS: u64 = 15 * 60;
+
+/// Tolerance for a `ton_proof` timestamp in the future (clock skew).
+pub const TON_PROOF_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
+/// Whether `wallet_pubkey` actually owns `addr`, by re-deriving the standard
+/// wallet **v5r1** address (testnet or mainnet) from the key and comparing. This
+/// binds the key to the address: an attacker cannot present their own keypair
+/// alongside a victim's address. (The grid standardizes on wallet v5r1; other
+/// wallet versions are intentionally not accepted for binding.)
+fn wallet_pubkey_owns_address(wallet_pubkey: &[u8; 32], addr: &WalletAddress) -> bool {
+    WalletV5R1::testnet(*wallet_pubkey).address() == *addr
+        || WalletV5R1::mainnet(*wallet_pubkey).address() == *addr
+}
 
 /// Assemble the `ton-proof-item-v2` message that the wallet key signs.
 pub fn ton_proof_message(addr: &WalletAddress, proof: &TonProof) -> Vec<u8> {
@@ -50,12 +73,34 @@ pub fn ton_proof_signing_hash(addr: &WalletAddress, proof: &TonProof) -> [u8; 32
     digest
 }
 
-/// Verify a stand-alone `ton_proof` against a wallet public key.
+/// Verify a stand-alone `ton_proof` against a wallet public key, enforcing the
+/// full TON Connect verification policy (not just the signature):
+///  * the proof's `domain` matches `expected_domain` (no cross-app reuse),
+///  * the proof's `timestamp` is fresh (within [`MAX_TON_PROOF_AGE_SECS`] of
+///    `now`, and not implausibly in the future),
+///  * `wallet_pubkey` actually owns `addr` (re-derived v5r1 address), and
+///  * the Ed25519 signature is valid (`verify_strict`).
 pub fn verify_ton_proof(
     addr: &WalletAddress,
     wallet_pubkey: &[u8; 32],
     proof: &TonProof,
+    expected_domain: &str,
+    now: u64,
 ) -> Result<(), BindingError> {
+    // Domain binding: reject a proof signed for a different dApp.
+    if proof.domain != expected_domain {
+        return Err(BindingError::DomainMismatch);
+    }
+    // Freshness: reject stale (replay) or implausibly-future timestamps.
+    if now.saturating_sub(proof.timestamp) > MAX_TON_PROOF_AGE_SECS
+        || proof.timestamp > now.saturating_add(TON_PROOF_FUTURE_SKEW_SECS)
+    {
+        return Err(BindingError::ProofExpired);
+    }
+    // Key↔address binding: the pubkey must actually own the claimed address.
+    if !wallet_pubkey_owns_address(wallet_pubkey, addr) {
+        return Err(BindingError::WalletAddressMismatch);
+    }
     let vk = VerifyingKey::from_bytes(wallet_pubkey).map_err(|_| BindingError::BadKeyOrSig)?;
     let sig_bytes: [u8; 64] = proof
         .signature
@@ -111,8 +156,15 @@ pub fn verify_binding(b: &NodeWalletBinding, now: u64) -> Result<(), BindingErro
         return Err(BindingError::PayloadMismatch);
     }
 
-    // Direction 2: wallet attests the node via ton_proof.
-    verify_ton_proof(&b.wallet_address, &b.wallet_pubkey, &b.ton_proof)
+    // Direction 2: wallet attests the node via ton_proof — full TON Connect
+    // policy (domain + freshness + key↔address + signature).
+    verify_ton_proof(
+        &b.wallet_address,
+        &b.wallet_pubkey,
+        &b.ton_proof,
+        EXPECTED_TON_PROOF_DOMAIN,
+        now,
+    )
 }
 
 #[cfg(test)]
@@ -120,37 +172,93 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
 
-    fn wallet() -> WalletAddress {
-        WalletAddress::new(0, [9u8; 32])
+    const NOW: u64 = 1_700_000_000;
+
+    /// The wallet address that `pk` actually owns (v5r1 testnet) — so the
+    /// key↔address binding check passes.
+    fn owned_addr(pk: &[u8; 32]) -> WalletAddress {
+        WalletV5R1::testnet(*pk).address()
+    }
+
+    fn signed_proof(sk: &SigningKey, addr: &WalletAddress, payload: Vec<u8>, ts: u64) -> TonProof {
+        let mut proof = TonProof {
+            domain: EXPECTED_TON_PROOF_DOMAIN.into(),
+            timestamp: ts,
+            payload,
+            signature: vec![],
+        };
+        let digest = ton_proof_signing_hash(addr, &proof);
+        proof.signature = sk.sign(&digest).to_bytes().to_vec();
+        proof
     }
 
     #[test]
     fn ton_proof_roundtrip_verifies() {
         let sk = SigningKey::from_bytes(&[3u8; 32]);
         let pk = sk.verifying_key().to_bytes();
-        let addr = wallet();
-        let mut proof = TonProof {
-            domain: "duckdb-p2p".into(),
-            timestamp: 1_700_000_000,
-            payload: b"hello".to_vec(),
-            signature: vec![],
-        };
-        let digest = ton_proof_signing_hash(&addr, &proof);
-        proof.signature = sk.sign(&digest).to_bytes().to_vec();
+        let addr = owned_addr(&pk);
+        let proof = signed_proof(&sk, &addr, b"hello".to_vec(), NOW);
+        assert!(verify_ton_proof(&addr, &pk, &proof, EXPECTED_TON_PROOF_DOMAIN, NOW).is_ok());
 
-        assert!(verify_ton_proof(&addr, &pk, &proof).is_ok());
-
-        // Tampering with the timestamp breaks the proof.
+        // Tampering with the timestamp breaks the proof signature.
         let mut bad = proof.clone();
         bad.timestamp += 1;
-        assert_eq!(verify_ton_proof(&addr, &pk, &bad), Err(BindingError::TonProofInvalid));
+        assert_eq!(
+            verify_ton_proof(&addr, &pk, &bad, EXPECTED_TON_PROOF_DOMAIN, NOW),
+            Err(BindingError::TonProofInvalid)
+        );
+    }
+
+    #[test]
+    fn rejects_wrong_domain() {
+        let sk = SigningKey::from_bytes(&[3u8; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let addr = owned_addr(&pk);
+        let proof = signed_proof(&sk, &addr, b"hello".to_vec(), NOW);
+        // A proof signed for this grid, checked against a different expected domain.
+        assert_eq!(
+            verify_ton_proof(&addr, &pk, &proof, "evil.example.com", NOW),
+            Err(BindingError::DomainMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_stale_and_future_proof() {
+        let sk = SigningKey::from_bytes(&[3u8; 32]);
+        let pk = sk.verifying_key().to_bytes();
+        let addr = owned_addr(&pk);
+        // Stale: older than the 15-minute window.
+        let stale = signed_proof(&sk, &addr, b"x".to_vec(), NOW - MAX_TON_PROOF_AGE_SECS - 1);
+        assert_eq!(
+            verify_ton_proof(&addr, &pk, &stale, EXPECTED_TON_PROOF_DOMAIN, NOW),
+            Err(BindingError::ProofExpired)
+        );
+        // Implausibly in the future.
+        let future = signed_proof(&sk, &addr, b"x".to_vec(), NOW + TON_PROOF_FUTURE_SKEW_SECS + 60);
+        assert_eq!(
+            verify_ton_proof(&addr, &pk, &future, EXPECTED_TON_PROOF_DOMAIN, NOW),
+            Err(BindingError::ProofExpired)
+        );
+    }
+
+    #[test]
+    fn rejects_pubkey_not_owning_address() {
+        // Attacker presents their own key but a victim's (unrelated) address.
+        let attacker = SigningKey::from_bytes(&[7u8; 32]);
+        let pk = attacker.verifying_key().to_bytes();
+        let victim_addr = WalletAddress::new(0, [9u8; 32]); // not derived from `pk`
+        let proof = signed_proof(&attacker, &victim_addr, b"x".to_vec(), NOW);
+        assert_eq!(
+            verify_ton_proof(&victim_addr, &pk, &proof, EXPECTED_TON_PROOF_DOMAIN, NOW),
+            Err(BindingError::WalletAddressMismatch)
+        );
     }
 
     fn make_binding(node_sk: &SigningKey, wallet_sk: &SigningKey, now_expiry: u64) -> NodeWalletBinding {
         let node_pk = node_sk.verifying_key().to_bytes();
         let wallet_pk = wallet_sk.verifying_key().to_bytes();
         let node_id = format!("b3:{}", hex::encode(blake3::hash(&node_pk).as_bytes()));
-        let addr = wallet();
+        let addr = owned_addr(&wallet_pk);
         let nonce = b"nonce-123".to_vec();
 
         // Direction 1.

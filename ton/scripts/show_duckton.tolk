@@ -87,6 +87,7 @@ fun main() {
         keeperGrace: (env<int>("STAKE_KEEPER_GRACE_SECS") ?? 86400) as uint32,
         keeperBountyBps: (env<int>("STAKE_KEEPER_BOUNTY_BPS") ?? 200) as uint16,
         slasher: env<address>("STAKE_SLASHER") ?? owner.address,
+        upgradeAuthority: env<address>("STAKE_UPGRADE_AUTHORITY") ?? (env<address>("STAKE_SLASHER") ?? owner.address),
         receiptWalletCode: build("StakeReceiptWallet"),
         slash: slash.toCell(),
     };
@@ -99,6 +100,7 @@ fun main() {
         bindingHash: env<int>("STAKE_BINDING_HASH") ?? 0,
         config: cfg.toCell(),
         upgrade: freshVaultUpgrade(),
+        pending: createEmptyMap(),
     };
 
     val vault = StakeVault.fromStorage(storage);

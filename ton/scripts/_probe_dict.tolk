@@ -14,6 +14,15 @@ const WINNER = 0x020202020202020202020202020202020202020202020202020202020202020
 
 fun dumpSettle(label: string, participants: map<address, coins>) {
     val winner = address.fromWorkchainAndHash(0, WINNER);
+    // B1: the candidate set the requester committed to. For this byte-pinning
+    // probe, include the winner + the participant keys so the body is well-formed.
+    var candidates: map<address, uint1> = createEmptyMap();
+    candidates.set(winner, 1);
+    var pe = participants.findFirst();
+    while (pe.isFound) {
+        candidates.set(pe.getKey(), 1);
+        pe = participants.iterateNext(pe);
+    }
     val msg = EscrowSettle {
         queryId: 1,
         resultHash: RESULT_HASH,
@@ -21,6 +30,7 @@ fun dumpSettle(label: string, participants: map<address, coins>) {
         winnerAmount: 60,
         platformFee: 2,
         participants: participants,
+        candidates: candidates,
     };
     val c = msg.toCell();
     println("{}_HASH={}", label, c.hash());

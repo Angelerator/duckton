@@ -21,8 +21,11 @@
 >
 > Everything here *augments and improves* the existing off-chain trust model in
 > [`ARCHITECTURE.md`](ARCHITECTURE.md) §7; it does not replace the parts that
-> already work well. Live testnet deploy/verify (via `acton script … --net testnet`
-> and `acton verify`) is the next step and is structured but not yet run.
+> already work well. Live testnet deploy/verify is **complete**: all four contracts
+> (StakeVault, RecordAnchor, JobEscrow, GlobalParams) are deployed and `acton verify`
+> confirmed on TON testnet. See [`docs/TESTNET.md`](TESTNET.md) and
+> [`docker/REPORT.md`](../docker/REPORT.md) for addresses, explorer links, and
+> verification proofs.
 >
 > Reading order: read [`ARCHITECTURE.md`](ARCHITECTURE.md) first (esp. §6 identity,
 > §7 trust/reputation/quorum/canary, §8 discovery, §11 hedging, §18 pluggable

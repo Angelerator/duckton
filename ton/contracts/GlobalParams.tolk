@@ -19,7 +19,9 @@ type AllowedMessageToGlobalParams =
     | UpdateParams
     | UpdateAdmin
     | SetBlocklisted
+    | AnnounceCode
     | UpgradeCode
+    | CancelCode
 
 fun onBouncedMessage(_in: InMessageBounced) {}
 
@@ -75,26 +77,43 @@ fun onInternalMessage(in: InMessage) {
             storage.save();
         }
 
-        // Admin-gated IN-PLACE code upgrade (§12.1) — the primary upgradeability
-        // win. Swaps this contract's CODE via TVM `SETCODE` while the ADDRESS and
-        // all STORAGE stay intact (we never redeploy; we never wipe data), so
-        // adding a new EcoParams field/getter no longer forces a move to a new
-        // address. `SETCODE` is POSTPONED: the new code takes effect only after
-        // this transaction terminates successfully, so the next message runs the
-        // new code at the same address over the same (preserved) storage. The
-        // monotonic `codeVersion` is bumped by the contract (never set by the
-        // admin), separate from `paramsVersion`.
+        // D2 step 1/2 — ANNOUNCE: commit to the successor code's hash + start the
+        // timelock clock. Admin-gated. Re-announcing resets the clock.
+        AnnounceCode => {
+            var storage = lazy GlobalParamsStorage.load();
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            storage.pendingCodeHash = msg.newCodeHash;
+            storage.pendingCodeAt = blockchain.now() as uint32;
+            storage.save();
+        }
+
+        // D2 step 2/2 — APPLY the announced IN-PLACE code upgrade (§12.1). Swaps
+        // this contract's CODE via TVM `SETCODE` while the ADDRESS and all STORAGE
+        // stay intact (we never redeploy; we never wipe data), so adding a new
+        // EcoParams field/getter no longer forces a move to a new address.
+        // `SETCODE` is POSTPONED: the new code takes effect only after this
+        // transaction terminates successfully. D2 hardening: this is now
+        // TIMELOCKED — rejected before `pendingCodeAt + upgradeDelay`, and only the
+        // exact announced code (hash-committed) may be applied, so a single key can
+        // no longer instantly swap protocol-wide code. The monotonic `codeVersion`
+        // is bumped by the contract (never set by the admin).
         UpgradeCode => {
             var storage = lazy GlobalParamsStorage.load();
             assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            assert (msg.newCode.hash() == storage.pendingCodeHash) throw ErrCode.UPGRADE_CODE_MISMATCH;
+            val readyAt = storage.pendingCodeAt + storage.upgradeDelay;
+            assert (blockchain.now() >= readyAt) throw ErrCode.UPGRADE_TIMELOCK_ACTIVE;
 
             // Queue the code swap (effective after this run) and persist the
-            // bumped version. Storage layout is unchanged here; if a future
-            // upgrade needed a storage migration, it would be applied to
-            // `storage` BEFORE save() in this same handler (the OLD code still
-            // controls the layout until the postponed SETCODE lands).
+            // bumped version + cleared pending state. Storage layout is unchanged
+            // here; a future migration would be applied to `storage` BEFORE save()
+            // in this same handler (the OLD code controls the layout until the
+            // postponed SETCODE lands).
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
             storage.save();
 
             val ev = createExternalLogMessage({
@@ -106,6 +125,16 @@ fun onInternalMessage(in: InMessage) {
                 },
             });
             ev.send(SEND_MODE_REGULAR);
+        }
+
+        // D2 — abort a pending announcement (admin-gated safety valve).
+        CancelCode => {
+            var storage = lazy GlobalParamsStorage.load();
+            assert (in.senderAddress == storage.admin) throw ErrCode.NOT_ADMIN;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
+            storage.save();
         }
 
         else => {
@@ -144,6 +173,20 @@ get fun get_params_version(): int {
 get fun get_code_version(): int {
     val storage = lazy GlobalParamsStorage.load();
     return storage.codeVersion;
+}
+
+// D2: the pending timelocked code upgrade (announced hash, when, and the earliest
+// applyable ts = announce + upgradeDelay). All 0 when none pending — so the
+// ecosystem can observe (and react to) a queued protocol-wide code change.
+get fun get_pending_upgrade(): GlobalParamsUpgradeView {
+    val storage = lazy GlobalParamsStorage.load();
+    val readyAt = storage.pendingCodeAt == 0 ? 0 : storage.pendingCodeAt + storage.upgradeDelay;
+    return {
+        codeVersion: storage.codeVersion,
+        pendingCodeHash: storage.pendingCodeHash,
+        pendingAt: storage.pendingCodeAt,
+        readyAt: readyAt as uint32,
+    };
 }
 
 // Scalar policy getters (single-int read path for the off-chain `run_get_int`

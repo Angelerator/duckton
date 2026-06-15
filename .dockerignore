@@ -9,3 +9,20 @@ ton/node_modules/
 *.log
 .DS_Store
 docker/_artifacts/
+
+# Secrets and sensitive files — NEVER let these enter the build context.
+# global.wallets.toml is a symlink at repo root; Docker follows symlinks, so
+# it must be explicitly excluded here.
+global.wallets.toml
+*.wallets.toml
+*.env
+.env*
+*.mnemonic
+*.secret
+*.key
+*.pem
+*credentials*
+ton/deployments/
+**/deployments/
+testnet.env
+economics.testnet.toml

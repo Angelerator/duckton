@@ -3,11 +3,11 @@
 //! The proto [`CapabilityAd`] carries the data; here we bind it to a node
 //! identity with an Ed25519 signature and a Sybil-resistance PoW stamp.
 
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, VerifyingKey};
 use p2p_proto::{AttestationLevel, CapabilityAd, NodeId};
 
 use crate::receipt::Signer;
-use crate::sybil::{verify_pow, PowStamp};
+use crate::sybil::{pow_epoch, verify_pow, PowStamp};
 
 const DOMAIN: &[u8] = b"duckdb-p2p-capability-ad-v1";
 
@@ -87,12 +87,13 @@ pub fn verify_capability_ad(ad: &CapabilityAd, required_pow_bits: u32) -> bool {
     if ad.node_id != NodeId::from_pubkey(&pk) {
         return false;
     }
-    // PoW
+    // PoW — bound to the epoch the ad's timestamp falls in, so a single solved
+    // nonce can't be reused across epochs to mint unlimited fresh-looking ads.
     let stamp = PowStamp {
         nonce: ad.pow_nonce,
         difficulty_bits: ad.pow_bits,
     };
-    if !verify_pow(&pk, &stamp, required_pow_bits) {
+    if !verify_pow(&pk, pow_epoch(ad.ts), &stamp, required_pow_bits) {
         return false;
     }
     // signature
@@ -108,14 +109,14 @@ pub fn verify_capability_ad(ad: &CapabilityAd, required_pow_bits: u32) -> bool {
         Ok(a) => a,
         Err(_) => return false,
     };
-    vk.verify(&signing_bytes(ad), &Signature::from_bytes(&sig_arr))
+    vk.verify_strict(&signing_bytes(ad), &Signature::from_bytes(&sig_arr))
         .is_ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sybil::mint_pow;
+    use crate::sybil::{mint_pow, pow_epoch};
     use ed25519_dalek::{Signer as _, SigningKey};
     use rand::rngs::OsRng;
 
@@ -141,7 +142,8 @@ mod tests {
             attestation_level: AttestationLevel::L0,
             price: 0,
             recent_receipts_root: None,
-            pow: mint_pow(pubkey, 12, 1_000_000).unwrap(),
+            // PoW must be minted for the same epoch the ad's `ts` falls in.
+            pow: mint_pow(pubkey, pow_epoch(100), 12, 1_000_000).unwrap(),
             ts: 100,
         }
     }

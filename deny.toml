@@ -1,0 +1,47 @@
+# cargo-deny configuration for duckdb-p2p.
+# Run: cargo deny check
+# See: https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Deny crates with known security vulnerabilities (unfixed advisories).
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+# Permit common permissive and copyleft licenses used by the dependency tree.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "OpenSSL",
+    "CC0-1.0",
+]
+# Deny copyleft licenses that are incompatible with the Apache-2.0 workspace license.
+deny = [
+    "GPL-2.0",
+    "GPL-3.0",
+    "AGPL-3.0",
+    "LGPL-2.0",
+    "LGPL-2.1",
+    "LGPL-3.0",
+]
+
+[bans]
+# Deny duplicate versions of the same crate by default (can loosen per-crate below).
+multiple-versions = "warn"
+# Deny crates known to be problematic or insecure.
+deny = []
+
+[sources]
+# Allow crates from crates.io and git sources used in the workspace.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

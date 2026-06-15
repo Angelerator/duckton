@@ -26,6 +26,40 @@ MAXJOBS="${P2P_SHARE_MAXJOBS:-2}"
 # stays well under the container's mem_limit. 64 MiB = 67108864.
 PERJOB_BYTES="${P2P_SHARE_PERJOB_BYTES:-67108864}"
 
+# ---------------------------------------------------------------------------
+# Input validation — these values are interpolated into DuckDB SQL; reject
+# anything that does not match the expected allowlist pattern.
+#   MEM:         digits optionally followed by a size suffix (KB/MB/GB/TB,
+#                case-insensitive) — e.g. "256MB", "1GB".
+#   THREADS:     positive integer.
+#   MAXJOBS:     positive integer.
+#   PERJOB_BYTES: positive integer (plain bytes, no suffix).
+# ---------------------------------------------------------------------------
+validate_mem() {
+    # Accepts: <digits>[<suffix>] where suffix in kKmMgGtT (optionally followed by 'b'/'B')
+    if ! printf '%s' "$1" | grep -qE '^[0-9]+([kKmMgGtT][bB]?)?$'; then
+        printf 'ERROR: invalid value for %s: %s (expected numeric with optional size suffix e.g. 256MB)\n' "$2" "$1" >&2
+        exit 1
+    fi
+}
+validate_uint() {
+    if ! printf '%s' "$1" | grep -qE '^[0-9]+$'; then
+        printf 'ERROR: invalid value for %s: %s (expected non-negative integer)\n' "$2" "$1" >&2
+        exit 1
+    fi
+}
+validate_posint() {
+    if ! printf '%s' "$1" | grep -qE '^[1-9][0-9]*$'; then
+        printf 'ERROR: invalid value for %s: %s (expected positive integer)\n' "$2" "$1" >&2
+        exit 1
+    fi
+}
+
+validate_mem     "$MEM"          "P2P_SHARE_MEMORY"
+validate_posint  "$THREADS"      "P2P_SHARE_THREADS"
+validate_posint  "$MAXJOBS"      "P2P_SHARE_MAXJOBS"
+validate_uint    "$PERJOB_BYTES" "P2P_SHARE_PERJOB_BYTES"
+
 mkdir -p "${P2P_CONFIG_DIR:-/node/state}"
 
 # Public knob BOOTSTRAP -> the extension's P2P_BOOTSTRAP (comma-separated seeds).

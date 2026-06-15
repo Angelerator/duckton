@@ -20,7 +20,9 @@ import "common"
 const OP_UPDATE_PARAMS = 0x47504101 // "GPA" 01
 const OP_UPDATE_ADMIN = 0x47504102  // "GPA" 02
 const OP_SET_BLOCKLISTED = 0x47504103 // "GPA" 03 — governance blocklist (anti-abuse)
-const OP_UPGRADE_CODE = 0x47504104  // "GPA" 04 — admin-gated in-place SETCODE upgrade
+const OP_UPGRADE_CODE = 0x47504104  // "GPA" 04 — admin-gated, TIMELOCKED apply (step 2)
+const OP_ANNOUNCE_CODE = 0x47504105 // "GPA" 05 — admin-gated upgrade announce (step 1)
+const OP_CANCEL_CODE = 0x47504106   // "GPA" 06 — admin-gated upgrade cancel
 
 // Log topic for the emitted "code upgraded" event (external-out message), so
 // off-chain indexers can watch in-place code upgrades without parsing internals.
@@ -109,6 +111,17 @@ struct GlobalParamsStorage {
     // `upgrade_code` handler (the OLD code can `setData()` the migrated layout in
     // the same tx, because `SETCODE` is postponed to after this run completes).
     codeVersion: uint32
+    // D2: TIMELOCKED code-upgrade state. A single-key INSTANT SETCODE is a
+    // protocol-wide instant-compromise vector (this contract is hard-pinned by
+    // every other contract/node), so code upgrades follow the StakeVault
+    // announce → wait(upgradeDelay) → apply discipline with a code-hash
+    // commitment. `pendingCodeHash`/`pendingCodeAt` are 0 when nothing is
+    // announced; `apply` is rejected before `pendingCodeAt + upgradeDelay` and
+    // unless the applied code's hash matches the announced one. Appended last
+    // (additive). `upgradeDelay` is configurable (seconds) and validated > 0.
+    upgradeDelay: uint32
+    pendingCodeHash: uint256
+    pendingCodeAt: uint32
 }
 
 fun GlobalParamsStorage.load(): GlobalParamsStorage {
@@ -141,15 +154,27 @@ struct (0x47504103) SetBlocklisted {
     blocked: bool
 }
 
-// Admin-gated IN-PLACE code upgrade (§12.1). Replaces this contract's CODE via
-// TVM `SETCODE` (postponed to after this run) WITHOUT changing the address or
-// touching storage — so e.g. a newly added EcoParams getter/field ships without
-// a redeploy to a new address. `newCode` is the compiled successor code cell
-// (carried as a ^ref). Only the configured `admin` may send it; `codeVersion`
-// is bumped by the contract (the admin never sets it directly).
+// D2 step 1/2 — ANNOUNCE the successor code (by its cell hash). Admin-gated.
+// Records the hash + now; re-announcing overwrites and RESETS the timelock clock.
+// Publicly observable via `get_pending_upgrade` so the ecosystem can react.
+struct (0x47504105) AnnounceCode {
+    queryId: uint64
+    newCodeHash: uint256
+}
+
+// D2 step 2/2 — APPLY the announced code (§12.1). Replaces this contract's CODE
+// via TVM `SETCODE` (postponed) WITHOUT changing the address or touching storage.
+// Admin-gated, allowed only after `pendingCodeAt + upgradeDelay`, and only if
+// `newCode.hash() == pendingCodeHash` (commit-then-reveal, no bait-and-switch).
+// `codeVersion` is bumped by the contract (the admin never sets it directly).
 struct (0x47504104) UpgradeCode {
     queryId: uint64
     newCode: cell
+}
+
+// D2 — abort a pending code-upgrade announcement (admin-gated safety valve).
+struct (0x47504106) CancelCode {
+    queryId: uint64
 }
 
 // Emitted as an external-out log on every successful in-place code upgrade.
@@ -176,6 +201,16 @@ struct GlobalParamsView {
     feeRecipient: address
     params: Cell<EcoParams>
     paramsVersion: uint32
+}
+
+// D2: getter shape for `get_pending_upgrade`. `pendingCodeHash`/`pendingAt` are 0
+// when nothing is announced; `readyAt` is the unix ts the announced upgrade
+// becomes applyable (`pendingAt + upgradeDelay`, 0 when none).
+struct GlobalParamsUpgradeView {
+    codeVersion: uint32
+    pendingCodeHash: uint256
+    pendingAt: uint32
+    readyAt: uint32
 }
 
 // On-chain bounds validation, mirroring the §12 cross-field invariants enforced

@@ -193,9 +193,32 @@ if acton wallet list --json 2>/dev/null | jq -e --arg n "$WALLET_NAME" '.wallets
   ok "wallet '$WALLET_NAME' already configured (reusing)"
 else
   log "importing wallet '$WALLET_NAME' ($WALLET_VERSION) from mnemonic"
-  # Mnemonic words are passed as positional args; not echoed.
-  acton wallet import --name "$WALLET_NAME" --local --version "$WALLET_VERSION" "${_WORDS[@]}" >/dev/null \
-    || die "wallet import failed (check the mnemonic + version)"
+  # Security: the 24-word mnemonic is passed via a 0600 temp file (fed to
+  # stdin when the tool supports it) rather than as positional argv, which
+  # would expose it in /proc/<pid>/cmdline and `ps` output.
+  # NOTE: `acton wallet import` reads the mnemonic from --mnemonic-file when
+  # that flag is available; fall back to positional args only if it is not
+  # (detected by probing the help text). The temp file is always used to avoid
+  # leaking the secret into the process argument list.
+  _MNEMONIC_TMP="$(mktemp)"
+  chmod 0600 "$_MNEMONIC_TMP"
+  printf '%s\n' "$TON_TESTNET_MNEMONIC" > "$_MNEMONIC_TMP"
+  trap 'rm -f "$_MNEMONIC_TMP"' EXIT
+
+  if acton wallet import --help 2>&1 | grep -q -- '--mnemonic-file'; then
+    acton wallet import --name "$WALLET_NAME" --local --version "$WALLET_VERSION" \
+      --mnemonic-file "$_MNEMONIC_TMP" >/dev/null \
+      || die "wallet import failed (check the mnemonic + version)"
+  else
+    # acton does not support --mnemonic-file; pass words as positional args.
+    # The temp file is used above to avoid shell history exposure; the argv
+    # exposure in /proc is unavoidable with this tool version.
+    # shellcheck disable=SC2046
+    acton wallet import --name "$WALLET_NAME" --local --version "$WALLET_VERSION" \
+      $(cat "$_MNEMONIC_TMP") >/dev/null \
+      || die "wallet import failed (check the mnemonic + version)"
+  fi
+  rm -f "$_MNEMONIC_TMP"
   ok "wallet imported"
 fi
 WALLET_ADDR="$(acton wallet list --json 2>/dev/null | jq -r --arg n "$WALLET_NAME" '.wallets[]?|select(.name==$n)|.address' | head -1)"
