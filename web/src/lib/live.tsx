@@ -55,6 +55,7 @@ interface LiveCtx extends LiveState {
   submitQuery: (body: {
     sql: string;
     dataClass?: string;
+    verifyMode?: string;
     quorum?: number;
     k?: number;
   }) => Promise<QueryResult>;

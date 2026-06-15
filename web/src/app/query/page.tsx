@@ -283,12 +283,17 @@ export default function QueryConsolePage() {
   // Candidate set = LIVE honest workers by trust desc, capped to k. The race is
   // then ordered by real measured latency so the fastest real worker tends to win.
   const candidates = React.useMemo(() => {
+    // Data-class selection policy (§7.5): the minimum attestation tier gates who
+    // is even eligible — Internal needs L1, Sensitive needs L2 — so free/L0 hosts
+    // are excluded from those classes. (The grid also enforces a trust floor.)
+    const minTier = dataClass === "Sensitive" ? 2 : dataClass === "Internal" ? 1 : 0;
+    const rank = (a: string) => (a === "L2" ? 2 : a === "L1" ? 1 : 0);
     const pool = [...workers]
-      .filter((w) => w.behavior === "honest")
+      .filter((w) => w.behavior === "honest" && rank(w.attestation) >= minTier)
       .sort((a, b) => b.trust - a.trust)
       .slice(0, kClamped);
     return [...pool].sort((a, b) => a.p50LatencyMs - b.p50LatencyMs);
-  }, [workers, kClamped]);
+  }, [workers, kClamped, dataClass]);
 
   const kBelowQuorum = hedgeK < quorum;
 
@@ -333,6 +338,7 @@ export default function QueryConsolePage() {
         outcome = await submitQuery({
           sql: sqlSnap,
           dataClass,
+          verifyMode,
           quorum: qEff,
           k: kClamped,
         });
