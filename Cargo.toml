@@ -8,6 +8,7 @@ members = [
     "crates/settlement",
     "crates/node",
     "crates/extension",
+    "crates/console-server",
 ]
 
 [workspace.package]

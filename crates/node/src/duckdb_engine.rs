@@ -191,7 +191,8 @@ impl DuckDbEngine {
 
         // 5. Allow-list local fixture directories (must precede locking external
         // access). This is the native, fine-grained local-FS restriction.
-        if !setup.allowed_local_paths.is_empty() {
+        let strict_local = setup.allowed_local_paths.is_empty();
+        if !strict_local {
             let list = setup
                 .allowed_local_paths
                 .iter()
@@ -200,15 +201,6 @@ impl DuckDbEngine {
                 .join(", ");
             conn.execute_batch(&format!("SET allowed_directories=[{list}];"))
                 .map_err(|e| EngineError::Rejected(format!("allowed_directories: {e}")))?;
-        } else {
-            // Strict profile: NO local fixtures are configured, so disable the
-            // local filesystem entirely (defense-in-depth on top of
-            // `enable_external_access=false`). Not set when fixtures ARE allowed,
-            // since it would block reading them. The temp dir lives on
-            // `LocalFileSystem` too, but `temp_directory`/spill is exempt from
-            // `disabled_filesystems`.
-            conn.execute_batch("SET disabled_filesystems='LocalFileSystem';")
-                .map_err(|e| EngineError::Rejected(format!("disabled_filesystems: {e}")))?;
         }
 
         // 6. Per-job at-rest keys + scoped, short-lived storage secret.
@@ -244,6 +236,19 @@ impl DuckDbEngine {
         let external = setup.enable_remote_access;
         conn.execute_batch(&format!("SET enable_external_access={external};"))
             .map_err(|e| EngineError::Rejected(format!("external access: {e}")))?;
+
+        // 7b. Strict profile (NO local fixtures configured): disable the local
+        // filesystem entirely — defense-in-depth on top of
+        // `enable_external_access=false`. Applied AFTER the temp_directory and
+        // external-access SETs (which validate the local FS): setting it earlier
+        // makes those steps fail. The `temp_directory`/spill path is exempt from
+        // `disabled_filesystems`, so spilling still works. NOT applied when
+        // fixtures ARE allowed (it would block reading them — `allowed_directories`
+        // is the fine-grained control there).
+        if strict_local {
+            conn.execute_batch("SET disabled_filesystems='LocalFileSystem';")
+                .map_err(|e| EngineError::Rejected(format!("disabled_filesystems: {e}")))?;
+        }
 
         // 8. Lock the configuration so the untrusted query can't widen anything.
         conn.execute_batch("SET lock_configuration=true;")

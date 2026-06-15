@@ -1,0 +1,28 @@
+[package]
+name = "console-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "console-server"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+axum = "0.7"
+tower-http = { version = "0.5", features = ["cors"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+blake3 = "1.8.5"
+hex = "0.4.3"
+rand = "0.8"
+p2p-config = { version = "0.2.0", path = "../config" }
+p2p-proto = { version = "0.2.0", path = "../proto" }
+p2p-node = { version = "0.2.0", path = "../node" }
+p2p-trust = { version = "0.2.0", path = "../trust" }
+p2p-transport = { version = "0.2.0", path = "../transport" }
+p2p-settlement = { version = "0.2.0", path = "../settlement" }

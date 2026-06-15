@@ -315,3 +315,122 @@ async fn recv_parallel(conn: &Conn, manifest: &ResultManifest) -> p2p_transport:
     }
     Ok(buf)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p2p_config::{GridConfig, IdentityConfig, PinningMode};
+    use p2p_proto::{JobId, ResultSet, Value};
+    use p2p_transport::{NodeIdentity, QuicTransport, Transport};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn idcfg() -> IdentityConfig {
+        IdentityConfig { key_path: None, pinning_mode: PinningMode::Tofu, allowlist: vec![] }
+    }
+
+    /// Establish a loopback QUIC connection, returning (server_conn, client_conn)
+    /// plus the transports (kept alive by the caller).
+    async fn conn_pair() -> (Conn, Conn, Arc<QuicTransport>, Arc<QuicTransport>) {
+        let net = GridConfig::default().network;
+        let server =
+            Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+        let client =
+            Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+        let addr = server.local_addr().unwrap();
+        let server_id = server.local_node_id().clone();
+        let srv = server.clone();
+        let accept = tokio::spawn(async move { srv.accept().await.unwrap().unwrap() });
+        let client_conn = client.connect(addr, Some(server_id)).await.unwrap();
+        let server_conn = accept.await.unwrap();
+        (server_conn, client_conn, server, client)
+    }
+
+    #[tokio::test]
+    async fn recv_result_rejects_oversize_manifest_before_allocating() {
+        let (server_conn, client_conn, _s, _c) = conn_pair().await;
+        let job = JobId::new();
+
+        // Malicious "winner": announce an absurd `total_len` (would force a multi-
+        // GB reassembly allocation) on an otherwise well-formed manifest.
+        let writer = tokio::spawn(async move {
+            let (mut send, _recv) = client_conn.open_bi().await.unwrap();
+            write_msg(
+                &mut send,
+                &Wire::Manifest(ResultManifest {
+                    job_id: job.clone(),
+                    compression: Compression::None,
+                    uncompressed_len: u64::MAX,
+                    total_len: u64::MAX,
+                    parts: 1,
+                }),
+            )
+            .await
+            .unwrap();
+            // Keep the stream open briefly so the reader sees the manifest.
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let (_send, mut recv) = server_conn.accept_bi().await.unwrap();
+        // Small configured caps: the manifest must be rejected outright.
+        let res = recv_result(&server_conn, &mut recv, 64 * 1024 * 1024, 64).await;
+        assert!(res.is_err(), "oversize manifest must be rejected");
+        let msg = format!("{}", res.unwrap_err());
+        assert!(msg.contains("manifest rejected"), "unexpected error: {msg}");
+        let _ = writer.await;
+    }
+
+    #[tokio::test]
+    async fn recv_result_rejects_zero_part_manifest() {
+        let (server_conn, client_conn, _s, _c) = conn_pair().await;
+        let job = JobId::new();
+        let writer = tokio::spawn(async move {
+            let (mut send, _recv) = client_conn.open_bi().await.unwrap();
+            write_msg(
+                &mut send,
+                &Wire::Manifest(ResultManifest {
+                    job_id: job.clone(),
+                    compression: Compression::None,
+                    uncompressed_len: 0,
+                    total_len: 0,
+                    parts: 0, // invalid: zero parts
+                }),
+            )
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let (_send, mut recv) = server_conn.accept_bi().await.unwrap();
+        let res = recv_result(&server_conn, &mut recv, 64 * 1024 * 1024, 64).await;
+        assert!(res.is_err(), "zero-part manifest must be rejected");
+        let _ = writer.await;
+    }
+
+    #[tokio::test]
+    async fn valid_result_still_roundtrips_within_caps() {
+        let (server_conn, client_conn, _s, _c) = conn_pair().await;
+        let job = JobId::new();
+        let rs = ResultSet::new(
+            vec!["k".into(), "v".into()],
+            (0..100u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+        );
+        let rs_clone = rs.clone();
+        let job_w = job.clone();
+        let writer = tokio::spawn(async move {
+            let (mut send, _recv) = client_conn.open_bi().await.unwrap();
+            send_result(&client_conn, &mut send, &job_w, &rs_clone, &SendOpts::default())
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+
+        let (_send, mut recv) = server_conn.accept_bi().await.unwrap();
+        let got = recv_result(&server_conn, &mut recv, 64 * 1024 * 1024, 64)
+            .await
+            .expect("valid result within caps should pass");
+        assert_eq!(got.row_count(), rs.row_count());
+        assert_eq!(got, rs);
+        let _ = writer.await;
+    }
+}

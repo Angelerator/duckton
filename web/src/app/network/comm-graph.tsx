@@ -1,12 +1,10 @@
 "use client";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { NetworkGraph, PALETTE } from "@/components/common/plotly";
-import { commGraph } from "@/lib/data";
+import { useLive } from "@/lib/live";
 import { Waypoints } from "lucide-react";
-
-const dispatch = commGraph.edges.filter((e) => e.kind === "dispatch").length;
-const quorum = commGraph.edges.filter((e) => e.kind === "quorum").length;
 
 const LEGEND: { c: string; t: string }[] = [
   { c: PALETTE.blue, t: "requester" },
@@ -16,6 +14,10 @@ const LEGEND: { c: string; t: string }[] = [
 ];
 
 export function CommGraphCard() {
+  const { commGraph, connected } = useLive();
+  const dispatch = commGraph.edges.filter((e) => e.kind === "dispatch").length;
+  const quorum = commGraph.edges.filter((e) => e.kind === "quorum").length;
+
   return (
     <Card>
       <CardHeader>
@@ -23,10 +25,16 @@ export function CommGraphCard() {
           <div>
             <CardTitle className="flex items-center gap-2">
               <Waypoints className="size-4 text-primary" /> Node communications (circular)
+              {connected ? (
+                <Badge variant="ok" className="ml-1">live</Badge>
+              ) : (
+                <Badge variant="muted" className="ml-1">snapshot</Badge>
+              )}
             </CardTitle>
             <CardDescription>
-              Real message graph from this run — requesters dispatch to workers (blue edges); workers that
-              returned the agreed quorum hash on the same job are linked (green edges). Node size = link count.
+              {connected
+                ? "Live message graph — updates on every job: requesters dispatch to workers (blue), workers that returned the agreed quorum hash are linked (green). Run a query to watch it light up."
+                : "Message graph from the snapshot — requesters dispatch to workers (blue); workers that agreed on a job's quorum hash are linked (green). Start the live backend for realtime updates."}
             </CardDescription>
           </div>
           <div className="hidden gap-4 text-right sm:flex">

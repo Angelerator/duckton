@@ -6,19 +6,14 @@ import { Menu, BookOpen } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Dot } from "@/components/common/atoms";
 import { SidebarNav } from "./sidebar-nav";
-import { nodes } from "@/lib/data";
 import {
   MainnetWarningBar,
   NetworkModeProvider,
   NetworkToggle,
 } from "@/lib/network-mode";
 import { TonConnectProvider, WalletButton } from "@/lib/ton-connect";
-
-// `nodes` is a static module import — hoist the derived count to module scope
-// so it is computed once at module load rather than on every render of AppShell.
-const onlinePeerCount = nodes.filter((n) => n.online).length;
+import { LiveProvider, LiveStatus } from "@/lib/live";
 
 function Brand() {
   return (
@@ -69,11 +64,11 @@ function SidebarFooter() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false);
-  const online = onlinePeerCount;
 
   return (
     <TonConnectProvider>
     <NetworkModeProvider>
+    <LiveProvider>
       <div className="flex min-h-svh">
       {/* Desktop sidebar */}
       <aside className="bg-sidebar fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r lg:flex">
@@ -107,12 +102,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </SheetContent>
           </Sheet>
 
-          <div className="flex items-center gap-2 text-sm">
-            <Dot status="ok" pulse />
-            <span className="text-muted-foreground hidden sm:inline">grid</span>
-            <span className="font-medium tabular-nums">{online} nodes</span>
-            <span className="text-muted-foreground">online</span>
-          </div>
+          <LiveStatus />
 
           <div className="ml-auto flex items-center gap-2">
             <NetworkToggle />
@@ -137,6 +127,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       </div>
+    </LiveProvider>
     </NetworkModeProvider>
     </TonConnectProvider>
   );

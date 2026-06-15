@@ -1,3 +1,5 @@
+"use client";
+
 import Link from "next/link";
 import {
   Activity,
@@ -32,7 +34,8 @@ import {
 import { AreaTrend, BarMini, Donut } from "@/components/common/charts";
 import { Explainer } from "@/components/common/explain";
 import { CopyId } from "@/components/common/copy";
-import { jobs, meta, overview, workers } from "@/lib/data";
+import { meta } from "@/lib/data";
+import { useLive } from "@/lib/live";
 import { OverviewPlots } from "./overview-plots";
 import { ago, bytes, ms, num, pct } from "@/lib/format";
 
@@ -46,6 +49,9 @@ const lifecycle = [
 ];
 
 export default function OverviewPage() {
+  // LIVE: the whole grid snapshot streams in realtime when the backend
+  // (cargo run -p console-server) is up; falls back to the baked snapshot offline.
+  const { overview, workers, jobs, connected } = useLive();
   const verifyRate = overview.jobsRun ? overview.verified / overview.jobsRun : 0;
   const topWorkers = [...workers].sort((a, b) => b.trust - a.trust).slice(0, 5);
 
@@ -129,10 +135,16 @@ export default function OverviewPage() {
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Gauge className="size-4 text-primary" /> Result latency per job (real loopback run)
+                {connected ? (
+                  <Badge variant="ok">live</Badge>
+                ) : (
+                  <Badge variant="muted">snapshot</Badge>
+                )}
               </CardTitle>
               <CardDescription>
-                Real measured per-job result latency from the in-process grid run — commit-first
-                timing of the winning result.
+                {connected
+                  ? "Updates as queries run — streaming live from the grid backend."
+                  : "Baked snapshot — start the backend (cargo run -p console-server) to stream live."}
               </CardDescription>
             </div>
             <div className="hidden gap-4 text-right sm:flex">

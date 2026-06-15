@@ -5,6 +5,33 @@ compute grid over QUIC. It surfaces every part of the system (query dispatch,
 discovery, workers, trust/attestation, hedged execution, QUIC transport tuning,
 storage, and the optional TON settlement layer) as an operator-friendly UI.
 
+## Live mode (realtime, reactive)
+
+By default the console reads a point-in-time `snapshot.json`. For **live, realtime**
+data, run the backend grid service — then every chart updates continuously and a
+query you run **ripples across the whole app**.
+
+```bash
+# terminal 1 — the live grid (real coordinator + workers, axum SSE on :8787)
+cargo run -p console-server
+
+# terminal 2 — the web console
+cd web && npm run dev
+```
+
+- The backend (`crates/console-server`) boots a **real loopback-QUIC grid** and runs
+  ambient jobs continuously; it exposes `GET /api/state`, `GET /api/stream` (SSE), and
+  `POST /api/query`.
+- The frontend (`src/lib/live.tsx`, `LiveProvider`/`useLive`) subscribes to the SSE
+  stream and overlays live data on the snapshot. The header shows **LIVE** when
+  connected; if the backend is offline it falls back to the snapshot automatically.
+- **Dispatch from the Query Console** → a *real* job runs on the grid and shows up
+  live in **Jobs**, bumps the **Overview** KPIs/latency series, and lights up the
+  **Network** node-communication graph. Worker trust/capacity update as jobs run
+  (the cheat/fail nodes' trust really drops).
+- Point the frontend at a different backend with `NEXT_PUBLIC_LIVE_URL` (default
+  `http://localhost:8787`).
+
 ## Real data
 
 This console is **not** backed by mock data. Everything it shows is produced by the

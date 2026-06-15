@@ -38,7 +38,8 @@ import {
 } from "@/components/common/atoms";
 import { Spark } from "@/components/common/charts";
 import { CopyId } from "@/components/common/copy";
-import { trust, workers } from "@/lib/data";
+import { trust } from "@/lib/data";
+import { useLive } from "@/lib/live";
 import { bytes, ms, num, pct } from "@/lib/format";
 import type { AttestationLevel, Worker } from "@/lib/types";
 
@@ -307,9 +308,15 @@ function WorkerSheet({ w }: { w: Worker }) {
 /* -------------------------------------------------------------------- interactive section */
 
 export function WorkersClient() {
+  // LIVE: worker trust/reputation/capacity/observations stream in realtime as
+  // ambient jobs run (the cheat/fail nodes' trust really drops); falls back to
+  // the baked snapshot when the backend is offline.
+  const { workers, connected } = useLive();
   const [query, setQuery] = React.useState("");
   const [sort, setSort] = React.useState<SortKey>("trust");
-  const [selected, setSelected] = React.useState<Worker | null>(null);
+  // Pin the open worker by id (not by object) so the Sheet always reflects the
+  // latest live values for that worker as the stream updates.
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
   const total = workers.length;
 
@@ -320,6 +327,11 @@ export function WorkersClient() {
       : w.alias.toLowerCase().includes(q) || w.id.toLowerCase().includes(q)
   );
   const rows = sortWorkers(filtered, sort);
+
+  // Resolve the open worker from the live list by id; if it has dropped out of
+  // the current list the Sheet closes (selected is null).
+  const selected =
+    selectedId != null ? workers.find((w) => w.id === selectedId) ?? null : null;
 
   return (
     <>
@@ -354,11 +366,16 @@ export function WorkersClient() {
       {/* Table */}
       <Card>
         <CardHeader>
-          <CardTitle>
+          <CardTitle className="flex items-center gap-2">
             Directory
-            <span className="text-muted-foreground ml-2 text-sm font-normal tabular-nums">
+            <span className="text-muted-foreground text-sm font-normal tabular-nums">
               {rows.length} of {total}
             </span>
+            {connected ? (
+              <Badge variant="ok">live</Badge>
+            ) : (
+              <Badge variant="muted">snapshot</Badge>
+            )}
           </CardTitle>
         </CardHeader>
         <CardContent className="px-0">
@@ -392,7 +409,7 @@ export function WorkersClient() {
                   return (
                     <TableRow
                       key={w.id}
-                      onClick={() => setSelected(w)}
+                      onClick={() => setSelectedId(w.id)}
                       className="cursor-pointer"
                     >
                       <TableCell className="pl-6">
@@ -455,7 +472,7 @@ export function WorkersClient() {
       </p>
 
       {/* Detail sheet */}
-      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelected(null)}>
+      <Sheet open={!!selected} onOpenChange={(o) => !o && setSelectedId(null)}>
         <SheetContent side="right" className="w-[min(92vw,30rem)] sm:max-w-none">
           {selected ? <WorkerSheet w={selected} /> : null}
         </SheetContent>

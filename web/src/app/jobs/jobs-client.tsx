@@ -29,13 +29,14 @@ import {
 import {
   AttestationBadge,
   DataClassBadge,
+  Dot,
   KV,
   SectionTitle,
   StatusBadge,
   VerdictBadge,
 } from "@/components/common/atoms";
 import { CopyId } from "@/components/common/copy";
-import { jobs } from "@/lib/data";
+import { useLive } from "@/lib/live";
 import { ago, ms, num, ton } from "@/lib/format";
 import type { CandidateState, Job, JobCandidate } from "@/lib/types";
 
@@ -346,17 +347,27 @@ function JobDetail({ job }: { job: Job }) {
 /* -------------------------------------------------------------------- interactive section */
 
 export function JobsClient() {
+  // LIVE: jobs stream in newest-first and update in realtime (ambient jobs plus
+  // anything dispatched from the Query Console); falls back to the snapshot offline.
+  const { jobs, connected } = useLive();
   const [filter, setFilter] = React.useState<Filter>("all");
-  const [selectedId, setSelectedId] = React.useState<string>(jobs[0].id);
+  // `null` = follow the live list (default to its first/newest job). Once the user
+  // explicitly selects a row we pin that id.
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
 
   const filtered = jobs.filter((j) =>
     filter === "all" ? true : j.status === filter
   );
 
-  // Keep selection valid for the active filter, but stay deterministic on first render.
+  // Resolve the selected job from the live list by id. If the pinned id has
+  // rolled out of the live window (or nothing is pinned yet), fall back to the
+  // first job — preferring the active filter, then the full list.
   const selected =
-    filtered.find((j) => j.id === selectedId) ??
-    jobs.find((j) => j.id === selectedId) ??
+    (selectedId != null
+      ? filtered.find((j) => j.id === selectedId) ??
+        jobs.find((j) => j.id === selectedId)
+      : undefined) ??
+    filtered[0] ??
     jobs[0];
 
   return (
@@ -396,7 +407,21 @@ export function JobsClient() {
         {/* LEFT — list */}
         <Card className="self-start">
           <CardHeader>
-            <CardTitle>Job queue</CardTitle>
+            <div className="flex items-center justify-between gap-2">
+              <CardTitle>Job queue</CardTitle>
+              <Badge
+                variant={connected ? "ok" : "muted"}
+                className="gap-1.5"
+                title={
+                  connected
+                    ? "Streaming live from the grid backend"
+                    : "Backend offline — showing the bundled snapshot"
+                }
+              >
+                <Dot status={connected ? "ok" : "muted"} pulse={connected} />
+                {connected ? "live" : "snapshot"}
+              </Badge>
+            </div>
             <CardDescription>
               {filtered.length} {filter === "all" ? "total" : filter} · select a row
               to inspect its hedged run
@@ -467,7 +492,15 @@ export function JobsClient() {
         </Card>
 
         {/* RIGHT — detail */}
-        <JobDetail job={selected} />
+        {selected ? (
+          <JobDetail job={selected} />
+        ) : (
+          <Card className="self-start">
+            <CardContent className="text-muted-foreground py-14 text-center text-sm">
+              No jobs yet.
+            </CardContent>
+          </Card>
+        )}
       </div>
     </>
   );

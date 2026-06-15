@@ -207,6 +207,50 @@ async fn phase2_quorum_fails_when_all_disagree() {
 }
 
 // ---------------------------------------------------------------------------
+// Phase 2 — quorum SPLIT (equivocation): two distinct hashes EACH reach quorum.
+// `evaluate_quorum` flags this as a split (no safe winner); the coordinator must
+// treat it as a disagreement (no silent side-pick) rather than completing.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn quorum_split_equivocation_is_surfaced_not_resolved() {
+    let mk = |val: i64| {
+        let mut f = HashMap::new();
+        f.insert(
+            "SELECT split".to_string(),
+            p2p_proto::ResultSet::new(vec!["v".into()], vec![vec![p2p_proto::Value::Int(val)]]),
+        );
+        Arc::new(MockEngine::with_fixtures(f)) as Arc<dyn QueryEngine>
+    };
+    // Two workers return hash A, two return hash B → with quorum=2 BOTH A and B
+    // reach quorum: an equivocation/split.
+    let a1 = spawn_worker(mk(1)).await;
+    let a2 = spawn_worker(mk(1)).await;
+    let b1 = spawn_worker(mk(2)).await;
+    let b2 = spawn_worker(mk(2)).await;
+
+    // replicas=4 (dispatch all), quorum=2. max_retries=1 so a single split does
+    // not loop (a split is terminal anyway).
+    let mut c = (*test_config(4, 2)).clone();
+    c.scheduler.max_retries = 1;
+    c.validate().unwrap();
+    let cfg = Arc::new(c);
+    let st = store();
+    let coord = make_coordinator(&[&a1, &a2, &b1, &b2], cfg, st.clone()).await;
+
+    let err = coord.run_query("SELECT split", Default::default()).await.unwrap_err();
+    // A split surfaces as QuorumFailed with BOTH hashes at the quorum count (2/2)
+    // — the signature of the equivocation branch (a generic shortfall would carry
+    // a lower agreement). The coordinator never silently picked A or B.
+    match err {
+        CoordinatorError::QuorumFailed { agreement, quorum } => {
+            assert_eq!(quorum, 2, "got {err:?}");
+            assert_eq!(agreement, 2, "split: both hashes reached quorum; got {err:?}");
+        }
+        other => panic!("expected QuorumFailed (split), got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Phase 2 — receipts build reputation across repeated jobs.
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -347,7 +391,12 @@ mod cancel_timing {
         let fast2 = spawn_worker(Arc::new(MockEngine::with_fixtures(fix))).await;
 
         let completed = Arc::new(AtomicUsize::new(0));
-        let loser_delay = Duration::from_millis(1500);
+        // The loser takes far longer to EXECUTE than the requester's per-read
+        // dispatch deadline: the coordinator gives up waiting on it (treats it as
+        // silent), reaches quorum from the two fast workers, and resets the slow
+        // worker's stream WHILE it is still executing. The slow worker must abort
+        // promptly (cancel-watch) rather than run its full delay to completion.
+        let loser_delay = Duration::from_millis(2000);
         let slow = spawn_worker(Arc::new(SlowCountingEngine {
             delay: loser_delay,
             completed: completed.clone(),
@@ -356,9 +405,23 @@ mod cancel_timing {
 
         // replicas=3 (dispatch to all), quorum=2 (the two fast workers).
         let mut c = (*test_config(3, 2)).clone();
-        // Keep the host execution deadline generous so the loser is stopped by the
-        // CANCEL, not by a job timeout (we are testing cancellation, not timeout).
-        c.host.job_timeout_ms = 60_000;
+        // The host execution deadline is generous (so the slow worker is stopped
+        // by the CANCEL, not by its own job timeout — we are testing cancellation).
+        c.worker.job_timeout_ms = 60_000;
+        // DISABLE host progress streaming (interval = 0): the loser must be aborted
+        // by the cancel/reset on the dispatch stream itself, not because a periodic
+        // progress write happened to fail. This exercises the worker-side
+        // cancel-watch race directly.
+        c.worker.progress_interval_ms = 0;
+        // Requester side: disable progress-based stall detection so the per-read
+        // stall timeout falls back to `dispatch_timeout_ms`. With a short dispatch
+        // timeout the coordinator stops waiting on the still-executing slow worker
+        // quickly (treats it as silent), reaches quorum from the fast workers, and
+        // resets the slow worker mid-execution.
+        c.scheduler.progress_interval_ms = 0;
+        c.scheduler.dispatch_timeout_ms = 500;
+        c.scheduler.attempt_deadline_ms = 5_000;
+        c.validate().unwrap();
         let cfg = Arc::new(c);
         let st = store();
         let coord = make_coordinator(&[&fast1, &fast2, &slow], cfg, st).await;
@@ -370,20 +433,18 @@ mod cancel_timing {
         assert_ne!(outcome.winner.as_ref(), Some(&slow.node_id), "slow worker must not win");
         assert!(
             start.elapsed() < loser_delay,
-            "race should resolve before the loser would finish ({:?})",
+            "race should resolve (from the fast workers) before the loser would finish ({:?})",
             start.elapsed()
         );
-        // The loser had NOT completed at decision time.
-        assert_eq!(completed.load(Ordering::SeqCst), 0, "loser should not have completed yet");
 
         // Wait well past the loser's would-be completion: if it were left running
-        // (cancelled only after the winner download, or not raced against cancel),
-        // the counter would tick to 1. With prompt cancellation it stays 0.
+        // (not raced against the cancel/reset), the counter would tick to 1. With
+        // prompt cancellation mid-execution it stays 0.
         tokio::time::sleep(loser_delay + Duration::from_millis(750)).await;
         assert_eq!(
             completed.load(Ordering::SeqCst),
             0,
-            "losing worker kept computing after being cancelled (no prompt abort)"
+            "losing worker kept computing after being cancelled (no prompt mid-execution abort)"
         );
     }
 }

@@ -48,13 +48,20 @@ import {
   PageHeader,
   ScoreBar,
   SectionTitle,
+  VerdictBadge,
 } from "@/components/common/atoms";
 import { Explainer, InfoHint } from "@/components/common/explain";
 import { CopyId } from "@/components/common/copy";
-import { jobs, workers } from "@/lib/data";
+import { jobs } from "@/lib/data";
+import { useLive, type QueryResult } from "@/lib/live";
 import { ms, num, ton } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { DataClass, VerifyMode } from "@/lib/types";
+import type {
+  CandidateState,
+  DataClass,
+  JobCandidate,
+  VerifyMode,
+} from "@/lib/types";
 
 /* --------------------------------------------------------------- constants */
 
@@ -136,6 +143,20 @@ const stateMeta: Record<CandState, { variant: Parameters<typeof Badge>[0]["varia
   reset: { variant: "muted", label: "RESET" },
 };
 
+// Visual treatment for the REAL terminal candidate states the grid reports
+// (the live CandidateState enum; superset of the simulation's CandState).
+const realStateMeta: Record<
+  CandidateState,
+  { variant: Parameters<typeof Badge>[0]["variant"]; label: string }
+> = {
+  won: { variant: "ok", label: "won" },
+  committed: { variant: "secondary", label: "committed" },
+  reset: { variant: "muted", label: "RESET" },
+  dispatched: { variant: "info", label: "dispatched" },
+  bidding: { variant: "muted", label: "bidding" },
+  rejected: { variant: "destructive", label: "rejected" },
+};
+
 // The REAL result the grid produced for this query (columns + rows + hash),
 // seeded from the snapshot so the preview matches what the grid actually ran.
 const REAL_JOB = jobs[0];
@@ -180,6 +201,10 @@ function WireLine({
 /* -------------------------------------------------------------------- page */
 
 export default function QueryConsolePage() {
+  // LIVE grid: live worker trust seeds the candidate pool, and submitQuery
+  // dispatches a REAL job that ripples to Jobs / Overview / Network.
+  const { workers, connected, submitQuery } = useLive();
+
   // Form state (controlled, deterministic defaults). SQL seeds from the real job.
   const [fn, setFn] = React.useState<Fn>("p2p_query");
   const [sql, setSql] = React.useState<string>(REAL_JOB.sql);
@@ -194,6 +219,13 @@ export default function QueryConsolePage() {
   const [running, setRunning] = React.useState(false);
   const [done, setDone] = React.useState(false);
   const [tick, setTick] = React.useState(0);
+
+  // The REAL outcome from the grid (populated by submitQuery when connected).
+  // While null we render the simulated/placeholder run. `liveResult.error` is
+  // surfaced if the dispatch failed.
+  const [liveResult, setLiveResult] = React.useState<QueryResult | null>(null);
+  // `true` when the most recent dispatch went to the live grid (vs. local sim).
+  const [ranLive, setRanLive] = React.useState(false);
 
   // Guard ref checked synchronously inside dispatch to prevent multiple intervals
   // from starting on rapid double-clicks before the `running` state flush.
@@ -216,16 +248,28 @@ export default function QueryConsolePage() {
 
   // Drive the stepper. setInterval only ever starts after a user Dispatch,
   // so the server/initial client render stays static.
+  //
+  // Local sim: animate offer→settle, then finish (done=true).
+  // Live dispatch (awaiting submitQuery): animate offer→verify and HOLD there
+  // until the real outcome lands — the resolve handler advances to settle/done,
+  // so we never flash a fake result before the real one arrives.
   React.useEffect(() => {
     if (!running) return;
+    const awaitingLive = ranLive && liveResult == null;
+    const lastIdx = STAGES.length - 1; // settle
+    const holdIdx = STAGES.length - 2; // verify
     const id = setInterval(() => {
       setTick((t) => {
         const next = t + 1;
-        if (next >= STAGES.length - 1) {
+        if (awaitingLive) {
+          // Ramp up to (but not past) verify while the grid runs the job.
+          return Math.min(next, holdIdx);
+        }
+        if (next >= lastIdx) {
           isRunningRef.current = false;
           setRunning(false);
           setDone(true);
-          return STAGES.length - 1;
+          return lastIdx;
         }
         return next;
       });
@@ -233,10 +277,10 @@ export default function QueryConsolePage() {
     return () => {
       clearInterval(id);
     };
-  }, [running]);
+  }, [running, ranLive, liveResult]);
 
   const kClamped = Math.min(hedgeK, 6);
-  // Candidate set = real honest workers by trust desc, capped to k. The race is
+  // Candidate set = LIVE honest workers by trust desc, capped to k. The race is
   // then ordered by real measured latency so the fastest real worker tends to win.
   const candidates = React.useMemo(() => {
     const pool = [...workers]
@@ -244,7 +288,7 @@ export default function QueryConsolePage() {
       .sort((a, b) => b.trust - a.trust)
       .slice(0, kClamped);
     return [...pool].sort((a, b) => a.p50LatencyMs - b.p50LatencyMs);
-  }, [kClamped]);
+  }, [workers, kClamped]);
 
   const kBelowQuorum = hedgeK < quorum;
 
@@ -253,12 +297,13 @@ export default function QueryConsolePage() {
     // state update so a second click that arrives before the React flush is ignored.
     if (isRunningRef.current) return;
     isRunningRef.current = true;
+    const qEff = Math.min(quorum, hedgeK);
     const seed = `${fn}:${dataClass}:${verifyMode}:${quorum}:${hedgeK}`;
     const snap = {
       fn,
       dataClass,
       verifyMode,
-      quorum: Math.min(quorum, hedgeK),
+      quorum: qEff,
       k: kClamped,
       free: freeTier,
       escrow: freeTier ? 0 : maxEscrow,
@@ -266,10 +311,52 @@ export default function QueryConsolePage() {
       queryHash: fakeHash("q:" + sql),
       nonce: 0x5e1f - sql.length, // deterministic, no Date/random
     };
+    // Freeze the SQL too, so the request matches what the panel shows.
+    const sqlSnap = sql;
     setRun(snap);
+    setLiveResult(null);
     setDone(false);
     setTick(0);
+    setRanLive(connected);
     setRunning(true);
+
+    if (!connected) {
+      // Offline: pure local simulation (the stepper effect finishes it).
+      return;
+    }
+
+    // Online: fire a REAL job at the grid. The stepper animates offer→verify
+    // while we await; populate the run panel from the real outcome on resolve.
+    void (async () => {
+      let outcome: QueryResult;
+      try {
+        outcome = await submitQuery({
+          sql: sqlSnap,
+          dataClass,
+          quorum: qEff,
+          k: kClamped,
+        });
+      } catch (e) {
+        outcome = {
+          id: snap.jobId,
+          status: "failed",
+          winner: null,
+          latencyMs: 0,
+          rowCount: 0,
+          resultHash: null,
+          quorum: qEff,
+          k: kClamped,
+          candidates: [],
+          result: { columns: [], rows: [] },
+          error: e instanceof Error ? e.message : "dispatch failed",
+        };
+      }
+      isRunningRef.current = false;
+      setLiveResult(outcome);
+      setTick(STAGES.length - 1); // settle
+      setRunning(false);
+      setDone(true);
+    })();
   }
 
   function reset() {
@@ -278,6 +365,8 @@ export default function QueryConsolePage() {
     setDone(false);
     setTick(0);
     setRun(null);
+    setLiveResult(null);
+    setRanLive(false);
   }
 
   // Effective view config: while idle/never-run, fall back to current knobs
@@ -304,6 +393,27 @@ export default function QueryConsolePage() {
   }).length;
   const quorumReached = committedCount >= view.quorum;
   const winner = runCandidates[0];
+
+  // ---- REAL outcome view (when a live dispatch has resolved) --------------
+  const real = liveResult; // alias for brevity in JSX
+  const realError = real?.error ?? null;
+  const realOk = real != null && !realError;
+  // Real candidates straight from the grid (alias/attestation/state/verdict/…).
+  const realCandidates: JobCandidate[] = real?.candidates ?? [];
+  // Result table + headline metrics: prefer the real outcome, else the snapshot
+  // fallback used by the offline simulation.
+  const resultCols = realOk ? real!.result.columns : RESULT.columns;
+  const resultRows = realOk ? real!.result.rows : RESULT.rows;
+  const resultHash = realOk ? real!.resultHash : RESULT_HASH;
+  const resultRowCount = realOk ? real!.rowCount : RESULT_ROWS;
+  const resultLatencyMs = realOk
+    ? real!.latencyMs
+    : winner
+      ? winner.p50LatencyMs
+      : 0;
+  const realWinnerAlias =
+    realCandidates.find((c) => c.state === "won")?.alias ??
+    (real?.winner ?? null);
 
   return (
     <div className="space-y-8">
@@ -582,6 +692,115 @@ export default function QueryConsolePage() {
                   <Send className="size-5 opacity-60" />
                   <span>Configure the policy and dispatch to watch the race.</span>
                 </div>
+              ) : real != null ? (
+                <>
+                  {/* REAL outcome: the grid actually ran this job. */}
+                  {realError ? (
+                    <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                      <AlertTriangle className="mt-px size-4 shrink-0" />
+                      <span>Dispatch failed: {realError}</span>
+                    </div>
+                  ) : (
+                    /* Dispatched-to-grid banner */
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--ok)]/30 bg-[var(--ok)]/10 px-3 py-2 text-sm">
+                      <span className="flex items-center gap-2">
+                        <CheckCircle2 className="size-4 text-[var(--ok)]" />
+                        <span className="font-medium">
+                          Quorum {real.quorum}/{real.quorum} · status {real.status}
+                        </span>
+                      </span>
+                      <Badge variant="ok">real · dispatched to grid</Badge>
+                    </div>
+                  )}
+
+                  {/* Real candidate rows — alias / attestation / state / verdict. */}
+                  <div className="space-y-2.5">
+                    {realCandidates.map((c) => {
+                      const meta = realStateMeta[c.state];
+                      const isWinner =
+                        c.state === "won" || c.workerId === real.winner;
+                      const divergent =
+                        c.state === "committed" && c.verdict !== "Correct";
+                      return (
+                        <div
+                          key={c.workerId}
+                          className={cn(
+                            "rounded-lg border p-3 transition-colors",
+                            isWinner
+                              ? "border-primary/50 ring-1 ring-primary/40 bg-primary/[0.04]"
+                              : divergent
+                                ? "border-destructive/30 bg-destructive/5"
+                                : c.state === "reset" || c.state === "dispatched"
+                                  ? "opacity-60"
+                                  : "bg-card",
+                          )}
+                        >
+                          <div className="flex items-center gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="truncate text-sm font-medium">
+                                  {c.alias}
+                                </span>
+                                <AttestationBadge level={c.attestation} />
+                                <Badge variant={meta.variant}>{meta.label}</Badge>
+                                <VerdictBadge verdict={c.verdict} />
+                                {isWinner ? (
+                                  <Badge variant="ok" className="gap-1">
+                                    <CheckCircle2 className="size-3" /> winner
+                                  </Badge>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="text-right text-xs tabular-nums">
+                              <div className="text-muted-foreground">
+                                eta {ms(c.etaMs)}
+                              </div>
+                              <div className="font-medium">
+                                {c.price === 0 ? "free" : `${num(c.price)} TON`}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="mt-2.5 flex items-center gap-3">
+                            <Progress
+                              value={c.progressPct}
+                              className="h-1.5"
+                              indicatorClassName={
+                                isWinner
+                                  ? "bg-primary"
+                                  : divergent
+                                    ? "bg-[var(--destructive)]"
+                                    : c.state === "committed"
+                                      ? "bg-[var(--ok)]"
+                                      : c.state === "reset"
+                                        ? "bg-muted-foreground"
+                                        : undefined
+                              }
+                            />
+                            <span className="text-muted-foreground w-9 text-right text-xs tabular-nums">
+                              {c.progressPct}%
+                            </span>
+                          </div>
+                          {c.committedHash ? (
+                            <div className="mt-2 flex items-center gap-2">
+                              <Hash className="text-muted-foreground size-3" />
+                              <CopyId value={c.committedHash} className="text-[11px]" />
+                              {c.commitLatencyMs ? (
+                                <span className="text-muted-foreground text-[11px] tabular-nums">
+                                  · {ms(c.commitLatencyMs)}
+                                </span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                    {realCandidates.length === 0 && !realError ? (
+                      <div className="text-muted-foreground rounded-lg border border-dashed p-3 text-xs">
+                        No per-candidate detail returned for this job.
+                      </div>
+                    ) : null}
+                  </div>
+                </>
               ) : (
                 <>
                   {/* Quorum banner */}
@@ -744,12 +963,12 @@ export default function QueryConsolePage() {
                   {
                     kind: "Commit",
                     tone: "default" as const,
-                    fields: `{ result_hash: "${RESULT_HASH.slice(0, 14)}…", row_count: ${RESULT_ROWS}, latency_ms: ${winner ? winner.p50LatencyMs : 0} }`,
+                    fields: `{ result_hash: "${(resultHash ?? "—").slice(0, 14)}…", row_count: ${resultRowCount}, latency_ms: ${resultLatencyMs} }`,
                   },
                   {
                     kind: "Receipt",
                     tone: "default" as const,
-                    fields: `{ verdict: Correct, sig: "ed25519:${RESULT_HASH.slice(0, 8)}…" }`,
+                    fields: `{ verdict: Correct, sig: "ed25519:${(resultHash ?? "—").slice(0, 8)}…" }`,
                   },
                 ].map((m) => (
                   <li key={m.kind} className="relative">
@@ -772,10 +991,10 @@ export default function QueryConsolePage() {
           </Card>
 
           {/* Result preview */}
-          {done ? (
+          {done && !realError ? (
             <Card>
               <CardHeader>
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div>
                     <CardTitle className="flex items-center gap-2">
                       <CheckCircle2 className="size-4 text-[var(--ok)]" /> Result
@@ -783,11 +1002,15 @@ export default function QueryConsolePage() {
                     </CardTitle>
                     <CardDescription>
                       Real result returned by{" "}
-                      {winner?.alias ?? "winner"} — agreed by{" "}
-                      {view.quorum} host{view.quorum === 1 ? "" : "s"}.
+                      {(realOk ? realWinnerAlias : winner?.alias) ?? "winner"} — agreed
+                      by {view.quorum} host{view.quorum === 1 ? "" : "s"}.
                     </CardDescription>
                   </div>
-                  <Badge variant="ok">verified</Badge>
+                  {realOk ? (
+                    <Badge variant="ok">real · dispatched to grid</Badge>
+                  ) : (
+                    <Badge variant="ok">verified</Badge>
+                  )}
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -795,12 +1018,12 @@ export default function QueryConsolePage() {
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        {RESULT.columns.map((c, i) => (
+                        {resultCols.map((c, i) => (
                           <TableHead
                             key={c}
                             className={cn(
                               i === 0 ? "pl-4" : "text-right",
-                              i === RESULT.columns.length - 1 && i !== 0 ? "pr-4" : "",
+                              i === resultCols.length - 1 && i !== 0 ? "pr-4" : "",
                             )}
                           >
                             {c}
@@ -809,7 +1032,7 @@ export default function QueryConsolePage() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {RESULT.rows.map((row, ri) => (
+                      {resultRows.map((row, ri) => (
                         <TableRow key={ri}>
                           {row.map((cell, ci) => (
                             <TableCell
@@ -832,22 +1055,31 @@ export default function QueryConsolePage() {
                   <div className="bg-muted/40 rounded-lg border p-3">
                     <div className="text-muted-foreground text-xs">result_hash</div>
                     <div className="mt-1">
-                      <CopyId value={RESULT_HASH} />
+                      {resultHash ? <CopyId value={resultHash} /> : "—"}
                     </div>
                   </div>
                   <div className="bg-muted/40 rounded-lg border p-3">
                     <div className="text-muted-foreground text-xs">row_count</div>
                     <div className="mt-1 text-sm font-medium tabular-nums">
-                      {num(RESULT_ROWS)}
+                      {num(resultRowCount)}
                     </div>
                   </div>
                   <div className="bg-muted/40 rounded-lg border p-3">
                     <div className="text-muted-foreground text-xs">latency</div>
                     <div className="mt-1 text-sm font-medium tabular-nums">
-                      {ms(winner ? winner.p50LatencyMs : 0)}
+                      {ms(resultLatencyMs)}
                     </div>
                   </div>
                 </div>
+                {realOk ? (
+                  <div className="text-muted-foreground flex items-start gap-2 text-xs">
+                    <Sparkles className="mt-px size-3.5 shrink-0 text-[var(--ok)]" />
+                    <span>
+                      This ran on the live grid — see it appear in Jobs, Overview and
+                      the Network graph.
+                    </span>
+                  </div>
+                ) : null}
                 <div className="text-muted-foreground flex items-center gap-2 text-xs">
                   <Coins className="size-3.5 text-[var(--warn)]" />
                   {view.free ? (
@@ -861,6 +1093,18 @@ export default function QueryConsolePage() {
                 </div>
               </CardContent>
             </Card>
+          ) : null}
+
+          {/* Offline fallback note */}
+          {run && ranLive === false && connected === false ? (
+            <p className="text-muted-foreground flex items-start gap-1.5 text-xs">
+              <AlertTriangle className="mt-px size-3.5 shrink-0 text-[var(--warn)]" />
+              <span>
+                The live backend is offline (
+                <code className="font-mono">cargo run -p console-server</code>) — this
+                is a local preview seeded from the snapshot, not a real grid dispatch.
+              </span>
+            </p>
           ) : null}
 
           {/* Static hint footer */}
