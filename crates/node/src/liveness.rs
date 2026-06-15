@@ -143,12 +143,10 @@ impl LivenessView {
     /// SWIM override (a fresh signal is the ground truth).
     pub fn heartbeat(&self, node: &NodeId, now_ms: u64) {
         let mut g = self.inner.lock().unwrap();
-        let entry = g
-            .entry(node.clone())
-            .or_insert_with(|| PeerLiveness {
-                phi: PhiDetector::new(&self.cfg.phi),
-                forced: Forced::None,
-            });
+        let entry = g.entry(node.clone()).or_insert_with(|| PeerLiveness {
+            phi: PhiDetector::new(&self.cfg.phi),
+            forced: Forced::None,
+        });
         entry.phi.heartbeat(now_ms);
         entry.forced = Forced::None;
     }
@@ -192,12 +190,10 @@ impl LivenessView {
     /// Record a SWIM verdict for `node` (sticky until the next heartbeat).
     pub fn apply_swim(&self, node: &NodeId, verdict: SwimVerdict) {
         let mut g = self.inner.lock().unwrap();
-        let entry = g
-            .entry(node.clone())
-            .or_insert_with(|| PeerLiveness {
-                phi: PhiDetector::new(&self.cfg.phi),
-                forced: Forced::None,
-            });
+        let entry = g.entry(node.clone()).or_insert_with(|| PeerLiveness {
+            phi: PhiDetector::new(&self.cfg.phi),
+            forced: Forced::None,
+        });
         entry.forced = match verdict {
             SwimVerdict::Alive => Forced::Alive,
             SwimVerdict::Dead => Forced::Dead,
@@ -255,7 +251,10 @@ pub fn now_ms() -> u64 {
 impl Discovery for LivenessFilteredDiscovery {
     async fn find_candidates(&self, want: usize, filter: CandidateFilter) -> Vec<Candidate> {
         // Over-fetch a little so excluding dead peers still yields `want`.
-        let raw = self.inner.find_candidates(want.saturating_mul(2).max(want), filter).await;
+        let raw = self
+            .inner
+            .find_candidates(want.saturating_mul(2).max(want), filter)
+            .await;
         let now = now_ms();
         let mut out: Vec<Candidate> = raw
             .into_iter()
@@ -333,7 +332,10 @@ mod tests {
             view.heartbeat(&target, i * 1_000);
         }
         let now = 9 * 1_000 + 60_000;
-        assert!(view.is_excluded(&target, now), "silent target is excluded before SWIM");
+        assert!(
+            view.is_excluded(&target, now),
+            "silent target is excluded before SWIM"
+        );
 
         // Direct probe fails, but relay r2 can reach the target.
         let prober = FakeProber { reachable: vec![] };
@@ -345,7 +347,10 @@ mod tests {
             .confirm_with_swim(&target, &relays, &prober, &indirect, now)
             .await;
         assert!(alive, "SWIM should rescue a peer reachable via a relay");
-        assert!(!view.is_excluded(&target, now), "rescued peer is selectable again");
+        assert!(
+            !view.is_excluded(&target, now),
+            "rescued peer is selectable again"
+        );
     }
 
     #[tokio::test]
@@ -363,7 +368,10 @@ mod tests {
             .confirm_with_swim(&target, &relays, &prober, &indirect, now)
             .await;
         assert!(!alive);
-        assert!(view.is_excluded(&target, now), "unreachable peer stays excluded");
+        assert!(
+            view.is_excluded(&target, now),
+            "unreachable peer stays excluded"
+        );
     }
 
     #[tokio::test]
@@ -378,10 +386,7 @@ mod tests {
 
         let mut c_dead = Candidate::new(Some(dead.clone()), "127.0.0.1:9001".parse().unwrap());
         c_dead.advertised_level = Some(AttestationLevel::L0);
-        let mut c_ok = Candidate::new(
-            Some(node("b3:ok")),
-            "127.0.0.1:9002".parse().unwrap(),
-        );
+        let mut c_ok = Candidate::new(Some(node("b3:ok")), "127.0.0.1:9002".parse().unwrap());
         c_ok.advertised_level = Some(AttestationLevel::L0);
 
         let inner = Arc::new(StaticDiscovery::new(vec![c_dead, c_ok], 16));
@@ -396,6 +401,8 @@ mod tests {
             )
             .await;
         assert!(got.iter().all(|c| c.node_id.as_ref() != Some(&dead)));
-        assert!(got.iter().any(|c| c.node_id.as_ref() == Some(&node("b3:ok"))));
+        assert!(got
+            .iter()
+            .any(|c| c.node_id.as_ref() == Some(&node("b3:ok"))));
     }
 }

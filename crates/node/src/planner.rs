@@ -71,10 +71,16 @@ pub struct PlanDecision {
 
 impl PlanDecision {
     pub fn local(reason: PlanReason) -> Self {
-        Self { route: Route::Local, reason }
+        Self {
+            route: Route::Local,
+            reason,
+        }
     }
     pub fn remote(reason: PlanReason) -> Self {
-        Self { route: Route::Remote, reason }
+        Self {
+            route: Route::Remote,
+            reason,
+        }
     }
     pub fn is_local(&self) -> bool {
         self.route == Route::Local
@@ -167,12 +173,17 @@ impl LocalOrRemotePlanner for DefaultPlanner {
         }
 
         // Latency budget (0 disables the gate).
-        if self.cfg.max_local_latency_ms > 0 && est.estimated_runtime_ms > self.cfg.max_local_latency_ms {
+        if self.cfg.max_local_latency_ms > 0
+            && est.estimated_runtime_ms > self.cfg.max_local_latency_ms
+        {
             return PlanDecision::remote(PlanReason::OverLatencyBudget);
         }
 
         // Peak working set must fit RAM headroom, allowing spill tolerance.
-        let allowance = self.cfg.spill_tolerance_bytes.saturating_add(req.headroom_bytes);
+        let allowance = self
+            .cfg
+            .spill_tolerance_bytes
+            .saturating_add(req.headroom_bytes);
         if est.peak_working_set_bytes > allowance {
             return PlanDecision::remote(PlanReason::TooLarge);
         }
@@ -199,7 +210,11 @@ pub struct LocalExecutor {
 impl LocalExecutor {
     /// Build from the engine, the node's total memory budget (bytes) and the
     /// planner config (`ram_fraction` = alpha, `max_concurrent_local_jobs`).
-    pub fn new(engine: Arc<dyn QueryEngine>, budget_memory_bytes: u64, cfg: &PlannerConfig) -> Arc<Self> {
+    pub fn new(
+        engine: Arc<dyn QueryEngine>,
+        budget_memory_bytes: u64,
+        cfg: &PlannerConfig,
+    ) -> Arc<Self> {
         let local_budget_bytes = ((budget_memory_bytes as f64) * cfg.ram_fraction) as u64;
         let max_jobs = cfg.max_concurrent_local_jobs.max(1);
         Arc::new(Self {

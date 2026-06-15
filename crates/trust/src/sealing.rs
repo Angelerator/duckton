@@ -159,7 +159,10 @@ mod tests {
     fn at_rest_symmetric_roundtrip() {
         let key = [3u8; 32];
         let blob = encrypt_at_rest(&key, b"parquet-bytes");
-        assert_eq!(decrypt_at_rest(&key, &blob).as_deref(), Some(b"parquet-bytes".as_slice()));
+        assert_eq!(
+            decrypt_at_rest(&key, &blob).as_deref(),
+            Some(b"parquet-bytes".as_slice())
+        );
         // wrong key fails
         assert!(decrypt_at_rest(&[9u8; 32], &blob).is_none());
     }

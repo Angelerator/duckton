@@ -223,7 +223,10 @@ pub fn parse_endpoint(s: &str) -> Option<EgressEndpoint> {
         .next()
         .unwrap_or("");
     // Strip any userinfo.
-    let authority = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
     if authority.is_empty() {
         return None;
     }
@@ -245,7 +248,10 @@ fn well_known_endpoints(provider: &str, region: Option<&str>) -> Vec<EgressEndpo
         "s3" => {
             let mut v = vec![EgressEndpoint::new("s3.amazonaws.com", Some(443))];
             if let Some(r) = region.map(str::trim).filter(|r| !r.is_empty()) {
-                v.push(EgressEndpoint::new(format!("s3.{r}.amazonaws.com"), Some(443)));
+                v.push(EgressEndpoint::new(
+                    format!("s3.{r}.amazonaws.com"),
+                    Some(443),
+                ));
             }
             v
         }
@@ -902,7 +908,10 @@ mod tests {
         cfg.egress_allowlist = vec!["data.example:8443".into()];
         let egress = EgressAllowList::derive(&cfg, &storage);
         assert_eq!(egress.endpoints.len(), 1);
-        assert_eq!(egress.endpoints[0], EgressEndpoint::new("data.example", Some(8443)));
+        assert_eq!(
+            egress.endpoints[0],
+            EgressEndpoint::new("data.example", Some(8443))
+        );
     }
 
     #[test]

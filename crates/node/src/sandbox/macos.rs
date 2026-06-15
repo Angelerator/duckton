@@ -66,7 +66,10 @@ pub fn seatbelt_profile(spec: &SandboxSpec) -> String {
     for ro in &spec.read_only_paths {
         let ro = ro.trim();
         if !ro.is_empty() {
-            p.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sb_str(ro)));
+            p.push_str(&format!(
+                "(allow file-read* (subpath \"{}\"))\n",
+                sb_str(ro)
+            ));
         }
     }
 
@@ -75,7 +78,10 @@ pub fn seatbelt_profile(spec: &SandboxSpec) -> String {
         let w = w.trim();
         if !w.is_empty() {
             p.push_str(&format!("(allow file-read* (subpath \"{}\"))\n", sb_str(w)));
-            p.push_str(&format!("(allow file-write* (subpath \"{}\"))\n", sb_str(w)));
+            p.push_str(&format!(
+                "(allow file-write* (subpath \"{}\"))\n",
+                sb_str(w)
+            ));
         }
     }
 

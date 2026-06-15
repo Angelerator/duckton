@@ -104,7 +104,8 @@ impl TokenBucket {
         if self.is_unlimited() {
             return;
         }
-        self.tokens = (self.tokens + self.refill_per_sec * elapsed.as_secs_f64()).min(self.capacity);
+        self.tokens =
+            (self.tokens + self.refill_per_sec * elapsed.as_secs_f64()).min(self.capacity);
     }
 
     /// Try to consume one token. Always succeeds when unlimited.
@@ -220,7 +221,10 @@ mod tests {
         let mut b = Backoff::new(1_000, 1_000, 0.5);
         for _ in 0..50 {
             let d = b.next_delay().as_millis() as u64;
-            assert!((500..=1_000).contains(&d), "jittered delay {d} out of [500,1000]");
+            assert!(
+                (500..=1_000).contains(&d),
+                "jittered delay {d} out of [500,1000]"
+            );
             b.reset();
         }
     }

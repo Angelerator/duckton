@@ -116,7 +116,9 @@ impl StorageCredentialProvider for FakeAzureSasProvider {
         // A path-scoped, read-only ("sp=r"), short-expiry SAS string.
         let sas = format!("sv=2024-11-04&sp=r&sr=c&se={expiry}&sig={}", rand_hex(16));
         let cred = crate::datasource::CloudCredential {
-            connection_string: Some(format!("BlobEndpoint=https://acct.blob.core.windows.net;SharedAccessSignature={sas}")),
+            connection_string: Some(format!(
+                "BlobEndpoint=https://acct.blob.core.windows.net;SharedAccessSignature={sas}"
+            )),
             ..Default::default()
         };
         ScopedCredential {
@@ -215,7 +217,12 @@ impl EncryptedObjectStore {
     }
 
     /// Write `plaintext` encrypted at rest under `object_key` with `data_key`.
-    pub fn put(&self, object_key: &str, data_key: &[u8; 32], plaintext: &[u8]) -> Result<(), StorageError> {
+    pub fn put(
+        &self,
+        object_key: &str,
+        data_key: &[u8; 32],
+        plaintext: &[u8],
+    ) -> Result<(), StorageError> {
         std::fs::create_dir_all(&self.root)?;
         let blob = encrypt_at_rest(data_key, plaintext);
         std::fs::write(self.path(object_key), blob)?;
@@ -310,7 +317,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = EncryptedObjectStore::new(dir.path());
         let key = [7u8; 32];
-        store.put("part-0.parquet", &key, b"hello columnar world").unwrap();
+        store
+            .put("part-0.parquet", &key, b"hello columnar world")
+            .unwrap();
         let got = store.get("part-0.parquet", &key).unwrap();
         assert_eq!(got, b"hello columnar world");
         // wrong key cannot read
@@ -387,7 +396,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = EncryptedObjectStore::new(dir.path());
         let data_key = [99u8; 32];
-        store.put("secret.parquet", &data_key, b"sensitive rows").unwrap();
+        store
+            .put("secret.parquet", &data_key, b"sensitive rows")
+            .unwrap();
 
         let (enclave, release) = enclave_and_verifier(
             "duckdb-enclave-v1",

@@ -17,8 +17,8 @@ pub mod version;
 
 pub use endpoint::{read_msg, request_response, write_msg, Conn, QuicTransport, Transport};
 // Re-export the QUIC stream types so dependents don't need a direct `quinn` dep.
-pub use quinn::{RecvStream, SendStream};
 pub use error::{Result, TransportError};
 pub use identity::NodeIdentity;
+pub use quinn::{RecvStream, SendStream};
 pub use verifier::{node_id_from_cert, PinPolicy};
 pub use version::{Negotiated, VersionInfo};

@@ -60,10 +60,12 @@ impl DuckDbEngine {
     /// `require_extensions` is set and an extension cannot be loaded, init fails
     /// — honoring "required extensions must be pre-loaded at engine init".
     pub fn with_setup(setup: StorageSetup) -> Result<Self, EngineError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| EngineError::Exec(format!("open: {e}")))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let version: String = conn
-            .query_row("SELECT library_version FROM pragma_version()", [], |r| r.get(0))
+            .query_row("SELECT library_version FROM pragma_version()", [], |r| {
+                r.get(0)
+            })
             .map_err(|e| EngineError::Exec(format!("version: {e}")))?;
 
         // Verify the extension pre-load decision once, at init.
@@ -158,8 +160,8 @@ impl DuckDbEngine {
         setup: &StorageSetup,
         ctx: &JobContext,
     ) -> Result<ResultSet, EngineError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| EngineError::Exec(format!("open: {e}")))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
 
         // 1. Budget + ephemeral temp dir. Each job gets its OWN private temp dir
         // (0700, unique name) that is removed when this `TempDir` drops at the end
@@ -262,10 +264,7 @@ impl DuckDbEngine {
         let mut rows = stmt
             .query([])
             .map_err(|e| EngineError::Exec(format!("query: {e}")))?;
-        let columns: Vec<String> = rows
-            .as_ref()
-            .map(|s| s.column_names())
-            .unwrap_or_default();
+        let columns: Vec<String> = rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
         let column_count = columns.len();
 
         let mut rows_out: Vec<Vec<Value>> = Vec::new();
@@ -298,15 +297,15 @@ fn value_from_ref(v: ValueRef<'_>) -> Value {
         // 128-bit / unsigned-64 values map to the portable `Int` when they fit
         // losslessly in i64 (e.g. `sum()` of integers yields HUGEINT); only
         // genuinely out-of-range magnitudes fall back to text to avoid truncation.
-        ValueRef::HugeInt(i) => {
-            i64::try_from(i).map(Value::Int).unwrap_or_else(|_| Value::Text(i.to_string()))
-        }
+        ValueRef::HugeInt(i) => i64::try_from(i)
+            .map(Value::Int)
+            .unwrap_or_else(|_| Value::Text(i.to_string())),
         ValueRef::UTinyInt(i) => Value::Int(i as i64),
         ValueRef::USmallInt(i) => Value::Int(i as i64),
         ValueRef::UInt(i) => Value::Int(i as i64),
-        ValueRef::UBigInt(i) => {
-            i64::try_from(i).map(Value::Int).unwrap_or_else(|_| Value::Text(i.to_string()))
-        }
+        ValueRef::UBigInt(i) => i64::try_from(i)
+            .map(Value::Int)
+            .unwrap_or_else(|_| Value::Text(i.to_string())),
         ValueRef::Float(f) => Value::Float(f as f64),
         ValueRef::Double(f) => Value::Float(f),
         ValueRef::Text(bytes) => Value::Text(String::from_utf8_lossy(bytes).to_string()),
@@ -402,9 +401,7 @@ mod tests {
         // `allow_community_extensions=false` + locked config: installing from the
         // community repository must be refused.
         let eng = DuckDbEngine::new().unwrap();
-        let r = eng
-            .execute("INSTALL faker FROM community", lease())
-            .await;
+        let r = eng.execute("INSTALL faker FROM community", lease()).await;
         assert!(r.is_err(), "community extension install should be blocked");
     }
 
@@ -419,7 +416,10 @@ mod tests {
                 lease(),
             )
             .await;
-        assert!(r.is_err(), "locked config must reject re-opening external access");
+        assert!(
+            r.is_err(),
+            "locked config must reject re-opening external access"
+        );
     }
 
     #[tokio::test]
@@ -440,6 +440,10 @@ mod tests {
             csv.display().to_string().replace('\'', "''")
         );
         let rs = eng.execute(&sql, lease()).await.unwrap();
-        assert_eq!(rs.rows[0][0], Value::Int(2), "fixture should be readable: {rs:?}");
+        assert_eq!(
+            rs.rows[0][0],
+            Value::Int(2),
+            "fixture should be readable: {rs:?}"
+        );
     }
 }

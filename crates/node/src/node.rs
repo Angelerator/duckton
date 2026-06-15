@@ -96,7 +96,10 @@ impl Node {
     }
 
     /// Build a node around an explicit, already-resolved [`GridConfig`].
-    pub fn with_config(config: GridConfig, engine: Arc<dyn QueryEngine>) -> Result<Self, NodeError> {
+    pub fn with_config(
+        config: GridConfig,
+        engine: Arc<dyn QueryEngine>,
+    ) -> Result<Self, NodeError> {
         config.validate()?;
 
         // Identity: load a persisted key if configured, else a fresh ephemeral one.
@@ -145,8 +148,9 @@ impl Node {
         // auto-block actually exclude flagged candidates on this requester. An
         // empty/missing blocklist is a no-op, so default behavior is unchanged.
         if config.antiabuse.enabled {
-            let blocklist =
-                Arc::new(crate::antiabuse::Blocklist::with_store(p2p_config::BlocklistStore::open()));
+            let blocklist = Arc::new(crate::antiabuse::Blocklist::with_store(
+                p2p_config::BlocklistStore::open(),
+            ));
             coordinator = coordinator.with_blocklist(blocklist);
         }
 
@@ -187,10 +191,7 @@ impl Node {
     /// Wire the on-chain `GlobalParams` read seam so PAID jobs follow the
     /// authoritative on-chain policy + version. Off by default (free/local nodes
     /// never read the chain). Pair with [`Node::spawn_params_sync`] to refresh it.
-    pub fn with_params_source(
-        mut self,
-        source: Arc<dyn p2p_settlement::ParamsSource>,
-    ) -> Self {
+    pub fn with_params_source(mut self, source: Arc<dyn p2p_settlement::ParamsSource>) -> Self {
         self.coordinator = self.coordinator.with_params_source(source);
         self
     }
@@ -215,10 +216,7 @@ impl Node {
 
     /// Start the startup + periodic on-chain `GlobalParams` sync (a no-op unless a
     /// params source is wired). Returns the task handle.
-    pub fn spawn_params_sync(
-        &self,
-        interval: std::time::Duration,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_params_sync(&self, interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
         self.coordinator.spawn_params_sync(interval)
     }
 

@@ -77,7 +77,9 @@ fn extension_loads_into_duckdb_and_runs_table_functions() {
         .args(["-list", "-noheader", "-c", "PRAGMA platform;"])
         .output()
         .expect("run duckdb platform");
-    let platform = String::from_utf8_lossy(&platform_out.stdout).trim().to_string();
+    let platform = String::from_utf8_lossy(&platform_out.stdout)
+        .trim()
+        .to_string();
     assert!(!platform.is_empty(), "could not determine duckdb platform");
 
     // Append the metadata footer to produce a loadable .duckdb_extension.
@@ -164,7 +166,10 @@ fn extension_p2p_query_local_execution_end_to_end() {
     let tmp_dir = std::env::temp_dir().join("p2p_ext_query_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
-    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
     let ext = out_ext.display().to_string();
     let cfg_dir = tmp_dir.join("cfg");
     let _ = std::fs::remove_dir_all(&cfg_dir);
@@ -186,11 +191,13 @@ fn extension_p2p_query_local_execution_end_to_end() {
     // Single scalar: rows come back through SQL from the grid's local path.
     let (ok, stdout, stderr) = run("FROM p2p_query('SELECT 42 AS x');");
     assert!(ok, "p2p_query failed: {stderr}");
-    assert_eq!(stdout, "42", "p2p_query did not return the row; got: {stdout}");
+    assert_eq!(
+        stdout, "42",
+        "p2p_query did not return the row; got: {stdout}"
+    );
 
     // A multi-row query materializes every row (exercises chunked emission).
-    let (ok, stdout, stderr) =
-        run("SELECT count(*) FROM p2p_query('SELECT * FROM range(5000)');");
+    let (ok, stdout, stderr) = run("SELECT count(*) FROM p2p_query('SELECT * FROM range(5000)');");
     assert!(ok, "p2p_query range failed: {stderr}");
     assert_eq!(stdout, "5000", "p2p_query lost rows; got: {stdout}");
 
@@ -224,7 +231,10 @@ fn extension_local_path_blocks_local_file_reads() {
     let tmp_dir = std::env::temp_dir().join("p2p_ext_lockdown_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
-    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
     let ext = out_ext.display().to_string();
     let cfg_dir = tmp_dir.join("cfg");
     let _ = std::fs::remove_dir_all(&cfg_dir);
@@ -288,7 +298,10 @@ fn extension_p2p_share_and_join_callable() {
     let tmp_dir = std::env::temp_dir().join("p2p_ext_grid_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
-    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
     let ext = out_ext.display().to_string();
 
     let run = |cfg_dir: &PathBuf, sql: &str| -> (bool, String, String) {
@@ -308,13 +321,21 @@ fn extension_p2p_share_and_join_callable() {
     // p2p_join persists the seed and reports it back from the live node.
     let dj = tmp_dir.join("join");
     let _ = std::fs::remove_dir_all(&dj);
-    let (ok, stdout, stderr) =
-        run(&dj, "SELECT value FROM p2p_join(bootstrap => ['quic://127.0.0.1:9494']) WHERE key='bootstrap';");
+    let (ok, stdout, stderr) = run(
+        &dj,
+        "SELECT value FROM p2p_join(bootstrap => ['quic://127.0.0.1:9494']) WHERE key='bootstrap';",
+    );
     assert!(ok, "p2p_join failed: {stderr}");
-    assert_eq!(stdout, "quic://127.0.0.1:9494", "join did not reflect seed; got: {stdout}");
+    assert_eq!(
+        stdout, "quic://127.0.0.1:9494",
+        "join did not reflect seed; got: {stdout}"
+    );
     // It persisted to the runtime layer.
     let runtime = std::fs::read_to_string(dj.join("runtime.toml")).unwrap_or_default();
-    assert!(runtime.contains("9494"), "seed must persist to runtime.toml; got: {runtime}");
+    assert!(
+        runtime.contains("9494"),
+        "seed must persist to runtime.toml; got: {runtime}"
+    );
 
     // p2p_share makes the node a host: it binds a real listen address and
     // reports the donated budget.
@@ -326,7 +347,11 @@ fn extension_p2p_share_and_join_callable() {
          data_classes => ['public']) WHERE key='memory_bytes';",
     );
     assert!(ok, "p2p_share failed: {stderr}");
-    assert_eq!(stdout, (2u64 << 30).to_string(), "share budget not applied; got: {stdout}");
+    assert_eq!(
+        stdout,
+        (2u64 << 30).to_string(),
+        "share budget not applied; got: {stdout}"
+    );
     let (ok, stdout, _e) = run(&ds, "SELECT value FROM p2p_share() WHERE key='status';");
     assert!(ok);
     assert_eq!(stdout, "hosting", "node should be hosting after p2p_share");
@@ -354,7 +379,10 @@ fn extension_two_node_grid_query_over_sql() {
     let tmp_dir = std::env::temp_dir().join("p2p_ext_two_node_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
-    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
     let ext = out_ext.display().to_string();
 
     let host_dir = tmp_dir.join("host");
@@ -392,7 +420,11 @@ fn extension_two_node_grid_query_over_sql() {
     let mut got = String::new();
     let mut last_err = String::new();
     for attempt in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(if attempt == 0 { 1500 } else { 800 }));
+        std::thread::sleep(std::time::Duration::from_millis(if attempt == 0 {
+            1500
+        } else {
+            800
+        }));
         let out = Command::new("duckdb")
             .args(["-unsigned", "-list", "-noheader", "-c", &req_sql])
             .env("P2P_CONFIG_DIR", &req_dir)
@@ -436,7 +468,10 @@ fn extension_sql_admin_surface_end_to_end() {
     let tmp_dir = std::env::temp_dir().join("p2p_ext_admin_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
-    assert!(build_loadable(&dylib, &platform, &out_ext), "metadata append failed");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
     let ext = out_ext.display().to_string();
 
     // Each scenario gets a fresh, isolated config dir so nothing leaks to $HOME.
@@ -465,7 +500,10 @@ fn extension_sql_admin_surface_end_to_end() {
     let _ = std::fs::remove_dir_all(&d2);
     let (ok, _o, e) = run(&d2, "CALL p2p_trust(min_trust => 0.83);");
     assert!(ok, "p2p_trust setter failed: {e}");
-    let (ok, stdout, _e) = run(&d2, "SELECT value FROM p2p_config() WHERE key = 'min_trust';");
+    let (ok, stdout, _e) = run(
+        &d2,
+        "SELECT value FROM p2p_config() WHERE key = 'min_trust';",
+    );
     assert!(ok);
     assert_eq!(stdout, "0.83", "setter must persist + be reflected");
 
@@ -479,15 +517,24 @@ fn extension_sql_admin_surface_end_to_end() {
         "guard message should warn about real TON; got: {stderr}"
     );
     // ...and WITH confirm it switches.
-    let (ok, _o, e) = run(&d3, "CALL p2p_economics(network => 'mainnet', confirm => true);");
+    let (ok, _o, e) = run(
+        &d3,
+        "CALL p2p_economics(network => 'mainnet', confirm => true);",
+    );
     assert!(ok, "confirmed mainnet switch failed: {e}");
     let (_ok, stdout, _e) = run(&d3, "SELECT value FROM p2p_status() WHERE key = 'network';");
-    assert_eq!(stdout, "mainnet", "confirmed switch should activate mainnet");
+    assert_eq!(
+        stdout, "mainnet",
+        "confirmed switch should activate mainnet"
+    );
 
     // 4. Secrets are never echoed by p2p_config() nor written to the config file.
     let d4 = tmp_dir.join("c4");
     let _ = std::fs::remove_dir_all(&d4);
-    let (ok, _o, e) = run(&d4, "CALL p2p_wallet(mnemonic => 'abandon abandon zoo secret words');");
+    let (ok, _o, e) = run(
+        &d4,
+        "CALL p2p_wallet(mnemonic => 'abandon abandon zoo secret words');",
+    );
     assert!(ok, "p2p_wallet failed: {e}");
     let (ok, stdout, _e) = run(
         &d4,
@@ -496,26 +543,42 @@ fn extension_sql_admin_surface_end_to_end() {
     assert!(ok);
     assert_eq!(stdout, "0", "secret must be redacted from p2p_config()");
     let runtime = std::fs::read_to_string(d4.join("runtime.toml")).unwrap_or_default();
-    assert!(!runtime.contains("abandon"), "secret must not land in the config file");
+    assert!(
+        !runtime.contains("abandon"),
+        "secret must not land in the config file"
+    );
 
     // 5. Anti-abuse deny-list: p2p_block persists, p2p_blocklist lists it, and
     //    p2p_unblock removes it (ARCHITECTURE "Abuse resistance").
     let d5 = tmp_dir.join("c5");
     let _ = std::fs::remove_dir_all(&d5);
-    let (ok, _o, e) = run(&d5, "CALL p2p_block(id => 'b3:badactor', reason => 'cheating');");
+    let (ok, _o, e) = run(
+        &d5,
+        "CALL p2p_block(id => 'b3:badactor', reason => 'cheating');",
+    );
     assert!(ok, "p2p_block failed: {e}");
-    let (ok, stdout, _e) =
-        run(&d5, "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';");
+    let (ok, stdout, _e) = run(
+        &d5,
+        "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';",
+    );
     assert!(ok);
     assert_eq!(stdout, "1", "blocked actor must appear in p2p_blocklist()");
     // It is persisted to blocklist.toml under the hermetic config dir.
     let bl = std::fs::read_to_string(d5.join("blocklist.toml")).unwrap_or_default();
-    assert!(bl.contains("b3:badactor"), "block must persist to blocklist.toml");
+    assert!(
+        bl.contains("b3:badactor"),
+        "block must persist to blocklist.toml"
+    );
     // Unblock removes it.
     let (ok, _o, e) = run(&d5, "CALL p2p_unblock(id => 'b3:badactor');");
     assert!(ok, "p2p_unblock failed: {e}");
-    let (ok, stdout, _e) =
-        run(&d5, "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';");
+    let (ok, stdout, _e) = run(
+        &d5,
+        "SELECT count(*) FROM p2p_blocklist() WHERE id = 'b3:badactor';",
+    );
     assert!(ok);
-    assert_eq!(stdout, "0", "unblocked actor must be gone from p2p_blocklist()");
+    assert_eq!(
+        stdout, "0",
+        "unblocked actor must be gone from p2p_blocklist()"
+    );
 }

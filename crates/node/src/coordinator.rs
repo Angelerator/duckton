@@ -462,9 +462,9 @@ impl Coordinator {
         }
 
         let data_class = DataClass::Public; // class selection is a future extension
-        // Resolve the per-job payment mode (free vs paid). Free jobs run the exact
-        // off-chain path (no escrow/stake/anchor/fees); only PAID jobs feed the
-        // economics `stake_factor` into selection. Scoring runs regardless.
+                                            // Resolve the per-job payment mode (free vs paid). Free jobs run the exact
+                                            // off-chain path (no escrow/stake/anchor/fees); only PAID jobs feed the
+                                            // economics `stake_factor` into selection. Scoring runs regardless.
         let paid = cfg
             .economics
             .resolve_payment(data_class_to_cfg(data_class))
@@ -691,19 +691,23 @@ impl Coordinator {
                 .await
                 .ok()?
                 .ok()?;
-                let reply =
-                    tokio::time::timeout(offer_timeout, send_offer(&conn, &offer)).await.ok()?.ok()?;
+                let reply = tokio::time::timeout(offer_timeout, send_offer(&conn, &offer))
+                    .await
+                    .ok()?
+                    .ok()?;
                 Some((conn, reply))
             }
         });
 
-        for res in futures_util::future::join_all(offer_futures).await {
-            if let Some((conn, bid)) = res {
-                let worker = conn.peer_node_id().clone();
-                if let BidDecision::Accept = bid.decision {
-                    conns.insert(worker.clone(), conn);
-                    accepted.push((worker, bid));
-                }
+        for (conn, bid) in futures_util::future::join_all(offer_futures)
+            .await
+            .into_iter()
+            .flatten()
+        {
+            let worker = conn.peer_node_id().clone();
+            if let BidDecision::Accept = bid.decision {
+                conns.insert(worker.clone(), conn);
+                accepted.push((worker, bid));
             }
         }
 
@@ -765,7 +769,9 @@ impl Coordinator {
             verify_mode,
             sealed_key: None,
             result_parallelism: Some(cfg.transport.result.parallelism as u32),
-            compression: Some(crate::compression::algo_to_wire(cfg.transport.compression.algorithm)),
+            compression: Some(crate::compression::algo_to_wire(
+                cfg.transport.compression.algorithm,
+            )),
         };
         let stall_ms = {
             let s = cfg.scheduler.stall_timeout_ms();
@@ -788,7 +794,17 @@ impl Coordinator {
             let dispatch = dispatch.clone();
             let worker = worker.clone();
             let progress = self.progress.as_ref();
-            async move { collect_one(conn, &dispatch, worker, stall_to, attempt_deadline, progress).await }
+            async move {
+                collect_one(
+                    conn,
+                    &dispatch,
+                    worker,
+                    stall_to,
+                    attempt_deadline,
+                    progress,
+                )
+                .await
+            }
         });
 
         let mut inflight: Vec<InFlight> = Vec::new();
@@ -807,8 +823,9 @@ impl Coordinator {
         let hashes: Vec<&str> = inflight.iter().map(|f| f.hash.as_str()).collect();
         let outcome = canonical::evaluate_quorum(hashes, cfg.scheduler.quorum);
         let canary_expected = self.canary.as_ref().and_then(|c| c.expected(query_hash));
-        let non_verifiable =
-            cfg.antiabuse.nondeterminism_active() && canary_expected.is_none() && is_nondeterministic(sql);
+        let non_verifiable = cfg.antiabuse.nondeterminism_active()
+            && canary_expected.is_none()
+            && is_nondeterministic(sql);
 
         // Tally how the selected providers fared (for consensus-infeasible).
         let mut tally = FaultTally::new(selected.len());
@@ -829,7 +846,10 @@ impl Coordinator {
                 if inflight.is_empty() {
                     return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
-                let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
+                let fastest = inflight
+                    .iter()
+                    .min_by_key(|f| f.latency_ms)
+                    .map(|f| f.hash.clone());
                 (fastest, false)
             }
             (None, VerifyMode::Quorum) => {
@@ -881,7 +901,10 @@ impl Coordinator {
                 if inflight.is_empty() {
                     return Ok(AttemptResult::Inconclusive { tried: selected });
                 }
-                let fastest = inflight.iter().min_by_key(|f| f.latency_ms).map(|f| f.hash.clone());
+                let fastest = inflight
+                    .iter()
+                    .min_by_key(|f| f.latency_ms)
+                    .map(|f| f.hash.clone());
                 (fastest, outcome.reached())
             }
         };
@@ -1039,7 +1062,14 @@ impl Coordinator {
                 commitment_failers.push(f.worker.clone());
             }
 
-            receipts.push(self.make_receipt(job_id, &f.worker, query_hash, &f.hash, verdict, f.latency_ms));
+            receipts.push(self.make_receipt(
+                job_id,
+                &f.worker,
+                query_hash,
+                &f.hash,
+                verdict,
+                f.latency_ms,
+            ));
             if verdict.is_provider_fault() {
                 let penalty = penalty_for(true);
                 if penalty > 0.0 {
@@ -1284,7 +1314,13 @@ impl Coordinator {
         let rep = &cfg.economics.reputation;
         let reputation = self
             .trust_store
-            .confident_reputation(worker, now, rep.prior_alpha, rep.prior_beta, rep.confidence_z)
+            .confident_reputation(
+                worker,
+                now,
+                rep.prior_alpha,
+                rep.prior_beta,
+                rep.confidence_z,
+            )
             .unwrap_or(cfg.trust.bootstrap_trust);
         let obs = self.trust_store.observation_count(worker);
         let inputs = TrustInputs {
@@ -1344,7 +1380,14 @@ impl Coordinator {
             Verdict::Malformed
         };
         for f in inflight {
-            let r = self.make_receipt(job_id, &f.worker, query_hash, &f.hash, verdict, f.latency_ms);
+            let r = self.make_receipt(
+                job_id,
+                &f.worker,
+                query_hash,
+                &f.hash,
+                verdict,
+                f.latency_ms,
+            );
             self.trust_store.record(&r);
         }
         debug!("emitted failure receipts for job {job_id}");
@@ -1397,6 +1440,17 @@ impl Coordinator {
         // Open the per-job escrow binding the lock + params version into its terms
         // (hence its deterministic address). The mock/noop rails fall back to the
         // termless `open_escrow`; the ton rail builds the on-chain terms cell.
+        //
+        // PHASE-5 LIVE-PAID FOLLOW-UP (does not affect the mock/noop or free path):
+        // the hardened `JobEscrow` now binds a requester-committed candidate set
+        // (`candidatesHash`) so a compromised arbiter cannot redirect funds to an
+        // outside address. For the live `ton` rail this candidate set (the
+        // dispatched workers' payout wallets, resolvable here via `self.wallet_of`)
+        // must be threaded through `open_escrow_with_terms` and presented byte-
+        // identically at `settle`. Until that trait/EscrowHandle plumbing lands,
+        // the live paid settlement will be rejected on-chain by the candidate-
+        // commitment check. The economics layer is "design only (not implemented)"
+        // per docs/BLOCKCHAIN_ECONOMICS.md, so this gap is consistent with status.
         let handle = match settlement.open_escrow_with_terms(job_id, max_bid, &result_hash, version)
         {
             Ok(h) => h,
@@ -1411,7 +1465,10 @@ impl Coordinator {
         let commission_each = mul_frac(b, cfg.economics.fees.participation_commission_frac);
         let participants: Vec<Payout> = agreeing_non_winners
             .iter()
-            .map(|n| Payout { to: self.wallet_of(n), amount: commission_each })
+            .map(|n| Payout {
+                to: self.wallet_of(n),
+                amount: commission_each,
+            })
             .collect();
         let total_commission = commission_each.saturating_mul(participants.len() as Amount);
         // Winner takes base + perf bonus = whatever of B remains after fee +
@@ -1419,7 +1476,10 @@ impl Coordinator {
         let winner_amount = b.saturating_sub(fee).saturating_sub(total_commission);
         let outcome = SettlementOutcome {
             result_hash,
-            winner: Payout { to: self.wallet_of(winner), amount: winner_amount },
+            winner: Payout {
+                to: self.wallet_of(winner),
+                amount: winner_amount,
+            },
             participants,
             platform_fee: fee,
         };
@@ -1518,7 +1578,10 @@ async fn collect_one(
             Ok(x) => x,
             Err(_) => return Collected::Silent(worker.clone()),
         };
-        if write_msg(&mut send, &Wire::Dispatch(dispatch.clone())).await.is_err() {
+        if write_msg(&mut send, &Wire::Dispatch(dispatch.clone()))
+            .await
+            .is_err()
+        {
             return Collected::Silent(worker.clone());
         }
         loop {

@@ -211,8 +211,7 @@ impl CloudCredential {
             .trim_start()
             .strip_prefix(SEALED_TOKEN_PREFIX)
             .ok_or_else(|| DataSourceError::MalformedToken("not a sealed token".into()))?;
-        let blob =
-            SealedBlob::from_hex(hex).ok_or(DataSourceError::SealOpenFailed)?;
+        let blob = SealedBlob::from_hex(hex).ok_or(DataSourceError::SealOpenFailed)?;
         let plaintext = keypair.open(&blob).ok_or(DataSourceError::SealOpenFailed)?;
         serde_json::from_slice(&plaintext)
             .map_err(|e| DataSourceError::MalformedToken(e.to_string()))
@@ -494,7 +493,10 @@ impl StorageProvider for GcsProvider {
         for (k, v) in &c.extra {
             parts.push(format!("{} {}", secret_key_ident(k)?, sql_lit(v)));
         }
-        parts.push(format!("SCOPE {}", sql_lit(&scope_url("gcs", &cred.prefix))));
+        parts.push(format!(
+            "SCOPE {}",
+            sql_lit(&scope_url("gcs", &cred.prefix))
+        ));
         Ok(Some(format!(
             "CREATE OR REPLACE SECRET {name} ({});",
             parts.join(", ")
@@ -765,7 +767,10 @@ mod tests {
     fn format_extension_mapping() {
         assert!(DataFormat::Csv.required_extensions().is_empty());
         assert_eq!(DataFormat::Parquet.required_extensions(), vec!["parquet"]);
-        assert_eq!(DataFormat::Delta.required_extensions(), vec!["delta", "parquet"]);
+        assert_eq!(
+            DataFormat::Delta.required_extensions(),
+            vec!["delta", "parquet"]
+        );
         assert_eq!(DataFormat::parse("DeltaLake"), DataFormat::Delta);
         assert_eq!(DataFormat::parse("orc"), DataFormat::Other("orc".into()));
     }
@@ -814,7 +819,10 @@ mod tests {
         assert!(sql.contains("URL_STYLE 'path'"), "{sql}");
         // USE_SSL is an UNQUOTED boolean literal.
         assert!(sql.contains("USE_SSL false"), "{sql}");
-        assert!(!sql.contains("USE_SSL 'false'"), "use_ssl must not be quoted: {sql}");
+        assert!(
+            !sql.contains("USE_SSL 'false'"),
+            "use_ssl must not be quoted: {sql}"
+        );
         assert!(sql.contains("SCOPE 's3://warehouse/delta/'"), "{sql}");
     }
 
@@ -854,7 +862,10 @@ mod tests {
         // is interpolated UNQUOTED, so it must be rejected (values are escaped,
         // but keys are identifiers).
         let mut extra = BTreeMap::new();
-        extra.insert("evil) AS x; ATTACH 'h::memory:' AS p; --".into(), "v".into());
+        extra.insert(
+            "evil) AS x; ATTACH 'h::memory:' AS p; --".into(),
+            "v".into(),
+        );
         let cred = CloudCredential {
             key_id: Some("k".into()),
             secret: Some("s".into()),
@@ -941,8 +952,14 @@ mod tests {
         // The opaque token is ciphertext only — no plaintext key material.
         assert!(CloudCredential::is_sealed_token(&token));
         assert!(token.starts_with(SEALED_TOKEN_PREFIX));
-        assert!(!token.contains("minioadmin"), "key id must not appear in token");
-        assert!(!token.contains("super-secret-key"), "secret must not appear in token");
+        assert!(
+            !token.contains("minioadmin"),
+            "key id must not appear in token"
+        );
+        assert!(
+            !token.contains("super-secret-key"),
+            "secret must not appear in token"
+        );
         // The worker opens it just-in-time and recovers the full credential.
         let opened = CloudCredential::unseal(&token, &worker).unwrap();
         assert_eq!(opened, cred);
@@ -1022,7 +1039,10 @@ mod tests {
         ));
         // Plaintext tokens pass through resolve_credential unchanged.
         let plain = scoped("s3", "b/", &cred);
-        assert_eq!(no_key.resolve_credential(&plain).unwrap().token, plain.token);
+        assert_eq!(
+            no_key.resolve_credential(&plain).unwrap().token,
+            plain.token
+        );
     }
 
     #[test]

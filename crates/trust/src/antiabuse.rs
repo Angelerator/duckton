@@ -14,8 +14,8 @@
 use ed25519_dalek::{Signature, VerifyingKey};
 use p2p_proto::{AbuseSignal, NodeId, Verdict};
 
-use crate::reputation::age_factor;
 use crate::receipt::Signer;
+use crate::reputation::age_factor;
 
 /// Classify a worker execution / dispatch error message into a fault class.
 ///
@@ -292,12 +292,27 @@ mod tests {
 
     #[test]
     fn classify_failure_maps_fault_classes() {
-        assert_eq!(classify_failure("Out of Memory Error: failed to allocate 4GB"), Verdict::ResourceExceeded);
-        assert_eq!(classify_failure("exceeds the memory limit of 1GB"), Verdict::ResourceExceeded);
-        assert_eq!(classify_failure("Catalog Error: Table 'events' does not exist"), Verdict::Infeasible);
-        assert_eq!(classify_failure("Parser Error: syntax error near SELECT"), Verdict::Infeasible);
+        assert_eq!(
+            classify_failure("Out of Memory Error: failed to allocate 4GB"),
+            Verdict::ResourceExceeded
+        );
+        assert_eq!(
+            classify_failure("exceeds the memory limit of 1GB"),
+            Verdict::ResourceExceeded
+        );
+        assert_eq!(
+            classify_failure("Catalog Error: Table 'events' does not exist"),
+            Verdict::Infeasible
+        );
+        assert_eq!(
+            classify_failure("Parser Error: syntax error near SELECT"),
+            Verdict::Infeasible
+        );
         // Unknown errors are non-attributable, not provider fault.
-        assert_eq!(classify_failure("weird transient blip"), Verdict::Inconclusive);
+        assert_eq!(
+            classify_failure("weird transient blip"),
+            Verdict::Inconclusive
+        );
     }
 
     #[test]
@@ -326,7 +341,9 @@ mod tests {
         let b = requester_trust_weight(Some(1.0), 25, 50, 0.0);
         assert!(b > a && a > 0.0);
         // Negative floor (0.0) gates a newcomer harder than the positive floor.
-        assert!(requester_trust_weight(None, 0, 50, 0.0) < requester_trust_weight(None, 0, 50, 0.5));
+        assert!(
+            requester_trust_weight(None, 0, 50, 0.0) < requester_trust_weight(None, 0, 50, 0.5)
+        );
     }
 
     #[test]
@@ -337,7 +354,9 @@ mod tests {
         assert!(is_nondeterministic("SELECT gen_random_uuid()"));
         assert!(is_nondeterministic("SELECT * FROM t LIMIT 10"));
         // Deterministic queries are NOT flagged.
-        assert!(!is_nondeterministic("SELECT region, count(*) FROM events GROUP BY region"));
+        assert!(!is_nondeterministic(
+            "SELECT region, count(*) FROM events GROUP BY region"
+        ));
         assert!(!is_nondeterministic("SELECT * FROM t ORDER BY id LIMIT 10"));
         assert!(!is_nondeterministic("SELECT 1"));
         // A column merely named like a keyword must not false-positive on word match.
@@ -347,13 +366,7 @@ mod tests {
     #[test]
     fn abuse_signal_sign_then_verify() {
         let signer = TestSigner(SigningKey::generate(&mut OsRng));
-        let sig = sign_abuse_signal(
-            NodeId("b3:bad".into()),
-            None,
-            "equivocation",
-            1234,
-            &signer,
-        );
+        let sig = sign_abuse_signal(NodeId("b3:bad".into()), None, "equivocation", 1234, &signer);
         assert!(verify_abuse_signal(&sig));
     }
 

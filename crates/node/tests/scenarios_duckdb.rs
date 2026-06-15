@@ -13,11 +13,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use p2p_config::{GridConfig, IdentityConfig, PinningMode};
-use p2p_proto::{Attestation, NodeId};
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, DuckDbEngine, ExecLease, QueryEngine,
     StaticDiscovery, Worker, WorkerParams,
 };
+use p2p_proto::{Attestation, NodeId};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
 use p2p_trust::{InMemoryTrustStore, TrustStore};
 
@@ -29,7 +29,11 @@ struct WorkerHandle {
 }
 
 fn idcfg() -> IdentityConfig {
-    IdentityConfig { key_path: None, pinning_mode: PinningMode::Tofu, allowlist: vec![] }
+    IdentityConfig {
+        key_path: None,
+        pinning_mode: PinningMode::Tofu,
+        allowlist: vec![],
+    }
 }
 
 async fn spawn_duckdb_worker() -> WorkerHandle {
@@ -41,9 +45,20 @@ async fn spawn_duckdb_worker() -> WorkerHandle {
     let params = WorkerParams::from_config(&GridConfig::default());
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
-    WorkerHandle { node_id, addr, _transport: transport, _task: task }
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
 }
 
 fn cfg(replicas: usize, quorum: usize) -> GridConfig {
@@ -60,8 +75,10 @@ async fn coordinator(workers: &[&WorkerHandle], c: GridConfig) -> Coordinator {
     let net = GridConfig::default().network;
     let req =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
-    let candidates: Vec<Candidate> =
-        workers.iter().map(|w| Candidate::new(Some(w.node_id.clone()), w.addr)).collect();
+    let candidates: Vec<Candidate> = workers
+        .iter()
+        .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
+        .collect();
     let disc = Arc::new(StaticDiscovery::new(candidates, 64));
     let store: Arc<dyn TrustStore> = Arc::new(InMemoryTrustStore::new(
         &GridConfig::default().trust,
@@ -81,7 +98,13 @@ async fn duckdb_two_node_query_matches_local() {
 
     let expected = DuckDbEngine::new()
         .unwrap()
-        .execute(sql, ExecLease { memory_bytes: 256 << 20, threads: 1 })
+        .execute(
+            sql,
+            ExecLease {
+                memory_bytes: 256 << 20,
+                threads: 1,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(outcome.result.row_count(), 1000);
@@ -100,5 +123,8 @@ async fn duckdb_sandbox_blocks_malicious_query_end_to_end() {
     // fails (no bad data is returned).
     let malicious = "SELECT * FROM read_csv_auto('/etc/passwd')";
     let result = coord.run_query(malicious, Default::default()).await;
-    assert!(result.is_err(), "malicious query must not yield a result: {result:?}");
+    assert!(
+        result.is_err(),
+        "malicious query must not yield a result: {result:?}"
+    );
 }

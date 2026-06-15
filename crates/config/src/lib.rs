@@ -42,7 +42,8 @@ pub use blocklist::{BlockEntry, BlockKind, BlocklistStore};
 pub use economics::{
     ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,
     PricingEconomics, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
-    SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics, TonNetwork, WalletConfig,
+    SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics, TonNetwork,
+    WalletConfig,
 };
 pub use overrides::{JoinOverrides, QueryOverrides, ShareOverrides};
 pub use store::{flatten_settings, status_rows, ConfigStore, SettingRow, StoreError};
@@ -63,6 +64,7 @@ pub enum ConfigError {
 /// Top-level configuration for a node.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 pub struct GridConfig {
     pub protocol: ProtocolConfig,
     pub network: NetworkConfig,
@@ -102,30 +104,6 @@ pub struct GridConfig {
     /// so existing behavior is unchanged — a no-op sandbox. This is the
     /// complement DuckDB cannot provide (it cannot scope network egress).
     pub sandbox: SandboxConfig,
-}
-
-impl Default for GridConfig {
-    fn default() -> Self {
-        Self {
-            protocol: ProtocolConfig::default(),
-            network: NetworkConfig::default(),
-            transport: TransportConfig::default(),
-            identity: IdentityConfig::default(),
-            discovery: DiscoveryConfig::default(),
-            scheduler: SchedulerConfig::default(),
-            worker: WorkerConfig::default(),
-            liveness: LivenessConfig::default(),
-            budget: BudgetConfig::default(),
-            trust: TrustConfig::default(),
-            sybil: SybilConfig::default(),
-            storage: StorageConfig::default(),
-            planner: PlannerConfig::default(),
-            economics: EconomicsConfig::default(),
-            antiabuse: AntiAbuseConfig::default(),
-            limits: LimitsConfig::default(),
-            sandbox: SandboxConfig::default(),
-        }
-    }
 }
 
 /// Protocol versioning & compatibility policy (architecture §5.1). Centralized
@@ -206,6 +184,7 @@ impl Default for NetworkConfig {
 /// the "Transport performance tuning" section of ARCHITECTURE.md.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 pub struct TransportConfig {
     /// QUIC-level knobs: UDP offload, congestion control, pacing, flow-control
     /// windows, uni-stream cap, 0-RTT. (`[transport.quic]`)
@@ -215,16 +194,6 @@ pub struct TransportConfig {
     pub result: ResultTransferConfig,
     /// Optional wire compression for result data. (`[transport.compression]`)
     pub compression: CompressionConfig,
-}
-
-impl Default for TransportConfig {
-    fn default() -> Self {
-        Self {
-            quic: QuicTuningConfig::default(),
-            result: ResultTransferConfig::default(),
-            compression: CompressionConfig::default(),
-        }
-    }
 }
 
 /// Congestion-control algorithm selector.
@@ -308,10 +277,18 @@ impl QuicTuningConfig {
             let target = self.bdp.target_bytes();
             // Connection window holds several streams' worth; send window matches
             // the target so we can keep the pipe full.
-            (target, target.saturating_mul(2).max(target), target.saturating_mul(2))
+            (
+                target,
+                target.saturating_mul(2).max(target),
+                target.saturating_mul(2),
+            )
         } else {
-            let stream = self.stream_receive_window_bytes.unwrap_or(net.stream_receive_window);
-            let conn = self.connection_receive_window_bytes.unwrap_or(net.receive_window);
+            let stream = self
+                .stream_receive_window_bytes
+                .unwrap_or(net.stream_receive_window);
+            let conn = self
+                .connection_receive_window_bytes
+                .unwrap_or(net.receive_window);
             (stream, conn, self.send_window_bytes)
         }
     }
@@ -792,18 +769,10 @@ impl Default for WorkerConfig {
 /// coordinator, so a node with no liveness wiring behaves exactly as before.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[derive(Default)]
 pub struct LivenessConfig {
     pub phi: PhiAccrualConfig,
     pub swim: SwimConfig,
-}
-
-impl Default for LivenessConfig {
-    fn default() -> Self {
-        Self {
-            phi: PhiAccrualConfig::default(),
-            swim: SwimConfig::default(),
-        }
-    }
 }
 
 /// Phi-accrual failure detector (φ = -log10(P_late) over a sliding window of
@@ -1427,7 +1396,9 @@ impl GridConfig {
                         other => {
                             return Err(ConfigError::Env(
                                 k.clone(),
-                                format!("unknown congestion controller {other} (bbr|cubic|newreno)"),
+                                format!(
+                                    "unknown congestion controller {other} (bbr|cubic|newreno)"
+                                ),
                             ))
                         }
                     }
@@ -1462,12 +1433,18 @@ impl GridConfig {
                     }
                 }
                 "P2P_BOOTSTRAP" | "P2P_DISCOVERY_BOOTSTRAP" => {
-                    self.discovery.bootstrap =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.discovery.bootstrap = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_DISCOVERY_LISTEN_ADDRS" => {
-                    self.discovery.listen_addrs =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.discovery.listen_addrs = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_DISCOVERY_GOSSIP_TOPIC" => self.discovery.gossip.topic = v.clone(),
                 "P2P_DISCOVERY_GOSSIP_HEARTBEAT_MS" => {
@@ -1494,12 +1471,18 @@ impl GridConfig {
                 "P2P_DISCOVERY_NAT_ACT_AS_RELAY" => self.discovery.nat.act_as_relay = parse(k, v)?,
                 "P2P_DISCOVERY_NAT_MDNS" => self.discovery.nat.mdns = parse(k, v)?,
                 "P2P_DISCOVERY_NAT_EXTERNAL_ADDRESSES" => {
-                    self.discovery.nat.external_addresses =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.discovery.nat.external_addresses = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_DISCOVERY_NAT_RELAYS" => {
-                    self.discovery.nat.relays =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.discovery.nat.relays = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_DISCOVERY_NAT_MAX_RELAYS" => self.discovery.nat.max_relays = parse(k, v)?,
                 "P2P_TRUST_STORE_PATH" => self.trust.store_path = Some(v.clone()),
@@ -1581,20 +1564,32 @@ impl GridConfig {
                 }
                 "P2P_STORAGE_REQUIRE_EXTENSIONS" => self.storage.require_extensions = parse(k, v)?,
                 "P2P_STORAGE_PRELOAD_EXTENSIONS" => {
-                    self.storage.preload_extensions =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.storage.preload_extensions = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_STORAGE_ENABLED_FORMATS" => {
-                    self.storage.enabled_formats =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.storage.enabled_formats = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_STORAGE_ENABLED_PROVIDERS" => {
-                    self.storage.enabled_providers =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.storage.enabled_providers = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_STORAGE_ALLOWED_LOCAL_PATHS" => {
-                    self.storage.allowed_local_paths =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.storage.allowed_local_paths = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
                 "P2P_PLANNER_ENABLED" => self.planner.enabled = parse(k, v)?,
                 "P2P_PLANNER_LOCAL_EXECUTION_ENABLED" | "P2P_PLANNER_LOCAL_EXECUTION" => {
@@ -1654,16 +1649,17 @@ impl GridConfig {
                     }
                 }
                 "P2P_SANDBOX_LIMITS_MODE" => {
-                    self.sandbox.limits.mode = match v.trim().to_ascii_lowercase().as_str() {
-                        "inherit_budget" | "inherit" => SandboxLimitsMode::InheritBudget,
-                        "explicit" => SandboxLimitsMode::Explicit,
-                        other => {
-                            return Err(ConfigError::Env(
+                    self.sandbox.limits.mode =
+                        match v.trim().to_ascii_lowercase().as_str() {
+                            "inherit_budget" | "inherit" => SandboxLimitsMode::InheritBudget,
+                            "explicit" => SandboxLimitsMode::Explicit,
+                            other => return Err(ConfigError::Env(
                                 k.clone(),
-                                format!("unknown sandbox limits mode {other} (inherit_budget|explicit)"),
-                            ))
+                                format!(
+                                    "unknown sandbox limits mode {other} (inherit_budget|explicit)"
+                                ),
+                            )),
                         }
-                    }
                 }
                 "P2P_SANDBOX_MEMORY_BYTES" => self.sandbox.limits.memory_bytes = parse(k, v)?,
                 "P2P_SANDBOX_CPU_SECONDS" => self.sandbox.limits.cpu_seconds = parse(k, v)?,
@@ -1676,31 +1672,36 @@ impl GridConfig {
                     self.sandbox.egress_mode = match v.trim().to_ascii_lowercase().as_str() {
                         "inherit_storage" | "inherit" => SandboxEgressMode::InheritStorage,
                         "explicit" => SandboxEgressMode::Explicit,
-                        other => {
-                            return Err(ConfigError::Env(
-                                k.clone(),
-                                format!("unknown sandbox egress mode {other} (inherit_storage|explicit)"),
-                            ))
-                        }
+                        other => return Err(ConfigError::Env(
+                            k.clone(),
+                            format!(
+                                "unknown sandbox egress mode {other} (inherit_storage|explicit)"
+                            ),
+                        )),
                     }
                 }
                 "P2P_SANDBOX_EGRESS_ALLOWLIST" => {
-                    self.sandbox.egress_allowlist =
-                        v.split(',').filter(|s| !s.is_empty()).map(String::from).collect()
+                    self.sandbox.egress_allowlist = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
                 }
-                "P2P_SANDBOX_TEMP_DIR_POLICY" => {
-                    self.sandbox.temp_dir_policy = match v.trim().to_ascii_lowercase().as_str() {
-                        "ephemeral" => SandboxTempDirPolicy::Ephemeral,
-                        "inherit" => SandboxTempDirPolicy::Inherit,
-                        "custom" => SandboxTempDirPolicy::Custom,
-                        other => {
-                            return Err(ConfigError::Env(
-                                k.clone(),
-                                format!("unknown sandbox temp dir policy {other} (ephemeral|inherit|custom)"),
-                            ))
-                        }
-                    }
-                }
+                "P2P_SANDBOX_TEMP_DIR_POLICY" => self.sandbox.temp_dir_policy = match v
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "ephemeral" => SandboxTempDirPolicy::Ephemeral,
+                    "inherit" => SandboxTempDirPolicy::Inherit,
+                    "custom" => SandboxTempDirPolicy::Custom,
+                    other => return Err(ConfigError::Env(
+                        k.clone(),
+                        format!(
+                            "unknown sandbox temp dir policy {other} (ephemeral|inherit|custom)"
+                        ),
+                    )),
+                },
                 "P2P_SANDBOX_TEMP_DIR" => self.sandbox.temp_dir = Some(v.clone()),
                 // ---- economics / settlement layer (env layer) ----
                 "P2P_ECONOMICS_ENABLED" => self.economics.enabled = parse(k, v)?,
@@ -1813,11 +1814,10 @@ impl GridConfig {
             .version
             .parse()
             .map_err(|e| ConfigError::Invalid(format!("protocol.version: {e}")))?;
-        let min: p2p_proto::Version = self
-            .protocol
-            .min_supported_version
-            .parse()
-            .map_err(|e| ConfigError::Invalid(format!("protocol.min_supported_version: {e}")))?;
+        let min: p2p_proto::Version =
+            self.protocol.min_supported_version.parse().map_err(|e| {
+                ConfigError::Invalid(format!("protocol.min_supported_version: {e}"))
+            })?;
         if min > version {
             return inv(format!(
                 "protocol.min_supported_version ({min}) must be <= protocol.version ({version})"
@@ -1923,7 +1923,9 @@ impl GridConfig {
         }
         let pct = |name: &str, x: f64| -> Result<(), ConfigError> {
             if !(0.0..=1.0).contains(&x) {
-                return Err(ConfigError::Invalid(format!("{name} must be in [0,1], got {x}")));
+                return Err(ConfigError::Invalid(format!(
+                    "{name} must be in [0,1], got {x}"
+                )));
             }
             Ok(())
         };
@@ -1990,15 +1992,23 @@ impl GridConfig {
         if self.storage.enabled_providers.is_empty() {
             return inv("storage.enabled_providers must list at least one provider".into());
         }
-        if self.storage.enabled_providers.iter().any(|p| p.trim().is_empty()) {
+        if self
+            .storage
+            .enabled_providers
+            .iter()
+            .any(|p| p.trim().is_empty())
+        {
             return inv("storage.enabled_providers entries must be non-empty".into());
         }
         // S3 URL addressing style (top-level + any per-provider override) must be
         // a value DuckDB understands, so a typo fails closed at config time.
-        let valid_url_style = |s: &str| matches!(s.trim().to_ascii_lowercase().as_str(), "path" | "vhost");
+        let valid_url_style =
+            |s: &str| matches!(s.trim().to_ascii_lowercase().as_str(), "path" | "vhost");
         if let Some(s) = &self.storage.url_style {
             if !valid_url_style(s) {
-                return inv(format!("storage.url_style must be 'path' or 'vhost', got '{s}'"));
+                return inv(format!(
+                    "storage.url_style must be 'path' or 'vhost', got '{s}'"
+                ));
             }
         }
         for (id, kv) in &self.storage.provider_options {
@@ -2097,7 +2107,12 @@ impl GridConfig {
         // ---- OS sandbox ----
         let sb = &self.sandbox;
         if matches!(sb.temp_dir_policy, SandboxTempDirPolicy::Custom)
-            && sb.temp_dir.as_deref().map(str::trim).unwrap_or("").is_empty()
+            && sb
+                .temp_dir
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
         {
             return inv(
                 "sandbox.temp_dir must be set when sandbox.temp_dir_policy = \"custom\"".into(),
@@ -2171,8 +2186,14 @@ mod tests {
                 .unwrap();
         let mut env = BTreeMap::new();
         env.insert("P2P_ECONOMICS_ENABLED".to_string(), "true".to_string());
-        env.insert("P2P_ECONOMICS_DEFAULT_PAYMENT".to_string(), "paid".to_string());
-        env.insert("P2P_ECONOMICS_FEE_RECIPIENT".to_string(), "EQ_treasury".to_string());
+        env.insert(
+            "P2P_ECONOMICS_DEFAULT_PAYMENT".to_string(),
+            "paid".to_string(),
+        );
+        env.insert(
+            "P2P_ECONOMICS_FEE_RECIPIENT".to_string(),
+            "EQ_treasury".to_string(),
+        );
         cfg.apply_env_map(&env).unwrap();
         assert!(cfg.economics.enabled);
         assert_eq!(cfg.economics.default_payment, PaymentPref::Paid);
@@ -2283,7 +2304,11 @@ mod tests {
         assert_eq!(c, cfg.network.receive_window);
         assert_eq!(snd, cfg.transport.quic.send_window_bytes);
         // BDP target: 1000 Mbit/s * 50 ms = 6.25 MB.
-        let bdp = BdpConfig { enabled: true, bandwidth_mbps: 1000, rtt_ms: 50 };
+        let bdp = BdpConfig {
+            enabled: true,
+            bandwidth_mbps: 1000,
+            rtt_ms: 50,
+        };
         assert_eq!(bdp.target_bytes(), 6_250_000);
     }
 
@@ -2299,7 +2324,10 @@ mod tests {
         let mut cfg = GridConfig::default();
         let mut env = BTreeMap::new();
         env.insert("P2P_TRANSPORT_CONGESTION".to_string(), "bbr".to_string());
-        env.insert("P2P_TRANSPORT_RESULT_PARALLELISM".to_string(), "4".to_string());
+        env.insert(
+            "P2P_TRANSPORT_RESULT_PARALLELISM".to_string(),
+            "4".to_string(),
+        );
         env.insert("P2P_TRANSPORT_COMPRESSION".to_string(), "zstd".to_string());
         cfg.apply_env_map(&env).unwrap();
         assert_eq!(cfg.transport.quic.congestion, CongestionAlgo::Bbr);
@@ -2419,9 +2447,15 @@ mod tests {
         assert_eq!(cfg.sandbox.limits.max_file_size_bytes, 1_048_576);
         // env overrides the TOML layer
         let mut env = BTreeMap::new();
-        env.insert("P2P_SANDBOX_BACKEND".to_string(), "windows-jobobject".to_string());
+        env.insert(
+            "P2P_SANDBOX_BACKEND".to_string(),
+            "windows-jobobject".to_string(),
+        );
         env.insert("P2P_SANDBOX_MAX_OPEN_FILES".to_string(), "64".to_string());
-        env.insert("P2P_SANDBOX_EGRESS_MODE".to_string(), "inherit_storage".to_string());
+        env.insert(
+            "P2P_SANDBOX_EGRESS_MODE".to_string(),
+            "inherit_storage".to_string(),
+        );
         cfg.apply_env_map(&env).unwrap();
         assert_eq!(cfg.sandbox.backend, SandboxBackend::WindowsJobObject);
         assert_eq!(cfg.sandbox.limits.max_open_files, 64);
@@ -2453,10 +2487,9 @@ mod tests {
 
     #[test]
     fn sandbox_validation_requires_temp_dir_for_custom_policy() {
-        let cfg = GridConfig::from_toml_str(
-            "[sandbox]\nenabled = true\ntemp_dir_policy = \"custom\"\n",
-        )
-        .unwrap();
+        let cfg =
+            GridConfig::from_toml_str("[sandbox]\nenabled = true\ntemp_dir_policy = \"custom\"\n")
+                .unwrap();
         assert!(cfg.validate().is_err());
         let cfg = GridConfig::from_toml_str(
             "[sandbox]\ntemp_dir_policy = \"custom\"\ntemp_dir = \"/var/tmp/p2p\"\n",

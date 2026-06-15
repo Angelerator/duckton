@@ -7,8 +7,7 @@ use p2p_config::GridConfig;
 
 fn example_path() -> PathBuf {
     // crates/config/ -> repo root -> config/p2p.example.toml
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../config/p2p.example.toml")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/p2p.example.toml")
 }
 
 #[test]

@@ -66,18 +66,18 @@ pub use liveness::{
 };
 pub use membership::MembershipTable;
 pub use node::{Node, NodeError};
-pub use retry::{Backoff, FaultTally, TokenBucket};
 pub use planner::{
     is_resource_exhaustion, DefaultPlanner, LocalExecutor, LocalOrRemotePlanner, LocalReservation,
     PlanDecision, PlanReason, PlanRequest, Route,
 };
+pub use retry::{Backoff, FaultTally, TokenBucket};
 pub use sandbox::{
     build as build_sandbox, effective_backend, EgressAllowList, EgressEndpoint, IosSandbox,
     JobBudget, JobGuard, NoopSandbox, ResourceLimits, Sandbox, SandboxError, SandboxSpec,
 };
+pub use signer::IdentitySigner;
 pub use storage::{
     sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
     FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
 };
-pub use signer::IdentitySigner;
 pub use worker::{Worker, WorkerParams};

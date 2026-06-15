@@ -41,10 +41,9 @@ impl VersionInfo {
         cfg: &ProtocolConfig,
         engine_version: impl Into<String>,
     ) -> Result<Self, TransportError> {
-        let version: Version = cfg
-            .version
-            .parse()
-            .map_err(|e| TransportError::IncompatibleVersion(format!("bad protocol version: {e}")))?;
+        let version: Version = cfg.version.parse().map_err(|e| {
+            TransportError::IncompatibleVersion(format!("bad protocol version: {e}"))
+        })?;
         let min_supported: Version = cfg.min_supported_version.parse().map_err(|e| {
             TransportError::IncompatibleVersion(format!("bad min_supported_version: {e}"))
         })?;

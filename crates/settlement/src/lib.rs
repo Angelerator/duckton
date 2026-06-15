@@ -38,27 +38,29 @@ pub use cell::{
     address_key_bits, build_hashmap_root, Cell, CellBuilder, DictEntry, ADDRESS_KEY_BITS, BASECHAIN,
 };
 pub use engagement::settle_if_paid;
-pub use wallet::{
-    base64_decode, base64_encode, build_signed_external_v5r1, InternalMessage, WalletKey,
-    WalletV5R1, GLOBAL_ID_MAINNET, GLOBAL_ID_TESTNET,
-};
 pub use quality::{latency_score, quality_score, throughput_score, QualitySample};
-pub use ton::{
-    build_anchor_submit, build_anchor_upgrade_code, build_escrow_refund, build_escrow_settle,
-    build_escrow_terms, build_escrow_topup, build_stake_announce_upgrade, build_stake_apply_upgrade,
-    build_stake_cancel_upgrade, build_stake_deposit, build_stake_slash, build_stake_unbond,
-    build_update_admin, build_update_params, build_upgrade_code, escrow_code_from_boc_base64,
-    GlobalParams, GlobalParamsClient, MessageBody, OnchainPolicy, ParamsSource, TonRecordAnchor,
-    TonRpc, TonSettlement, TonStakeRegistry, VaultInit,
-};
 #[cfg(feature = "ton-live")]
 pub use ton::ToncenterRpc;
+pub use ton::{
+    build_anchor_open_dispute, build_anchor_submit, build_anchor_upgrade_code, build_announce_code,
+    build_cancel_code, build_escrow_claim, build_escrow_refund, build_escrow_settle,
+    build_escrow_terms, build_escrow_topup, build_merkle_proof_cell, build_stake_announce_upgrade,
+    build_stake_apply_upgrade, build_stake_cancel_upgrade, build_stake_claim, build_stake_deposit,
+    build_stake_slash, build_stake_unbond, build_update_admin, build_update_params,
+    build_upgrade_code, candidates_commitment, escrow_code_from_boc_base64, GlobalParams,
+    GlobalParamsClient, MessageBody, OnchainPolicy, ParamsSource, QueryIdGen, TonRecordAnchor,
+    TonRpc, TonSettlement, TonStakeRegistry, VaultInit,
+};
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
-pub use wiring::{resolve_settlement_stack, resolve_ton_wiring, SettlementStack, TonWiring};
 pub use types::{
     Amount, BindingError, EscrowHandle, Hash32, InclusionProof, JobRecord, NodeWalletBinding,
     Payout, SettleError, SettlementOutcome, SlashError, SlashReason, TonProof, WalletAddress,
 };
+pub use wallet::{
+    base64_decode, base64_encode, build_signed_external_v5r1, InternalMessage, WalletKey,
+    WalletV5R1, GLOBAL_ID_MAINNET, GLOBAL_ID_TESTNET,
+};
+pub use wiring::{resolve_settlement_stack, resolve_ton_wiring, SettlementStack, TonWiring};
 
 pub use mock::{
     InMemoryRecordAnchor, InMemoryStakeRegistry, MockSettlement, MockWallet, SettlementEvent,

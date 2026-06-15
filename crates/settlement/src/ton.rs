@@ -37,17 +37,63 @@ pub const OP_STAKE_SLASH: u32 = 0x534b_4b05;
 pub const OP_STAKE_ANNOUNCE_UPGRADE: u32 = 0x534b_4b07;
 pub const OP_STAKE_APPLY_UPGRADE: u32 = 0x534b_4b08;
 pub const OP_STAKE_CANCEL_UPGRADE: u32 = 0x534b_4b09;
+// StakeVault bounce-safe pull-withdrawal (C1) — MUST match `stake_types.tolk`.
+pub const OP_STAKE_CLAIM: u32 = 0x534b_4b0a;
+/// Outgoing payout body tag carried on every pushed StakeVault payout (C1) so a
+/// bounce is identifiable in `onBouncedMessage`. Not a message the bridge sends;
+/// exported for parity with the contract.
+pub const OP_STAKE_PAYOUT: u32 = 0x534b_4b0b;
 pub const OP_ESCROW_TOPUP: u32 = 0x4553_4300;
 pub const OP_ESCROW_SETTLE: u32 = 0x4553_4302;
 pub const OP_ESCROW_REFUND: u32 = 0x4553_4303;
+// JobEscrow bounce-safe pull-withdrawal (B2) — MUST match `escrow_types.tolk`.
+pub const OP_ESCROW_CLAIM: u32 = 0x4553_4304;
+/// Outgoing payout body tag carried on every pushed escrow payout (B2). Not a
+/// message the bridge sends; exported for parity with the contract.
+pub const OP_ESCROW_PAYOUT: u32 = 0x4553_4305;
 pub const OP_ANCHOR_SUBMIT: u32 = 0x414e_4301;
+// RecordAnchor bonded dispute (proof verified against the STORED epoch root).
+pub const OP_ANCHOR_OPEN_DISPUTE: u32 = 0x414e_4302;
 // RecordAnchor authority-gated in-place code upgrade — MUST match `anchor_types.tolk`.
 pub const OP_ANCHOR_UPGRADE_CODE: u32 = 0x414e_4304;
+/// Outgoing bond-refund body tag (A1 bounce-safety) carried on every RecordAnchor
+/// bond refund. Not a message the bridge sends; exported for parity.
+pub const OP_ANCHOR_BOND_REFUND: u32 = 0x414e_4305;
 // GlobalParams (platform-wide economic params) — MUST match `global_params_types.tolk`.
 pub const OP_UPDATE_PARAMS: u32 = 0x4750_4101;
 pub const OP_UPDATE_ADMIN: u32 = 0x4750_4102;
-// GlobalParams admin-gated in-place code upgrade (§12.1).
+// GlobalParams admin-gated in-place code upgrade (§12.1), now TIMELOCKED: it
+// requires a prior `AnnounceCode` + an elapsed `upgradeDelay` (step 2 = apply).
 pub const OP_UPGRADE_CODE: u32 = 0x4750_4104;
+// GlobalParams TIMELOCKED code upgrade — step 1 (announce) / safety-valve cancel.
+pub const OP_ANNOUNCE_CODE: u32 = 0x4750_4105;
+pub const OP_CANCEL_CODE: u32 = 0x4750_4106;
+
+/// A monotonic, per-client `queryId` source. Every internal message a contract
+/// processes carries a 64-bit `queryId` (its standard TL-B reply-correlation
+/// field); broadcasting many messages all stamped `0` makes them
+/// indistinguishable in explorers / bounce handling, so each TON client owns one
+/// of these and stamps a fresh value per message it sends.
+///
+/// It is a process-local counter, NOT a wall clock: `Date::now`-style sources are
+/// forbidden in parts of this crate (and would make tests non-deterministic), so
+/// this seeds at `1` and increments. Determinism: a freshly constructed client
+/// emits `1, 2, 3, …`, so a test that constructs the client and drives a known
+/// sequence of sends sees a known sequence of `queryId`s.
+#[derive(Debug, Default)]
+pub struct QueryIdGen(std::sync::atomic::AtomicU64);
+
+impl QueryIdGen {
+    /// A generator that emits `1, 2, 3, …`.
+    pub fn new() -> Self {
+        Self(std::sync::atomic::AtomicU64::new(1))
+    }
+    /// The next unique `queryId` (wraps astronomically far in the future; a 64-bit
+    /// counter at any realistic send rate never repeats within a deployment).
+    pub fn next(&self) -> u64 {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+}
 
 /// A typed message body for an on-chain contract.
 ///
@@ -125,6 +171,13 @@ impl MessageBody {
         self.cb = self.cb.store_dict(key_bits, entries);
         self
     }
+    /// Append a TL-B `Maybe ^Cell` (a `0` bit when `None`, else a `1` bit + a
+    /// child ref) to the live cell ONLY — e.g. `AnchorOpenDispute.proof`, a
+    /// `Maybe ^MerkleStep` chain. The flat byte ABI omits the optional ref.
+    fn maybe_ref(mut self, cell: Option<Cell>) -> Self {
+        self.cb = self.cb.store_maybe_ref(cell);
+        self
+    }
     /// Finalize: snapshot the accumulated cell builder into `cell`.
     fn finish(mut self) -> Self {
         self.cell = self.cb.clone().build();
@@ -134,11 +187,19 @@ impl MessageBody {
 
 /// Build the `StakeDeposit` body.
 pub fn build_stake_deposit(query_id: u64, amount: Amount) -> MessageBody {
-    MessageBody::new(OP_STAKE_DEPOSIT).u64(query_id).coins(amount).finish()
+    MessageBody::new(OP_STAKE_DEPOSIT)
+        .u64(query_id)
+        .coins(amount)
+        .finish()
 }
 
 /// Build the `StakeSlash` body.
-pub fn build_stake_slash(query_id: u64, amount: Amount, reason: SlashReason, challenger: &WalletAddress) -> MessageBody {
+pub fn build_stake_slash(
+    query_id: u64,
+    amount: Amount,
+    reason: SlashReason,
+    challenger: &WalletAddress,
+) -> MessageBody {
     MessageBody::new(OP_STAKE_SLASH)
         .u64(query_id)
         .coins(amount)
@@ -149,7 +210,10 @@ pub fn build_stake_slash(query_id: u64, amount: Amount, reason: SlashReason, cha
 
 /// Build the `StakeRequestUnbond` body (`queryId, amount`).
 pub fn build_stake_unbond(query_id: u64, amount: Amount) -> MessageBody {
-    MessageBody::new(OP_STAKE_UNBOND).u64(query_id).coins(amount).finish()
+    MessageBody::new(OP_STAKE_UNBOND)
+        .u64(query_id)
+        .coins(amount)
+        .finish()
 }
 
 /// Build the `EscrowSettle` body (mirrors `escrow_types.tolk::EscrowSettle`). The
@@ -157,6 +221,13 @@ pub fn build_stake_unbond(query_id: u64, amount: Amount) -> MessageBody {
 /// emitted as a real `HashmapE` (267-bit `addr_std` keys → commission `coins`)
 /// that the contract iterates to pay each agreeing non-winner κ·payout_win. An
 /// empty slice ⇒ the empty-dict `0` bit (winner + fee only, slack refunded).
+///
+/// B1: `candidates` is the requester-pre-committed payout-eligible set, emitted
+/// as the trailing `map<address, uint1>` (267-bit `addr_std` keys → a 1-bit `1`).
+/// The contract asserts `candidatesCommitment(candidates) == terms.candidatesHash`
+/// AND that the `winner` + every `participants` key is a member, so it MUST be the
+/// SAME set the escrow's terms committed to at open (see [`candidates_commitment`]
+/// / [`build_escrow_terms`]). Duplicate addresses collapse (a map key is unique).
 ///
 /// Participants sharing a payout wallet are merged (their commissions summed) so
 /// the on-chain map — which cannot hold duplicate keys — stays well-formed.
@@ -167,8 +238,10 @@ pub fn build_escrow_settle(
     winner_amount: Amount,
     platform_fee: Amount,
     participants: &[Payout],
+    candidates: &[WalletAddress],
 ) -> MessageBody {
     let entries = participants_dict_entries(participants);
+    let candidate_entries = candidates_dict_entries(candidates);
     MessageBody::new(OP_ESCROW_SETTLE)
         .u64(query_id)
         .hash(result_hash)
@@ -176,7 +249,42 @@ pub fn build_escrow_settle(
         .coins(winner_amount)
         .coins(platform_fee)
         .dict(ADDRESS_KEY_BITS, &entries)
+        .dict(ADDRESS_KEY_BITS, &candidate_entries)
         .finish()
+}
+
+/// Encode the requester-committed candidate set as TON dictionary entries
+/// (`addr_std` key bits → a 1-bit `uint1` value of `1`), deduplicated and sorted
+/// canonically by the dict builder. This is the `map<address, uint1>` the
+/// contract iterates / membership-checks against.
+fn candidates_dict_entries(candidates: &[WalletAddress]) -> Vec<DictEntry> {
+    let mut seen: Vec<WalletAddress> = Vec::new();
+    for c in candidates {
+        if !seen.contains(c) {
+            seen.push(*c);
+        }
+    }
+    seen.into_iter()
+        .map(|to| DictEntry {
+            key: address_key_bits(&to),
+            value: CellBuilder::new().store_uint(1, 1).build(),
+        })
+        .collect()
+}
+
+/// The requester's candidate-set commitment, byte-identical to the on-chain
+/// `candidatesCommitment(candidates)` in `escrow_types.tolk`:
+/// `cellhash( beginCell().storeDict(candidates).endCell() )` over the SAME
+/// `map<address, uint1>` (267-bit `addr_std` keys → 1-bit `1`). This is the value
+/// bound into [`build_escrow_terms`]'s `candidates_hash` at open, and re-presented
+/// (as the `candidates` map) at settle. An empty set hashes the empty-dict `0`
+/// bit. Cross-checked against the Acton emulator (`ton/scripts/_probe_v2.tolk`).
+pub fn candidates_commitment(candidates: &[WalletAddress]) -> Hash32 {
+    let entries = candidates_dict_entries(candidates);
+    CellBuilder::new()
+        .store_dict(ADDRESS_KEY_BITS, &entries)
+        .build()
+        .repr_hash()
 }
 
 /// Encode participant payouts as TON dictionary entries (`addr_std` key bits →
@@ -207,6 +315,17 @@ pub fn build_escrow_refund(query_id: u64) -> MessageBody {
     MessageBody::new(OP_ESCROW_REFUND).u64(query_id).finish()
 }
 
+/// Build the `EscrowClaim` body (`queryId, recipient`) — the B2 pull path that
+/// re-delivers a queued/bounced payout to the `recipient` it is keyed under (the
+/// escrow only ever sends the funds to that recipient, so anyone — e.g. a keeper —
+/// may trigger it without being able to redirect a payout).
+pub fn build_escrow_claim(query_id: u64, recipient: &WalletAddress) -> MessageBody {
+    MessageBody::new(OP_ESCROW_CLAIM)
+        .u64(query_id)
+        .addr(recipient)
+        .finish()
+}
+
 /// Build the `EscrowTopUp` body (`queryId`) — the message that funds a freshly
 /// deployed per-job escrow with the locked bid `B`.
 pub fn build_escrow_topup(query_id: u64) -> MessageBody {
@@ -222,13 +341,74 @@ fn now_secs_u32() -> u32 {
 }
 
 /// Build the `AnchorSubmitRoot` body.
-pub fn build_anchor_submit(query_id: u64, epoch: u32, root: &[u8; 32], prev_root: &[u8; 32], stake_weight: Amount) -> MessageBody {
+pub fn build_anchor_submit(
+    query_id: u64,
+    epoch: u32,
+    root: &[u8; 32],
+    prev_root: &[u8; 32],
+    stake_weight: Amount,
+) -> MessageBody {
     MessageBody::new(OP_ANCHOR_SUBMIT)
         .u64(query_id)
         .u32(epoch)
         .hash(root)
         .hash(prev_root)
         .coins(stake_weight)
+        .finish()
+}
+
+/// Build the `Cell<MerkleStep>?` proof chain (a `Maybe ^MerkleStep` linked list)
+/// from an off-chain [`InclusionProof`]'s sibling path, mirroring
+/// `anchor_types.tolk::MerkleStep { dir: uint1, sibling: uint256, next: Cell<MerkleStep>? }`.
+///
+/// `dir` encodes which side the sibling is on, matching the contract's fold and
+/// the off-chain `verify_inclusion`: `dir = 1` when the sibling is the LEFT node
+/// (`sibling_is_left == true`), `dir = 0` when it is the RIGHT node. The list is
+/// nested innermost-last: the FIRST sibling (closest to the leaf) becomes the
+/// outermost cell (the one the dispute body references), and the deepest `next` is
+/// the absent ref (`None`). An empty path ⇒ `None` (a single-leaf tree where the
+/// leaf already equals the root). The cell carries the RAW leaf value separately
+/// (in the dispute body); the contract re-applies `hashLeaf` so a node value can
+/// never masquerade as a leaf (the v2 second-preimage fix).
+pub fn build_merkle_proof_cell(proof: &InclusionProof) -> Option<Cell> {
+    let mut next: Option<Cell> = None;
+    for (sibling_is_left, sibling) in proof.siblings.iter().rev() {
+        let dir: u128 = if *sibling_is_left { 1 } else { 0 };
+        next = Some(
+            CellBuilder::new()
+                .store_uint(dir, 1)
+                .store_u256(sibling)
+                .store_maybe_ref(next)
+                .build(),
+        );
+    }
+    next
+}
+
+/// Build the `AnchorOpenDispute` body (`queryId, epoch, leaf, proof`), mirroring
+/// the hardened `anchor_types.tolk::AnchorOpenDispute`.
+///
+/// A2: `claimedRoot` is GONE — the contract verifies the inclusion proof against
+/// the root it has STORED for `epoch` (`storage.roots[epoch]`), so neither the
+/// root nor "which root" is attacker-controlled. The bridge therefore submits only
+/// the contested `leaf` + the sibling `proof`; the chained `proof` cell is built by
+/// [`build_merkle_proof_cell`] (a `Maybe ^MerkleStep`). `leaf` is the RAW
+/// `JobRecord` leaf value (the contract re-applies `hashLeaf`). The challenger
+/// bond travels as the message VALUE (`>= disputeBondMin`), not in the body.
+pub fn build_anchor_open_dispute(
+    query_id: u64,
+    epoch: u32,
+    leaf: &[u8; 32],
+    proof: &InclusionProof,
+) -> MessageBody {
+    let proof_cell = build_merkle_proof_cell(proof);
+    // The flat ABI keeps the scalar prefix inline; `proof` is a `Maybe ^MerkleStep`
+    // (a `0` bit when absent, else a `1` bit + the chain ref) on the live cell.
+    MessageBody::new(OP_ANCHOR_OPEN_DISPUTE)
+        .u64(query_id)
+        .u32(epoch)
+        .hash(leaf)
+        .maybe_ref(proof_cell)
         .finish()
 }
 
@@ -262,7 +442,7 @@ pub struct GlobalParams {
     pub n_max: u8,
     pub quorum: u8,
     pub checksum_min: u8,
-    pub     w_quality_bps: u16,
+    pub w_quality_bps: u16,
     pub w_stake_bps: u16,
     pub w_price_bps: u16,
     /// --- Resilience / fairness gating (ARCHITECTURE §8/§11) ---------------
@@ -335,11 +515,17 @@ impl GlobalParams {
 /// `EcoParams` field order mirrors `global_params_types.tolk::EcoParams`; the
 /// live BoC layer (feature `ton-live`) packs the params into the child cell ref
 /// the contract expects.
-pub fn build_update_params(query_id: u64, fee_recipient: &WalletAddress, p: &GlobalParams) -> MessageBody {
+pub fn build_update_params(
+    query_id: u64,
+    fee_recipient: &WalletAddress,
+    p: &GlobalParams,
+) -> MessageBody {
     // Flat ABI (unit-tested): all EcoParams fields inline. Live cell: the params
     // live in a `^EcoParams` child cell (`UpdateParams.params: Cell<EcoParams>`).
     let (flat, eco) = eco_params_encoded(p);
-    let mut b = MessageBody::new(OP_UPDATE_PARAMS).u64(query_id).addr(fee_recipient);
+    let mut b = MessageBody::new(OP_UPDATE_PARAMS)
+        .u64(query_id)
+        .addr(fee_recipient);
     b.bytes.extend_from_slice(&flat); // flat ABI keeps the params inline
     b.cell_ref(eco).finish() // live cell references the child params cell
 }
@@ -408,7 +594,10 @@ fn eco_params_encoded(p: &GlobalParams) -> (Vec<u8>, Cell) {
 
 /// Build the `UpdateAdmin` body (admin rotation → multisig).
 pub fn build_update_admin(query_id: u64, new_admin: &WalletAddress) -> MessageBody {
-    MessageBody::new(OP_UPDATE_ADMIN).u64(query_id).addr(new_admin).finish()
+    MessageBody::new(OP_UPDATE_ADMIN)
+        .u64(query_id)
+        .addr(new_admin)
+        .finish()
 }
 
 // ---------------------------------------------------------------------------
@@ -421,18 +610,45 @@ pub fn build_update_admin(query_id: u64, new_admin: &WalletAddress) -> MessageBo
 // (no network); only the broadcaster (feature `ton-live`) hits the chain.
 // ---------------------------------------------------------------------------
 
-/// Build the GlobalParams `UpgradeCode` body (`queryId`, `newCode: ^cell`). The
-/// admin sends this to swap the contract CODE in place via SETCODE — address
-/// unchanged, storage preserved, `codeVersion` bumped on-chain (§12.1).
+/// Build the GlobalParams `UpgradeCode` body (`queryId`, `newCode: ^cell`) — D2
+/// step 2/2 (APPLY). The admin sends this to swap the contract CODE in place via
+/// SETCODE — address unchanged, storage preserved, `codeVersion` bumped on-chain
+/// (§12.1). The hardened contract now requires a PRIOR [`build_announce_code`]
+/// with a MATCHING code hash AND an elapsed `upgradeDelay` (the timelock); a bare
+/// apply (no announce / before the delay / hash mismatch) is rejected on-chain.
 pub fn build_upgrade_code(query_id: u64, new_code: &Cell) -> MessageBody {
-    MessageBody::new(OP_UPGRADE_CODE).u64(query_id).cell_ref(new_code.clone()).finish()
+    MessageBody::new(OP_UPGRADE_CODE)
+        .u64(query_id)
+        .cell_ref(new_code.clone())
+        .finish()
+}
+
+/// Build the GlobalParams `AnnounceCode` body (`queryId`, `newCodeHash`) — D2 step
+/// 1/2 (ANNOUNCE). Admin-gated: commits to the successor code's 256-bit cell hash
+/// and starts the `upgradeDelay` timelock clock; re-announcing overwrites and
+/// RESETS the clock. Publicly observable via `get_pending_upgrade` so the
+/// ecosystem can react before the apply lands.
+pub fn build_announce_code(query_id: u64, new_code_hash: &[u8; 32]) -> MessageBody {
+    MessageBody::new(OP_ANNOUNCE_CODE)
+        .u64(query_id)
+        .hash(new_code_hash)
+        .finish()
+}
+
+/// Build the GlobalParams `CancelCode` body (`queryId`) — D2 admin-gated safety
+/// valve to abort a pending code-upgrade announcement before it is applied.
+pub fn build_cancel_code(query_id: u64) -> MessageBody {
+    MessageBody::new(OP_CANCEL_CODE).u64(query_id).finish()
 }
 
 /// Build the RecordAnchor `AnchorUpgradeCode` body (`queryId`, `newCode: ^cell`).
 /// The configured `verdictAuthority` sends this to swap the anchor CODE in place
 /// (epoch chain + disputes preserved, address unchanged).
 pub fn build_anchor_upgrade_code(query_id: u64, new_code: &Cell) -> MessageBody {
-    MessageBody::new(OP_ANCHOR_UPGRADE_CODE).u64(query_id).cell_ref(new_code.clone()).finish()
+    MessageBody::new(OP_ANCHOR_UPGRADE_CODE)
+        .u64(query_id)
+        .cell_ref(new_code.clone())
+        .finish()
 }
 
 /// Build the StakeVault `StakeAnnounceUpgrade` body (`queryId`, `newCodeHash`):
@@ -440,7 +656,10 @@ pub fn build_anchor_upgrade_code(query_id: u64, new_code: &Cell) -> MessageBody 
 /// the successor code's 256-bit cell hash and starts the timelock clock; apply
 /// is rejected until `announce + unbondingPeriod` (the staker exit window).
 pub fn build_stake_announce_upgrade(query_id: u64, new_code_hash: &[u8; 32]) -> MessageBody {
-    MessageBody::new(OP_STAKE_ANNOUNCE_UPGRADE).u64(query_id).hash(new_code_hash).finish()
+    MessageBody::new(OP_STAKE_ANNOUNCE_UPGRADE)
+        .u64(query_id)
+        .hash(new_code_hash)
+        .finish()
 }
 
 /// Build the StakeVault `StakeApplyUpgrade` body (`queryId`, `newCode: ^cell`):
@@ -448,13 +667,30 @@ pub fn build_stake_announce_upgrade(query_id: u64, new_code_hash: &[u8; 32]) -> 
 /// only if `newCode.hash() == pendingCodeHash` (binds apply to the announced
 /// code); performs the in-place SETCODE preserving every bond.
 pub fn build_stake_apply_upgrade(query_id: u64, new_code: &Cell) -> MessageBody {
-    MessageBody::new(OP_STAKE_APPLY_UPGRADE).u64(query_id).cell_ref(new_code.clone()).finish()
+    MessageBody::new(OP_STAKE_APPLY_UPGRADE)
+        .u64(query_id)
+        .cell_ref(new_code.clone())
+        .finish()
 }
 
 /// Build the StakeVault `StakeCancelUpgrade` body (`queryId`): governance safety
 /// valve to abort a pending announcement before it is applied (§8.6).
 pub fn build_stake_cancel_upgrade(query_id: u64) -> MessageBody {
-    MessageBody::new(OP_STAKE_CANCEL_UPGRADE).u64(query_id).finish()
+    MessageBody::new(OP_STAKE_CANCEL_UPGRADE)
+        .u64(query_id)
+        .finish()
+}
+
+/// Build the StakeVault `StakeClaim` body (`queryId, recipient`) — the C1 pull
+/// path that re-delivers a queued/bounced payout (slash split / keeper bounty /
+/// owner withdrawal) to the `recipient` it is keyed under. Anyone may trigger it
+/// (keeper-friendly), but the vault only ever sends the funds to that recipient,
+/// so it cannot redirect a payout.
+pub fn build_stake_claim(query_id: u64, recipient: &WalletAddress) -> MessageBody {
+    MessageBody::new(OP_STAKE_CLAIM)
+        .u64(query_id)
+        .addr(recipient)
+        .finish()
 }
 
 /// The authoritative ecosystem-wide policy read back from the on-chain
@@ -612,15 +848,16 @@ pub struct VaultInit {
 
 /// Build the per-node `StakeVault` init **data** cell (fresh vault: zero stake),
 /// matching `VaultStorage.toCell()` field order: `owner, staked, unbondingAmount,
-/// unbondingAt, totalSupply, bindingHash, config(ref), upgrade(ref)`.
+/// unbondingAt, totalSupply, bindingHash, config(ref), upgrade(ref), pending(dict)`.
 ///
-/// The trailing `upgrade` field is the timelocked code-upgrade state (§8.6),
-/// kept in a CHILD cell (a `^ref`) — mirroring `stake_types.tolk::VaultStorage`
-/// + `freshVaultUpgrade()`. A fresh vault's upgrade child is all-zero:
-/// `codeVersion(32)=0, pendingCodeHash(256)=0, pendingCodeAt(32)=0`. This ref is
-/// part of the init data, so it participates in the deterministic StateInit
-/// address derivation (cross-checked against the Acton emulator probe, see the
-/// `vault_data_state_init_matches_onchain` test).
+/// The `upgrade` field is the timelocked code-upgrade state (§8.6), kept in a
+/// CHILD cell (a `^ref`) — mirroring `stake_types.tolk::VaultStorage` +
+/// `freshVaultUpgrade()`. A fresh vault's upgrade child is all-zero:
+/// `codeVersion(32)=0, pendingCodeHash(256)=0, pendingCodeAt(32)=0`. The trailing
+/// `pending` field (C1 bounce-safe pull-withdrawal ledger) is an empty
+/// `map<address, coins>` serialized as a single empty-dict `0` bit. Both
+/// participate in the deterministic StateInit address derivation (cross-checked
+/// against the Acton emulator probe, see `vault_data_state_init_matches_onchain`).
 pub fn build_vault_data(init: &VaultInit, config: Cell) -> Cell {
     let upgrade = CellBuilder::new()
         .store_uint(0, 32) // codeVersion
@@ -636,6 +873,7 @@ pub fn build_vault_data(init: &VaultInit, config: Cell) -> Cell {
         .store_u256(&init.binding_hash)
         .store_ref(config)
         .store_ref(upgrade)
+        .store_dict(ADDRESS_KEY_BITS, &[]) // pending: empty map<address, coins> ⇒ `0` bit
         .build()
 }
 
@@ -650,18 +888,31 @@ pub struct EscrowInit {
 }
 
 /// Build the per-job `EscrowTerms` child cell (mirrors `escrow_types.tolk`:
-/// `treasury: address, expectedHash: uint256, paramsVersion: uint32`).
+/// `treasury: address, expectedHash: uint256, candidatesHash: uint256,
+/// paramsVersion: uint32`).
+///
 /// `expected_hash` is the HTLC lock — settle must later present exactly this
-/// agreed quorum result hash. `params_version` is the on-chain `GlobalParams`
-/// version in force when the job opened, bound into the terms (hence into the
-/// escrow's deterministic address) so the host, requester and coordinator all
-/// agree which ecosystem params governed the job. This is the `terms` cell fed
-/// to [`TonSettlement::with_escrow_code`] / address derivation, so the per-job
-/// escrow address commits to both the lock and the params version up front.
-pub fn build_escrow_terms(treasury: &WalletAddress, expected_hash: &[u8; 32], params_version: u32) -> Cell {
+/// agreed quorum result hash. `candidates_hash` is the requester's B1 commitment
+/// to the payout-eligible candidate set ([`candidates_commitment`]); settle must
+/// present a `candidates` map that hashes to exactly this value, and every payee
+/// must be a member, so a compromised arbiter cannot pay an outside address. `0`
+/// means "unbound" (the deploy script's default). `params_version` is the on-chain
+/// `GlobalParams` version in force when the job opened. All three are bound into
+/// the terms (hence into the escrow's deterministic address) so the host,
+/// requester and coordinator all agree on the lock, the eligible set, and the
+/// params up front. NOTE: `candidatesHash` is inserted BETWEEN `expectedHash` and
+/// `paramsVersion`, which CHANGES the escrow's deterministic address vs the
+/// pre-B1 layout.
+pub fn build_escrow_terms(
+    treasury: &WalletAddress,
+    expected_hash: &[u8; 32],
+    candidates_hash: &[u8; 32],
+    params_version: u32,
+) -> Cell {
     CellBuilder::new()
         .store_address(treasury)
         .store_u256(expected_hash)
+        .store_u256(candidates_hash)
         .store_uint(params_version as u128, 32)
         .build()
 }
@@ -674,11 +925,17 @@ pub fn build_escrow_terms(treasury: &WalletAddress, expected_hash: &[u8; 32], pa
 pub fn escrow_code_from_boc_base64(code_boc64: &str) -> Result<Cell, SettleError> {
     let bytes = crate::wallet::base64_decode(code_boc64.trim())
         .ok_or_else(|| SettleError::Backend("escrow code: invalid base64 BoC".into()))?;
-    Cell::from_boc(&bytes).ok_or_else(|| SettleError::Backend("escrow code: BoC failed to parse".into()))
+    Cell::from_boc(&bytes)
+        .ok_or_else(|| SettleError::Backend("escrow code: BoC failed to parse".into()))
 }
 
 /// Build the per-job `JobEscrow` init **data** cell, matching `EscrowStorage`:
-/// `requester, arbiter, escrowAmount, deadline, settled, terms(ref)`.
+/// `requester, arbiter, escrowAmount, deadline, settled, terms(ref), pending(dict)`.
+///
+/// The trailing `pending` field (B2 bounce-safe pull-withdrawal ledger) is an
+/// empty `map<address, coins>` serialized as a single empty-dict `0` bit; it is
+/// part of the init data, so it participates in the deterministic StateInit
+/// address derivation (cross-checked against `ton/scripts/_probe_v2.tolk`).
 pub fn build_escrow_data(init: &EscrowInit, terms: Cell) -> Cell {
     CellBuilder::new()
         .store_address(&init.requester)
@@ -687,6 +944,7 @@ pub fn build_escrow_data(init: &EscrowInit, terms: Cell) -> Cell {
         .store_uint(init.deadline as u128, 32)
         .store_uint(0, 1) // settled = false
         .store_ref(terms)
+        .store_dict(ADDRESS_KEY_BITS, &[]) // pending: empty map<address, coins> ⇒ `0` bit
         .build()
 }
 
@@ -695,7 +953,12 @@ pub fn build_escrow_data(init: &EscrowInit, terms: Cell) -> Cell {
 pub trait TonRpc: Send + Sync {
     /// Send an internal message carrying `body` to `to` with `amount` nanoton.
     /// Returns a tx hash / id on success.
-    fn send_internal(&self, to: &WalletAddress, amount: Amount, body: &MessageBody) -> Result<String, SettleError>;
+    fn send_internal(
+        &self,
+        to: &WalletAddress,
+        amount: Amount,
+        body: &MessageBody,
+    ) -> Result<String, SettleError>;
     /// Run a get-method returning a single integer (e.g. staked amount).
     fn run_get_int(&self, addr: &WalletAddress, method: &str) -> Result<i128, SettleError>;
     /// Deploy a contract: send `amount` nanoton + `state_init` to `to` carrying
@@ -707,7 +970,24 @@ pub trait TonRpc: Send + Sync {
         _state_init: &Cell,
         _body: &MessageBody,
     ) -> Result<String, SettleError> {
-        Err(SettleError::Backend("deploy is not supported by this transport".into()))
+        Err(SettleError::Backend(
+            "deploy is not supported by this transport".into(),
+        ))
+    }
+
+    /// Read `RecordAnchor.get_anchor_state` → `(currentEpoch, lastRoot)`. This
+    /// needs the FULL get-method stack (the single-int [`TonRpc::run_get_int`]
+    /// seam only sees `currentEpoch`, the first item, not the 256-bit `lastRoot`),
+    /// so it is a distinct capability. `Ok(None)` (the default) means "this
+    /// transport cannot read the live anchor state" — [`TonRecordAnchor::submit_root`]
+    /// then falls back to its locally tracked chain. The live toncenter client
+    /// overrides it to parse the real on-chain state for keeper idempotency (so a
+    /// retry / a second keeper that already advanced the chain cannot desync).
+    fn run_get_anchor_state(
+        &self,
+        _addr: &WalletAddress,
+    ) -> Result<Option<(u32, Hash32)>, SettleError> {
+        Ok(None)
     }
 }
 
@@ -716,9 +996,15 @@ pub trait TonRpc: Send + Sync {
 pub struct NullTonRpc;
 
 impl TonRpc for NullTonRpc {
-    fn send_internal(&self, _to: &WalletAddress, _amount: Amount, _body: &MessageBody) -> Result<String, SettleError> {
+    fn send_internal(
+        &self,
+        _to: &WalletAddress,
+        _amount: Amount,
+        _body: &MessageBody,
+    ) -> Result<String, SettleError> {
         Err(SettleError::Backend(
-            "live TON RPC disabled (build with feature `ton-live` and configure an endpoint)".into(),
+            "live TON RPC disabled (build with feature `ton-live` and configure an endpoint)"
+                .into(),
         ))
     }
     fn run_get_int(&self, _addr: &WalletAddress, _method: &str) -> Result<i128, SettleError> {
@@ -767,6 +1053,20 @@ pub struct TonSettlement<R: TonRpc> {
     /// preserves the offline tests' zero-value send; the live rail sets a small
     /// amount.
     settle_gas: Amount,
+    /// Monotonic `queryId` source: each `EscrowTopUp` / `EscrowSettle` /
+    /// `EscrowRefund` the bridge broadcasts is stamped with a fresh value (see
+    /// [`QueryIdGen`]) so the messages are distinguishable on-chain instead of all
+    /// carrying `0`.
+    qid: QueryIdGen,
+    /// B1: the requester's pre-committed payout-eligible candidate set. When set,
+    /// it is bound into a freshly built `EscrowTerms.candidatesHash` at open
+    /// (`open_escrow_with_terms`) AND presented as the `candidates` map at settle —
+    /// they MUST be the same set for the contract's commitment check to pass. When
+    /// EMPTY (the default), open binds the empty-set commitment and settle derives
+    /// the candidate set from the outcome's payees (winner ∪ participants) so a
+    /// settle still presents a well-formed, membership-consistent map. See the
+    /// module note on the coordinator wiring.
+    candidates: Vec<WalletAddress>,
 }
 
 impl<R: TonRpc> TonSettlement<R> {
@@ -782,12 +1082,19 @@ impl<R: TonRpc> TonSettlement<R> {
             escrow_window_secs: 3600,
             deploy_gas_buffer: 0,
             settle_gas: 0,
+            qid: QueryIdGen::new(),
+            candidates: Vec::new(),
         }
     }
 
     /// Construct with the deployed `JobEscrow` code so per-job escrow addresses
     /// can be resolved via deterministic StateInit addressing.
-    pub fn with_escrow_code(rpc: R, escrow_code: Cell, terms: Cell, arbiter: WalletAddress) -> Self {
+    pub fn with_escrow_code(
+        rpc: R,
+        escrow_code: Cell,
+        terms: Cell,
+        arbiter: WalletAddress,
+    ) -> Self {
         Self {
             rpc,
             escrow_code: Some(escrow_code),
@@ -798,6 +1105,8 @@ impl<R: TonRpc> TonSettlement<R> {
             escrow_window_secs: 3600,
             deploy_gas_buffer: 0,
             settle_gas: 0,
+            qid: QueryIdGen::new(),
+            candidates: Vec::new(),
         }
     }
 
@@ -840,11 +1149,34 @@ impl<R: TonRpc> TonSettlement<R> {
         self
     }
 
+    /// Bind the requester's B1 payout-eligible candidate set (the N dispatched
+    /// workers' payout wallets). This is committed into a freshly built
+    /// `EscrowTerms.candidatesHash` at open AND re-presented as the `candidates`
+    /// map at settle, so the on-chain commitment check passes and every payee is a
+    /// member. The same set MUST be used at open and settle; bind it via this
+    /// builder BEFORE opening the escrow. When unset, open binds the empty-set
+    /// commitment and settle derives candidates from the outcome's payees (see
+    /// [`TonSettlement::candidates`]).
+    pub fn with_candidates(mut self, candidates: Vec<WalletAddress>) -> Self {
+        self.candidates = candidates;
+        self
+    }
+
     /// Deterministic per-job `JobEscrow` address from its StateInit, or `None`
     /// when the escrow code has not been wired in.
-    pub fn escrow_address(&self, requester: &WalletAddress, max_bid: Amount, deadline: u32) -> Option<WalletAddress> {
+    pub fn escrow_address(
+        &self,
+        requester: &WalletAddress,
+        max_bid: Amount,
+        deadline: u32,
+    ) -> Option<WalletAddress> {
         let code = self.escrow_code.as_ref()?;
-        let init = EscrowInit { requester: *requester, arbiter: self.arbiter, escrow_amount: max_bid, deadline };
+        let init = EscrowInit {
+            requester: *requester,
+            arbiter: self.arbiter,
+            escrow_amount: max_bid,
+            deadline,
+        };
         let data = build_escrow_data(&init, self.terms.clone());
         Some(WalletAddress::from_state_init(BASECHAIN, code, &data))
     }
@@ -857,24 +1189,33 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // funded deploy carrying an `EscrowTopUp` body. The deploy itself is
         // performed by the transport (`deploy`), which the live toncenter client
         // implements and the default (`NullTonRpc`) reports as unsupported.
-        let code = self
-            .escrow_code
-            .as_ref()
-            .ok_or_else(|| SettleError::Backend("open_escrow requires escrow code wiring".into()))?;
-        let requester = self
-            .requester
-            .ok_or_else(|| SettleError::Backend("open_escrow requires a requester wallet".into()))?;
+        let code = self.escrow_code.as_ref().ok_or_else(|| {
+            SettleError::Backend("open_escrow requires escrow code wiring".into())
+        })?;
+        let requester = self.requester.ok_or_else(|| {
+            SettleError::Backend("open_escrow requires a requester wallet".into())
+        })?;
         let deadline = now_secs_u32().saturating_add(self.escrow_window_secs);
-        let init = EscrowInit { requester, arbiter: self.arbiter, escrow_amount: max_bid, deadline };
+        let init = EscrowInit {
+            requester,
+            arbiter: self.arbiter,
+            escrow_amount: max_bid,
+            deadline,
+        };
         let data = build_escrow_data(&init, self.terms.clone());
         let address = WalletAddress::from_state_init(BASECHAIN, code, &data);
         let state_init = state_init_cell(code.clone(), data);
-        let body = build_escrow_topup(0);
+        let body = build_escrow_topup(self.qid.next());
         // Fund the deploy with B + the gas buffer so the escrow can pay its own
         // settle-time fees; `escrowAmount` (stored) and the handle stay exactly B.
         let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
-        self.rpc.deploy(&address, deploy_value, &state_init, &body)?;
-        Ok(EscrowHandle { job: job.clone(), address, max_bid })
+        self.rpc
+            .deploy(&address, deploy_value, &state_init, &body)?;
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address,
+            max_bid,
+        })
     }
 
     fn open_escrow_with_terms(
@@ -885,53 +1226,89 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         params_version: u32,
     ) -> Result<EscrowHandle, SettleError> {
         // Build a FRESH per-job `EscrowTerms` binding the HTLC lock (the agreed
-        // quorum result hash) + the on-chain params version, deploy the per-job
-        // escrow funded with `B`, and return the handle. The escrow address is a
-        // pure function of (code, requester, arbiter, B, deadline, terms), so it
-        // commits to `expected_hash` + `params_version` up front.
-        let code = self
-            .escrow_code
-            .as_ref()
-            .ok_or_else(|| SettleError::Backend("open_escrow requires escrow code wiring".into()))?;
-        let requester = self
-            .requester
-            .ok_or_else(|| SettleError::Backend("open_escrow requires a requester wallet".into()))?;
+        // quorum result hash) + the B1 candidate-set commitment + the on-chain
+        // params version, deploy the per-job escrow funded with `B`, and return the
+        // handle. The escrow address is a pure function of (code, requester,
+        // arbiter, B, deadline, terms), so it commits to `expected_hash`, the
+        // candidate set, and `params_version` up front.
+        let code = self.escrow_code.as_ref().ok_or_else(|| {
+            SettleError::Backend("open_escrow requires escrow code wiring".into())
+        })?;
+        let requester = self.requester.ok_or_else(|| {
+            SettleError::Backend("open_escrow requires a requester wallet".into())
+        })?;
         let treasury = self.treasury.unwrap_or(self.arbiter);
-        let terms = build_escrow_terms(&treasury, expected_hash, params_version);
+        // B1: bind the candidate-set commitment. `settle` MUST later present a
+        // `candidates` map hashing to exactly this (empty set ⇒ empty-dict hash).
+        let candidates_hash = candidates_commitment(&self.candidates);
+        let terms = build_escrow_terms(&treasury, expected_hash, &candidates_hash, params_version);
         let deadline = now_secs_u32().saturating_add(self.escrow_window_secs);
-        let init = EscrowInit { requester, arbiter: self.arbiter, escrow_amount: max_bid, deadline };
+        let init = EscrowInit {
+            requester,
+            arbiter: self.arbiter,
+            escrow_amount: max_bid,
+            deadline,
+        };
         let data = build_escrow_data(&init, terms);
         let address = WalletAddress::from_state_init(BASECHAIN, code, &data);
         let state_init = state_init_cell(code.clone(), data);
-        let body = build_escrow_topup(0);
+        let body = build_escrow_topup(self.qid.next());
         // Fund the deploy with B + the gas buffer (see `open_escrow`); the locked
         // `escrowAmount` and the returned handle remain exactly B.
         let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
-        self.rpc.deploy(&address, deploy_value, &state_init, &body)?;
-        Ok(EscrowHandle { job: job.clone(), address, max_bid })
+        self.rpc
+            .deploy(&address, deploy_value, &state_init, &body)?;
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address,
+            max_bid,
+        })
     }
 
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
         if outcome.total() > h.max_bid {
-            return Err(SettleError::PayoutExceedsEscrow { payout: outcome.total(), escrow: h.max_bid });
+            return Err(SettleError::PayoutExceedsEscrow {
+                payout: outcome.total(),
+                escrow: h.max_bid,
+            });
         }
+        // B1: present the requester-committed candidate set. Use the bound set when
+        // configured (it must match what `open_escrow_with_terms` committed); else
+        // derive it from the outcome's payees (winner ∪ participants) so the
+        // presented map is non-empty, well-formed, and contains every payee.
+        let candidates: Vec<WalletAddress> = if self.candidates.is_empty() {
+            let mut c = vec![outcome.winner.to];
+            for p in &outcome.participants {
+                if !c.contains(&p.to) {
+                    c.push(p.to);
+                }
+            }
+            c
+        } else {
+            self.candidates.clone()
+        };
         let body = build_escrow_settle(
-            0,
+            self.qid.next(),
             &outcome.result_hash,
             &outcome.winner.to,
             outcome.winner.amount,
             outcome.platform_fee,
             &outcome.participants,
+            &candidates,
         );
         // Attach `settle_gas` so the escrow's compute phase can run (a 0-value
         // internal message aborts before compute). The bounded `B` split is paid
         // from the escrow's own balance, not from this gas.
-        self.rpc.send_internal(&h.address, self.settle_gas, &body).map(|_| ())
+        self.rpc
+            .send_internal(&h.address, self.settle_gas, &body)
+            .map(|_| ())
     }
 
     fn refund(&self, h: &EscrowHandle) -> Result<(), SettleError> {
-        let body = build_escrow_refund(0);
-        self.rpc.send_internal(&h.address, self.settle_gas, &body).map(|_| ())
+        let body = build_escrow_refund(self.qid.next());
+        self.rpc
+            .send_internal(&h.address, self.settle_gas, &body)
+            .map(|_| ())
     }
 
     fn is_onchain(&self) -> bool {
@@ -954,6 +1331,9 @@ pub struct TonStakeRegistry<R: TonRpc> {
     /// Node -> per-node vault init params (owner wallet + binding hash). Built
     /// from the node<->wallet binding records; a node with no entry has no vault.
     inits: HashMap<NodeId, VaultInit>,
+    /// Monotonic `queryId` source for the `StakeSlash` / `StakeRequestUnbond`
+    /// messages this registry broadcasts (see [`QueryIdGen`]).
+    qid: QueryIdGen,
 }
 
 impl<R: TonRpc> TonStakeRegistry<R> {
@@ -965,7 +1345,15 @@ impl<R: TonRpc> TonStakeRegistry<R> {
         vault_config: Cell,
         inits: HashMap<NodeId, VaultInit>,
     ) -> Self {
-        Self { rpc, min_public, stake_cap, vault_code, vault_config, inits }
+        Self {
+            rpc,
+            min_public,
+            stake_cap,
+            vault_code,
+            vault_config,
+            inits,
+            qid: QueryIdGen::new(),
+        }
     }
 
     /// Deterministic per-node `StakeVault` address from its StateInit, or `None`
@@ -973,13 +1361,19 @@ impl<R: TonRpc> TonStakeRegistry<R> {
     pub fn vault_of(&self, node: &NodeId) -> Option<WalletAddress> {
         let init = self.inits.get(node)?;
         let data = build_vault_data(init, self.vault_config.clone());
-        Some(WalletAddress::from_state_init(BASECHAIN, &self.vault_code, &data))
+        Some(WalletAddress::from_state_init(
+            BASECHAIN,
+            &self.vault_code,
+            &data,
+        ))
     }
 }
 
 impl<R: TonRpc> StakeRegistry for TonStakeRegistry<R> {
     fn stake_of(&self, node: &NodeId) -> Amount {
-        let Some(vault) = self.vault_of(node) else { return 0 };
+        let Some(vault) = self.vault_of(node) else {
+            return 0;
+        };
         match self.rpc.run_get_int(&vault, "get_vault_state") {
             Ok(v) if v >= 0 => v as Amount,
             _ => 0,
@@ -992,16 +1386,20 @@ impl<R: TonRpc> StakeRegistry for TonStakeRegistry<R> {
         crate::stake_factor(self.stake_of(node), self.min_public, self.stake_cap)
     }
     fn slash(&self, node: &NodeId, reason: SlashReason, amount: Amount) -> Result<(), SlashError> {
-        let vault = self.vault_of(node).ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
-        let body = build_stake_slash(0, amount, reason, &vault);
+        let vault = self
+            .vault_of(node)
+            .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
+        let body = build_stake_slash(self.qid.next(), amount, reason, &vault);
         self.rpc
             .send_internal(&vault, 0, &body)
             .map(|_| ())
             .map_err(|e| SlashError::Backend(e.to_string()))
     }
     fn request_unbond(&self, node: &NodeId, amount: Amount) -> Result<(), SlashError> {
-        let vault = self.vault_of(node).ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
-        let body = build_stake_unbond(0, amount);
+        let vault = self
+            .vault_of(node)
+            .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
+        let body = build_stake_unbond(self.qid.next(), amount);
         self.rpc
             .send_internal(&vault, 0, &body)
             .map(|_| ())
@@ -1019,23 +1417,75 @@ pub struct TonRecordAnchor<R: TonRpc> {
     anchor: WalletAddress,
     /// Off-chain epoch tree (job -> leaf), and the last submitted root.
     inner: std::sync::Mutex<(Vec<(JobId, Hash32)>, Hash32)>,
+    /// Monotonic `queryId` source for the `AnchorSubmitRoot` messages this anchor
+    /// broadcasts (see [`QueryIdGen`]).
+    qid: QueryIdGen,
 }
 
 impl<R: TonRpc> TonRecordAnchor<R> {
     pub fn new(rpc: R, anchor: WalletAddress) -> Self {
-        Self { rpc, anchor, inner: std::sync::Mutex::new((Vec::new(), [0u8; 32])) }
+        Self {
+            rpc,
+            anchor,
+            inner: std::sync::Mutex::new((Vec::new(), [0u8; 32])),
+            qid: QueryIdGen::new(),
+        }
     }
 
     /// Broadcast the current epoch root to the on-chain `RecordAnchor` (keeper
     /// submit). `stake_weight` is the aggregate staked weight backing this root.
     /// Advances the chained `prev_root` on success.
+    ///
+    /// HARDENING (mirrors the contract's `AnchorSubmitRoot` checks so a bad submit
+    /// is refused BEFORE paying gas, and a retry / a second keeper cannot desync):
+    ///   * the root is computed with [`crate::merkle::try_merkle_root`] and an
+    ///     EMPTY epoch (no records) is REFUSED — there is nothing to anchor, and a
+    ///     zero/empty root would collide with the genesis `lastRoot == 0` chain
+    ///     check (A6);
+    ///   * an all-zero root is REFUSED for the same reason;
+    ///   * the live on-chain `(currentEpoch, lastRoot)` is read via
+    ///     [`TonRpc::run_get_anchor_state`] and used as the source of truth: the
+    ///     submission must be exactly `currentEpoch + 1` (else another keeper
+    ///     already advanced the chain → IDEMPOTENT refusal, no desync), and the
+    ///     body's `prevRoot` is the on-chain `lastRoot`, NOT a purely-local guess.
+    ///     When the transport cannot read live state (`Ok(None)`, e.g. the offline
+    ///     default), it falls back to the locally tracked `prev` + a local
+    ///     monotonicity guard.
     pub fn submit_root(&self, epoch: u32, stake_weight: Amount) -> Result<String, SettleError> {
-        let (root, prev) = {
+        // Compute the root from the local epoch tree; refuse an empty epoch.
+        let (root, local_prev) = {
             let g = self.inner.lock().unwrap();
             let leaves: Vec<Hash32> = g.0.iter().map(|(_, h)| *h).collect();
-            (crate::merkle::merkle_root(&leaves), g.1)
+            let root = crate::merkle::try_merkle_root(&leaves).ok_or_else(|| {
+                SettleError::Backend("refusing to anchor an empty epoch (no records)".into())
+            })?;
+            (root, g.1)
         };
-        let body = build_anchor_submit(0, epoch, &root, &prev, stake_weight);
+        // A6: never anchor an all-zero root (it would pass the genesis prevRoot==0
+        // chain check and anchor a meaningless epoch).
+        if root == [0u8; 32] {
+            return Err(SettleError::Backend(
+                "refusing to anchor a zero root".into(),
+            ));
+        }
+        // Read live on-chain chain state for idempotency; fall back to local when
+        // the transport can't (offline default).
+        let prev = match self.rpc.run_get_anchor_state(&self.anchor)? {
+            Some((onchain_epoch, onchain_last)) => {
+                // The contract requires epoch == currentEpoch + 1; enforcing it here
+                // means a retry (or a second keeper that already advanced) is refused
+                // without spending gas, and we chain onto the TRUE on-chain root.
+                if epoch != onchain_epoch.saturating_add(1) {
+                    return Err(SettleError::Backend(format!(
+                        "anchor epoch desync: submitting epoch {epoch} but on-chain currentEpoch is {onchain_epoch} (expected {})",
+                        onchain_epoch.saturating_add(1)
+                    )));
+                }
+                onchain_last
+            }
+            None => local_prev,
+        };
+        let body = build_anchor_submit(self.qid.next(), epoch, &root, &prev, stake_weight);
         let res = self.rpc.send_internal(&self.anchor, 0, &body)?;
         self.inner.lock().unwrap().1 = root;
         Ok(res)
@@ -1111,14 +1561,23 @@ impl ToncenterRpc {
     fn curl_post(&self, path: &str, json_body: &str) -> Result<String, SettleError> {
         let url = format!("{}/{}", self.rpc, path);
         let mut cmd = std::process::Command::new("curl");
-        cmd.arg("-s").arg("--max-time").arg("30").arg("-H").arg("Content-Type: application/json");
+        cmd.arg("-s")
+            .arg("--max-time")
+            .arg("30")
+            .arg("-H")
+            .arg("Content-Type: application/json");
         if let Some(k) = &self.api_key {
             cmd.arg("-H").arg(format!("X-API-Key: {k}"));
         }
         cmd.arg("-d").arg(json_body).arg(url);
-        let out = cmd.output().map_err(|e| SettleError::Backend(format!("curl spawn: {e}")))?;
+        let out = cmd
+            .output()
+            .map_err(|e| SettleError::Backend(format!("curl spawn: {e}")))?;
         if !out.status.success() {
-            return Err(SettleError::Backend(format!("curl exit {:?}", out.status.code())));
+            return Err(SettleError::Backend(format!(
+                "curl exit {:?}",
+                out.status.code()
+            )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -1147,13 +1606,18 @@ impl ToncenterRpc {
             state_init,
             mode: 3,
         };
-        let boc =
-            crate::wallet::build_signed_external_v5r1(&self.wallet, &self.key, seqno, valid_until, &[msg])?;
+        let boc = crate::wallet::build_signed_external_v5r1(
+            &self.wallet,
+            &self.key,
+            seqno,
+            valid_until,
+            &[msg],
+        )?;
         let b64 = crate::wallet::base64_encode(&boc);
         let json = format!(r#"{{"boc":"{b64}"}}"#);
         let raw = self.curl_post("sendBoc", &json)?;
-        let v: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| SettleError::Backend(format!("bad sendBoc JSON: {e}")))?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| SettleError::Backend(format!("bad sendBoc JSON: {e}")))?;
         if v.get("ok").and_then(|o| o.as_bool()) == Some(true) {
             // toncenter returns {"ok":true,"result":{"hash":"..."}} (hash varies).
             let hash = v
@@ -1171,7 +1635,12 @@ impl ToncenterRpc {
 
 #[cfg(feature = "ton-live")]
 impl TonRpc for ToncenterRpc {
-    fn send_internal(&self, to: &WalletAddress, amount: Amount, body: &MessageBody) -> Result<String, SettleError> {
+    fn send_internal(
+        &self,
+        to: &WalletAddress,
+        amount: Amount,
+        body: &MessageBody,
+    ) -> Result<String, SettleError> {
         self.submit(to, amount, body, None)
     }
 
@@ -1186,10 +1655,13 @@ impl TonRpc for ToncenterRpc {
     }
 
     fn run_get_int(&self, addr: &WalletAddress, method: &str) -> Result<i128, SettleError> {
-        let json = format!(r#"{{"address":"{}","method":"{method}","stack":[]}}"#, addr.to_raw_string());
+        let json = format!(
+            r#"{{"address":"{}","method":"{method}","stack":[]}}"#,
+            addr.to_raw_string()
+        );
         let raw = self.curl_post("runGetMethod", &json)?;
-        let v: serde_json::Value =
-            serde_json::from_str(&raw).map_err(|e| SettleError::Backend(format!("bad JSON: {e}")))?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| SettleError::Backend(format!("bad JSON: {e}")))?;
         if v.get("ok").and_then(|o| o.as_bool()) == Some(false) {
             return Err(SettleError::Backend(format!("toncenter error: {raw}")));
         }
@@ -1211,6 +1683,52 @@ impl TonRpc for ToncenterRpc {
         };
         parsed.map_err(|e| SettleError::Backend(format!("parse '{s}': {e}")))
     }
+
+    fn run_get_anchor_state(
+        &self,
+        addr: &WalletAddress,
+    ) -> Result<Option<(u32, Hash32)>, SettleError> {
+        // get_anchor_state stack: [currentEpoch, lastRoot, nextDisputeId]. We need
+        // the first two items; the single-int seam only exposes the first.
+        let json = format!(
+            r#"{{"address":"{}","method":"get_anchor_state","stack":[]}}"#,
+            addr.to_raw_string()
+        );
+        let raw = self.curl_post("runGetMethod", &json)?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| SettleError::Backend(format!("bad JSON: {e}")))?;
+        if v.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+            return Err(SettleError::Backend(format!("toncenter error: {raw}")));
+        }
+        let stack = v
+            .get("result")
+            .and_then(|r| r.get("stack"))
+            .and_then(|s| s.as_array())
+            .ok_or_else(|| SettleError::Backend(format!("no stack: {raw}")))?;
+        let item = |i: usize| -> Option<&str> { stack.get(i)?.get(1)?.as_str().map(|x| x.trim()) };
+        let epoch_s =
+            item(0).ok_or_else(|| SettleError::Backend(format!("no currentEpoch: {raw}")))?;
+        let epoch = u32::from_str_radix(
+            epoch_s.trim_start_matches("0x").trim_start_matches("0X"),
+            16,
+        )
+        .or_else(|_| epoch_s.parse::<u32>())
+        .map_err(|e| SettleError::Backend(format!("parse currentEpoch '{epoch_s}': {e}")))?;
+        let root_s = item(1).ok_or_else(|| SettleError::Backend(format!("no lastRoot: {raw}")))?;
+        let mut root = [0u8; 32];
+        let hex_digits = root_s.trim_start_matches("0x").trim_start_matches("0X");
+        // Left-pad to 64 nibbles (a small / leading-zero root prints short).
+        let padded = format!("{hex_digits:0>64}");
+        let bytes = hex::decode(&padded)
+            .map_err(|e| SettleError::Backend(format!("parse lastRoot '{root_s}': {e}")))?;
+        if bytes.len() != 32 {
+            return Err(SettleError::Backend(format!(
+                "lastRoot not 32 bytes: {root_s}"
+            )));
+        }
+        root.copy_from_slice(&bytes);
+        Ok(Some((epoch, root)))
+    }
 }
 
 #[cfg(test)]
@@ -1221,7 +1739,10 @@ mod tests {
     #[test]
     fn message_bodies_carry_the_contract_opcodes() {
         assert_eq!(build_stake_deposit(1, 100).opcode, OP_STAKE_DEPOSIT);
-        assert_eq!(&build_stake_deposit(1, 100).bytes[0..4], &OP_STAKE_DEPOSIT.to_be_bytes());
+        assert_eq!(
+            &build_stake_deposit(1, 100).bytes[0..4],
+            &OP_STAKE_DEPOSIT.to_be_bytes()
+        );
 
         let challenger = WalletAddress::new(0, [7u8; 32]);
         let slash = build_stake_slash(9, 50, SlashReason::Cheat, &challenger);
@@ -1274,7 +1795,10 @@ mod tests {
         assert_eq!(&b.bytes[0..4], &OP_UPDATE_PARAMS.to_be_bytes());
         // opcode(4)+queryId(8)+addr(36)+11*u16(22)+4*coins(64)+2*u32(8)+5*u8(5)+3*u16(6)
         // + resilience: u16(2)+u32(4)+u32(4)+u8(1) = 11 more bytes.
-        assert_eq!(b.bytes.len(), 4 + 8 + 36 + 22 + 64 + 8 + 5 + 6 + (2 + 4 + 4 + 1));
+        assert_eq!(
+            b.bytes.len(),
+            4 + 8 + 36 + 22 + 64 + 8 + 5 + 6 + (2 + 4 + 4 + 1)
+        );
         sample_params().validate().unwrap();
     }
 
@@ -1355,26 +1879,30 @@ mod tests {
     fn global_params_client_reads_code_version() {
         let mut values = HashMap::new();
         values.insert("get_code_version".to_string(), 3i128);
-        let client = GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xCD; 32]));
+        let client =
+            GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xCD; 32]));
         assert_eq!(client.code_version().unwrap(), 3);
     }
 
     #[test]
     fn escrow_settle_body_layout_is_stable() {
         let winner = WalletAddress::new(0, [2u8; 32]);
-        let b = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[]);
+        let b = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[], &[winner]);
         assert_eq!(b.opcode, OP_ESCROW_SETTLE);
         // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16) — the flat
-        // ABI omits the participants dict (it lives only in the live cell).
+        // ABI omits BOTH the participants dict and the candidates dict (they live
+        // only in the live cell).
         assert_eq!(b.bytes.len(), 4 + 8 + 32 + 36 + 16 + 16);
     }
 
-    // -- participants dict, pinned to the Acton emulator --------------------
+    // -- participants + candidates dicts, pinned to the Acton emulator ------
     // Reference body-cell hashes come from `ton/scripts/_probe_dict.tolk`, which
-    // builds the IDENTICAL `EscrowSettle { ..., participants: map<address,coins> }`
-    // on-chain (Tolk `.toCell()`) and prints `cell.hash()`. If the off-chain
-    // HashmapE encoding (267-bit addr keys, hml labels, coins leaves) drifts from
-    // TON's, these break — so the dict the contract iterates is byte-identical.
+    // builds the IDENTICAL `EscrowSettle { ..., participants: map<address,coins>,
+    // candidates: map<address,uint1> }` on-chain (Tolk `.toCell()`) and prints
+    // `cell.hash()`. The probe sets `candidates = {winner} ∪ {participant keys}`,
+    // so these tests build the SAME candidate set. If the off-chain HashmapE
+    // encoding (267-bit addr keys, hml labels, coins / uint1 leaves) drifts from
+    // TON's, these break — so the two dicts the contract reads are byte-identical.
 
     fn probe_result_hash() -> [u8; 32] {
         let mut rh = [0u8; 32];
@@ -1384,37 +1912,54 @@ mod tests {
     fn probe_winner() -> WalletAddress {
         WalletAddress::new(0, [0x02u8; 32])
     }
+    /// The candidate set the probe builds: the winner plus each participant key.
+    fn probe_candidates(winner: &WalletAddress, participants: &[Payout]) -> Vec<WalletAddress> {
+        let mut c = vec![*winner];
+        for p in participants {
+            if !c.contains(&p.to) {
+                c.push(p.to);
+            }
+        }
+        c
+    }
 
     #[test]
     fn escrow_settle_participants_dict_matches_onchain_hashmap() {
         let rh = probe_result_hash();
         let w = probe_winner();
-        let p = |b: u8, amt: Amount| Payout { to: WalletAddress::new(0, [b; 32]), amount: amt };
+        let p = |b: u8, amt: Amount| Payout {
+            to: WalletAddress::new(0, [b; 32]),
+            amount: amt,
+        };
+        let settle = |parts: &[Payout]| {
+            build_escrow_settle(1, &rh, &w, 60, 2, parts, &probe_candidates(&w, parts))
+        };
 
         // queryId=1, winnerAmount=60, platformFee=2 — same scalars as the probe.
-        let empty = build_escrow_settle(1, &rh, &w, 60, 2, &[]);
+        // Pinned to `_probe_dict.tolk` (EMPTY/ONE/TWO/THREE `*_HASH`) AFTER the B1
+        // `candidates` field was appended to `EscrowSettle`.
+        let empty = settle(&[]);
         assert_eq!(
             hex::encode(empty.cell.repr_hash()),
-            "e6cbdb6e35d80b2b4e81e6c4c22d3d2fa69fd6e0bb3c57ef2cdc706e6a6c6756"
+            "01a81a9ea9f82551c548bf9b7080e20d6a92dfb261079878faf9e138aef01cb0"
         );
 
-        let one = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1)]);
+        let one = settle(&[p(0x11, 1)]);
         assert_eq!(
             hex::encode(one.cell.repr_hash()),
-            "f8ecc70fa0fbd9698ef1a52bb6f928e8e226fc6afa202bb66e69b4792281d6cb"
+            "2cedcedb1d7975d57d10e44839d8e9398414d6e2d70e0651e73219210e4fce32"
         );
 
-        let two = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256)]);
+        let two = settle(&[p(0x11, 1), p(0x22, 256)]);
         assert_eq!(
             hex::encode(two.cell.repr_hash()),
-            "68c9b40f464036a8b7b4c761253e050361d6095ed2a93cc05270a9c62450b647"
+            "f42a29e700b82ae5466c3748a3e36b188954adbfc9661286837a75a478c59bd1"
         );
 
-        let three =
-            build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256), p(0x33, 0xDEAD)]);
+        let three = settle(&[p(0x11, 1), p(0x22, 256), p(0x33, 0xDEAD)]);
         assert_eq!(
             hex::encode(three.cell.repr_hash()),
-            "158c1fdc544a0fd5d328f0718fe5e94b02b31c30d9db16b70bd62b727d67f97e"
+            "0c205bb8ec04da6178af6dfe9cadedc585b9bd35eeea17039f4af4dfefc99e53"
         );
     }
 
@@ -1422,20 +1967,74 @@ mod tests {
     fn escrow_settle_dict_is_order_independent_and_merges_dupes() {
         let rh = probe_result_hash();
         let w = probe_winner();
-        let p = |b: u8, amt: Amount| Payout { to: WalletAddress::new(0, [b; 32]), amount: amt };
-        // Entry order does not change the canonical dict (hence the cell hash).
-        let ab = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256)]);
-        let ba = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x22, 256), p(0x11, 1)]);
+        let p = |b: u8, amt: Amount| Payout {
+            to: WalletAddress::new(0, [b; 32]),
+            amount: amt,
+        };
+        let cands = [
+            w,
+            WalletAddress::new(0, [0x11; 32]),
+            WalletAddress::new(0, [0x22; 32]),
+        ];
+        // Entry order does not change the canonical dict (hence the cell hash) for
+        // EITHER the participants OR the candidates map.
+        let ab = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 1), p(0x22, 256)], &cands);
+        let ba = build_escrow_settle(
+            1,
+            &rh,
+            &w,
+            60,
+            2,
+            &[p(0x22, 256), p(0x11, 1)],
+            &[cands[2], cands[0], cands[1]],
+        );
         assert_eq!(ab.cell.repr_hash(), ba.cell.repr_hash());
         // Duplicate payout wallets merge (summed) — a map key is unique. Two
-        // 0x11→128 entries equal one 0x11→256 entry.
-        let dup = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 128), p(0x11, 128)]);
-        let single = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 256)]);
+        // 0x11→128 entries equal one 0x11→256 entry. Duplicate candidates collapse.
+        let dup = build_escrow_settle(
+            1,
+            &rh,
+            &w,
+            60,
+            2,
+            &[p(0x11, 128), p(0x11, 128)],
+            &[w, cands[1], cands[1]],
+        );
+        let single = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x11, 256)], &[w, cands[1]]);
         assert_eq!(dup.cell.repr_hash(), single.cell.repr_hash());
-        // Zero-amount participants are dropped (no leaf), matching an empty dict.
-        let zero = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x44, 0)]);
-        let empty = build_escrow_settle(1, &rh, &w, 60, 2, &[]);
+        // Zero-amount participants are dropped (no leaf), matching an empty dict;
+        // with the SAME candidate set the two bodies hash identically.
+        let zero = build_escrow_settle(1, &rh, &w, 60, 2, &[p(0x44, 0)], &[w]);
+        let empty = build_escrow_settle(1, &rh, &w, 60, 2, &[], &[w]);
         assert_eq!(zero.cell.repr_hash(), empty.cell.repr_hash());
+    }
+
+    #[test]
+    fn candidates_commitment_matches_onchain() {
+        // `candidates_commitment` must byte-match the on-chain `candidatesCommitment`
+        // (ton/scripts/_probe_v2.tolk): cellhash(beginCell().storeDict(c).endCell())
+        // over the SAME map<address, uint1>.
+        let winner = WalletAddress::new(0, [0x02u8; 32]);
+        let key1 = WalletAddress::new(0, [0x11u8; 32]);
+        // {winner, KEY1} — CANDIDATES_COMMITMENT_winnerKey1.
+        assert_eq!(
+            hex::encode(candidates_commitment(&[winner, key1])),
+            "b49327a82234164593ebbc61e44d83a02ddcd95a2c5ba1ed14bfe5f86cccc80d"
+        );
+        // Order-independent + duplicate-collapsing (canonical dict).
+        assert_eq!(
+            candidates_commitment(&[winner, key1]),
+            candidates_commitment(&[key1, winner])
+        );
+        assert_eq!(
+            candidates_commitment(&[winner, key1, winner]),
+            candidates_commitment(&[winner, key1])
+        );
+        // Empty set ⇒ the empty-dict commitment — CANDIDATES_COMMITMENT_empty.
+        assert_eq!(
+            hex::encode(candidates_commitment(&[])),
+            "90aec8965afabb16ebc3cb9b408ebae71b618d78788bc80d09843593cac98da4"
+        );
     }
 
     /// The compiled `JobEscrow` code BoC (`code_boc64`) from
@@ -1446,7 +2045,8 @@ mod tests {
 
     #[test]
     fn job_escrow_code_boc_parses_and_matches_artifact_hash() {
-        let code = escrow_code_from_boc_base64(JOB_ESCROW_CODE_B64).expect("artifact code BoC parses");
+        let code =
+            escrow_code_from_boc_base64(JOB_ESCROW_CODE_B64).expect("artifact code BoC parses");
         assert_eq!(
             hex::encode_upper(code.repr_hash()),
             "60C9F21AA3146CFA0A77B28098865118080B67F9CDF700F7C5DEDC984BD77E71"
@@ -1456,14 +2056,200 @@ mod tests {
     #[test]
     fn escrow_terms_cell_layout() {
         // EscrowTerms = treasury(addr 267) + expectedHash(uint256) +
-        // paramsVersion(uint32). All three round-trip in field order.
+        // candidatesHash(uint256) + paramsVersion(uint32). All four round-trip in
+        // field order — `candidatesHash` is inserted BETWEEN expectedHash and
+        // paramsVersion (the B1 layout change that moves the escrow address).
         let treasury = WalletAddress::new(0, [0x7eu8; 32]);
         let expected = [0xABu8; 32];
-        let terms = build_escrow_terms(&treasury, &expected, 7);
+        let cand = [0xCDu8; 32];
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7);
         let mut p = terms.parser();
         assert_eq!(p.load_address(), Some(treasury));
         assert_eq!(p.load_bits(256).unwrap(), expected.to_vec());
+        assert_eq!(p.load_bits(256).unwrap(), cand.to_vec());
         assert_eq!(p.load_uint(32).unwrap(), 7);
+    }
+
+    #[test]
+    fn escrow_terms_cell_matches_onchain() {
+        // Pin the v2 EscrowTerms cell hash to the Acton emulator
+        // (ton/scripts/_probe_v2.tolk): treasury=0x7e.., expectedHash=0xabab..,
+        // candidatesHash = commitment over {winner 0x02.., KEY1 0x11..},
+        // paramsVersion = 7. Proves the new 4-field terms layout (hence the escrow
+        // deterministic address) is byte-identical to the contract's `.toCell()`.
+        let treasury = WalletAddress::new(0, [0x7eu8; 32]);
+        let expected = [0xABu8; 32];
+        let winner = WalletAddress::new(0, [0x02u8; 32]);
+        let key1 = WalletAddress::new(0, [0x11u8; 32]);
+        let cand = candidates_commitment(&[winner, key1]);
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7);
+        assert_eq!(
+            hex::encode(terms.repr_hash()),
+            "cc4f408d5e672e8d033907e9cf76e0f557d49a066d201b3336de78164e613074"
+        );
+        // candidatesHash = 0 (unbound), same other fields — ESCROW_TERMS_V2_UNBOUND.
+        let unbound = build_escrow_terms(&treasury, &expected, &[0u8; 32], 7);
+        assert_eq!(
+            hex::encode(unbound.repr_hash()),
+            "a26c5efd69cdad848dbf30e80beabdb281c644cdc9e036968901459e6bf00221"
+        );
+    }
+
+    #[test]
+    fn escrow_data_state_init_matches_onchain() {
+        // Pin the v2 EscrowStorage StateInit (with the trailing empty `pending`
+        // map) to the Acton emulator (ton/scripts/_probe_v2.tolk, ESCROW_SI_V2),
+        // using the SAME stand-in code (0xC0DE), bound terms from
+        // `escrow_terms_cell_matches_onchain`, requester=KEY1, arbiter=winner,
+        // escrowAmount=1000, deadline=42.
+        let code = CellBuilder::new().store_uint(0xC0DE, 16).build();
+        let treasury = WalletAddress::new(0, [0x7eu8; 32]);
+        let expected = [0xABu8; 32];
+        let winner = WalletAddress::new(0, [0x02u8; 32]);
+        let key1 = WalletAddress::new(0, [0x11u8; 32]);
+        let cand = candidates_commitment(&[winner, key1]);
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7);
+        let init = EscrowInit {
+            requester: key1,
+            arbiter: winner,
+            escrow_amount: 1000,
+            deadline: 42,
+        };
+        let data = build_escrow_data(&init, terms);
+        let addr = WalletAddress::from_state_init(BASECHAIN, &code, &data);
+        assert_eq!(
+            hex::encode(addr.hash),
+            "22ab7918fc7ad24d397780bf591e168c1d0cff60355d6ae4eaff5637121dfef4"
+        );
+    }
+
+    #[test]
+    fn anchor_open_dispute_drops_claimed_root_and_chains_proof() {
+        // A2: the hardened AnchorOpenDispute is `queryId, epoch, leaf, proof` — NO
+        // claimedRoot. The flat ABI keeps the scalar prefix inline; `proof` is a
+        // `Maybe ^MerkleStep` on the live cell.
+        let leaf = [0x5Au8; 32];
+        // A 2-step proof: sibling on the RIGHT (dir=0), then LEFT (dir=1).
+        let proof = InclusionProof {
+            leaf,
+            siblings: vec![(false, [0x11u8; 32]), (true, [0x22u8; 32])],
+        };
+        let d = build_anchor_open_dispute(7, 3, &leaf, &proof);
+        assert_eq!(d.opcode, OP_ANCHOR_OPEN_DISPUTE);
+        assert_eq!(d.opcode, 0x414e_4302);
+        // flat ABI: opcode(4) + queryId(8) + epoch(4) + leaf(32) (proof is a ref).
+        assert_eq!(d.bytes.len(), 4 + 8 + 4 + 32);
+        // Live cell carries the proof chain as a single Maybe ^MerkleStep ref.
+        assert_eq!(
+            d.cell.refs().len(),
+            1,
+            "proof chain lives in a ^MerkleStep ref"
+        );
+
+        // The chain nests innermost-last: outer step is the FIRST sibling (dir=0,
+        // sibling 0x11), whose `next` ref is the second step (dir=1, sibling 0x22),
+        // whose `next` is absent.
+        let step0 = &d.cell.refs()[0];
+        let mut s0 = step0.parser();
+        assert_eq!(s0.load_uint(1), Some(0)); // dir = 0 (sibling on the right)
+        assert_eq!(s0.load_bits(256).unwrap(), [0x11u8; 32].to_vec());
+        assert_eq!(s0.load_uint(1), Some(1)); // Maybe present
+        let step1 = s0.load_ref().expect("second step");
+        let mut s1 = step1.parser();
+        assert_eq!(s1.load_uint(1), Some(1)); // dir = 1 (sibling on the left)
+        assert_eq!(s1.load_bits(256).unwrap(), [0x22u8; 32].to_vec());
+        assert_eq!(s1.load_uint(1), Some(0)); // Maybe absent (end of chain)
+
+        // An empty proof (single-leaf tree: leaf == root) ⇒ no proof ref.
+        let none = build_anchor_open_dispute(
+            8,
+            1,
+            &leaf,
+            &InclusionProof {
+                leaf,
+                siblings: vec![],
+            },
+        );
+        assert!(
+            none.cell.refs().is_empty(),
+            "absent proof ⇒ Maybe `0` bit, no ref"
+        );
+    }
+
+    #[test]
+    fn anchor_open_dispute_proof_chain_verifies_against_merkle() {
+        // The proof cell the bridge builds must encode the SAME path the off-chain
+        // verifier folds — i.e. round-trip a real multi-leaf proof and confirm the
+        // dir/sibling order the contract walks is preserved.
+        let leaves: Vec<Hash32> = (0u32..5)
+            .map(|n| *blake3::hash(&n.to_le_bytes()).as_bytes())
+            .collect();
+        let root = crate::merkle::merkle_root(&leaves);
+        for i in 0..leaves.len() {
+            let proof = crate::merkle::build_proof(&leaves, i).unwrap();
+            assert!(crate::merkle::verify_inclusion(&root, &proof));
+            let cell = build_merkle_proof_cell(&proof);
+            // The number of MerkleStep cells equals the sibling count.
+            let mut depth = 0usize;
+            let mut cur = cell.clone();
+            while let Some(c) = cur {
+                depth += 1;
+                let mut pr = c.parser();
+                let _dir = pr.load_uint(1);
+                let _sib = pr.load_bits(256);
+                // walk to next
+                let present = pr.load_uint(1) == Some(1);
+                cur = if present {
+                    pr.load_ref().cloned()
+                } else {
+                    None
+                };
+            }
+            assert_eq!(
+                depth,
+                proof.siblings.len(),
+                "step count == sibling count for leaf {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn new_op_builders_carry_opcodes_and_layout() {
+        // EscrowClaim: opcode + queryId + recipient(addr).
+        let recip = WalletAddress::new(0, [0x09u8; 32]);
+        let ec = build_escrow_claim(3, &recip);
+        assert_eq!(ec.opcode, OP_ESCROW_CLAIM);
+        assert_eq!(ec.opcode, 0x4553_4304);
+        assert_eq!(ec.bytes.len(), 4 + 8 + 36);
+        // StakeClaim: opcode + queryId + recipient(addr).
+        let sc = build_stake_claim(4, &recip);
+        assert_eq!(sc.opcode, OP_STAKE_CLAIM);
+        assert_eq!(sc.opcode, 0x534b_4b0a);
+        assert_eq!(sc.bytes.len(), 4 + 8 + 36);
+        // GlobalParams AnnounceCode: opcode + queryId + newCodeHash(32).
+        let hash = [0x7Bu8; 32];
+        let ann = build_announce_code(5, &hash);
+        assert_eq!(ann.opcode, OP_ANNOUNCE_CODE);
+        assert_eq!(ann.opcode, 0x4750_4105);
+        assert_eq!(ann.bytes.len(), 4 + 8 + 32);
+        assert_eq!(&ann.bytes[4 + 8..], &hash);
+        // GlobalParams CancelCode: opcode + queryId.
+        let canc = build_cancel_code(6);
+        assert_eq!(canc.opcode, OP_CANCEL_CODE);
+        assert_eq!(canc.opcode, 0x4750_4106);
+        assert_eq!(canc.bytes.len(), 4 + 8);
+        // The outgoing-only payload op tags match the contracts.
+        assert_eq!(OP_ESCROW_PAYOUT, 0x4553_4305);
+        assert_eq!(OP_STAKE_PAYOUT, 0x534b_4b0b);
+        assert_eq!(OP_ANCHOR_BOND_REFUND, 0x414e_4305);
+    }
+
+    #[test]
+    fn query_id_gen_is_monotonic_and_deterministic() {
+        let g = QueryIdGen::new();
+        assert_eq!(g.next(), 1);
+        assert_eq!(g.next(), 2);
+        assert_eq!(g.next(), 3);
     }
 
     /// Recording fake transport for unit tests (no network).
@@ -1472,7 +2258,12 @@ mod tests {
         sent: Mutex<Vec<MessageBody>>,
     }
     impl TonRpc for RecordingRpc {
-        fn send_internal(&self, _to: &WalletAddress, _amount: Amount, body: &MessageBody) -> Result<String, SettleError> {
+        fn send_internal(
+            &self,
+            _to: &WalletAddress,
+            _amount: Amount,
+            body: &MessageBody,
+        ) -> Result<String, SettleError> {
             self.sent.lock().unwrap().push(body.clone());
             Ok("txhash".into())
         }
@@ -1484,10 +2275,17 @@ mod tests {
     #[test]
     fn ton_settlement_builds_and_sends_settle() {
         let s = TonSettlement::new(RecordingRpc::default());
-        let h = EscrowHandle { job: JobId("j".into()), address: WalletAddress::new(0, [1u8; 32]), max_bid: 100 };
+        let h = EscrowHandle {
+            job: JobId("j".into()),
+            address: WalletAddress::new(0, [1u8; 32]),
+            max_bid: 100,
+        };
         let outcome = SettlementOutcome {
             result_hash: [4u8; 32],
-            winner: crate::types::Payout { to: WalletAddress::new(0, [2u8; 32]), amount: 60 },
+            winner: crate::types::Payout {
+                to: WalletAddress::new(0, [2u8; 32]),
+                amount: 60,
+            },
             participants: vec![],
             platform_fee: 2,
         };
@@ -1500,7 +2298,12 @@ mod tests {
         values: HashMap<String, i128>,
     }
     impl TonRpc for GetMethodRpc {
-        fn send_internal(&self, _to: &WalletAddress, _amount: Amount, _body: &MessageBody) -> Result<String, SettleError> {
+        fn send_internal(
+            &self,
+            _to: &WalletAddress,
+            _amount: Amount,
+            _body: &MessageBody,
+        ) -> Result<String, SettleError> {
             Ok("ok".into())
         }
         fn run_get_int(&self, _addr: &WalletAddress, method: &str) -> Result<i128, SettleError> {
@@ -1521,7 +2324,8 @@ mod tests {
         values.insert("get_attempt_deadline_ms".to_string(), 90_000);
         values.insert("get_progress_interval_ms".to_string(), 3_000);
         values.insert("get_progress_stall_mult".to_string(), 4);
-        let client = GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xAB; 32]));
+        let client =
+            GlobalParamsClient::new(GetMethodRpc { values }, WalletAddress::new(0, [0xAB; 32]));
 
         assert_eq!(client.params_version().unwrap(), 7);
         let p = client.read_policy().unwrap();
@@ -1547,10 +2351,21 @@ mod tests {
     #[test]
     fn null_rpc_reports_disabled() {
         let r = NullTonRpc;
-        assert!(r.send_internal(&WalletAddress::new(0, [0u8; 32]), 0, &build_stake_deposit(0, 0)).is_err());
+        assert!(r
+            .send_internal(
+                &WalletAddress::new(0, [0u8; 32]),
+                0,
+                &build_stake_deposit(0, 0)
+            )
+            .is_err());
         // deploy is unsupported on the default transport too.
         assert!(r
-            .deploy(&WalletAddress::new(0, [0u8; 32]), 0, &Cell::default(), &build_escrow_topup(0))
+            .deploy(
+                &WalletAddress::new(0, [0u8; 32]),
+                0,
+                &Cell::default(),
+                &build_escrow_topup(0)
+            )
             .is_err());
     }
 
@@ -1562,7 +2377,15 @@ mod tests {
             build_stake_deposit(1, 100),
             build_stake_slash(2, 50, SlashReason::Cheat, &WalletAddress::new(0, [7u8; 32])),
             build_stake_unbond(3, 10),
-            build_escrow_settle(4, &[3u8; 32], &WalletAddress::new(0, [2u8; 32]), 60, 2, &[]),
+            build_escrow_settle(
+                4,
+                &[3u8; 32],
+                &WalletAddress::new(0, [2u8; 32]),
+                60,
+                2,
+                &[],
+                &[WalletAddress::new(0, [2u8; 32])],
+            ),
             build_escrow_refund(5),
             build_escrow_topup(6),
             build_anchor_submit(7, 9, &[1u8; 32], &[0u8; 32], 1000),
@@ -1574,20 +2397,37 @@ mod tests {
             assert_eq!(&mb.bytes[0..4], &mb.opcode.to_be_bytes());
             assert!(mb.cell.bit_len() >= 32);
         }
-        // An empty-participants EscrowSettle appends the empty HashmapE `0` bit, so
-        // it has one more bit than the scalar prefix implies (and no extra ref).
-        let settle = build_escrow_settle(0, &[0u8; 32], &WalletAddress::new(0, [0u8; 32]), 1, 1, &[]);
+        // An EscrowSettle with empty participants AND empty candidates appends two
+        // empty HashmapE `0` bits, so no extra ref.
+        let settle = build_escrow_settle(
+            0,
+            &[0u8; 32],
+            &WalletAddress::new(0, [0u8; 32]),
+            1,
+            1,
+            &[],
+            &[],
+        );
         assert!(settle.cell.refs().is_empty());
-        // A non-empty participants dict adds the `1` bit + the dictionary root ref.
+        // A non-empty participants dict AND a non-empty candidates dict each add a
+        // `1` bit + a dictionary root ref ⇒ two refs.
         let settle_p = build_escrow_settle(
             0,
             &[0u8; 32],
             &WalletAddress::new(0, [0u8; 32]),
             1,
             1,
-            &[Payout { to: WalletAddress::new(0, [9u8; 32]), amount: 3 }],
+            &[Payout {
+                to: WalletAddress::new(0, [9u8; 32]),
+                amount: 3,
+            }],
+            &[WalletAddress::new(0, [9u8; 32])],
         );
-        assert_eq!(settle_p.cell.refs().len(), 1, "non-empty participants live in a ^dict root");
+        assert_eq!(
+            settle_p.cell.refs().len(),
+            2,
+            "participants + candidates each live in a ^dict root"
+        );
         // UpdateParams's live cell puts EcoParams in a child ref (flat ABI inlines).
         let p = sample_params();
         let up = build_update_params(0, &WalletAddress::new(0, [0u8; 32]), &p);
@@ -1607,9 +2447,19 @@ mod tests {
         fn new() -> Self {
             let key = crate::wallet::WalletKey::from_seed(&[42u8; 32]);
             let wallet = crate::wallet::WalletV5R1::testnet(key.public_key());
-            Self { wallet, key, sent: Mutex::new(Vec::new()) }
+            Self {
+                wallet,
+                key,
+                sent: Mutex::new(Vec::new()),
+            }
         }
-        fn sign_and_check(&self, to: &WalletAddress, amount: Amount, body: &MessageBody, init: Option<Cell>) {
+        fn sign_and_check(
+            &self,
+            to: &WalletAddress,
+            amount: Amount,
+            body: &MessageBody,
+            init: Option<Cell>,
+        ) {
             let msg = crate::wallet::InternalMessage {
                 dest: *to,
                 value: amount,
@@ -1617,22 +2467,41 @@ mod tests {
                 state_init: init.clone(),
                 mode: 3,
             };
-            let boc =
-                crate::wallet::build_signed_external_v5r1(&self.wallet, &self.key, 11, 2_000_000_000, &[msg])
-                    .expect("payload signs");
+            let boc = crate::wallet::build_signed_external_v5r1(
+                &self.wallet,
+                &self.key,
+                11,
+                2_000_000_000,
+                &[msg],
+            )
+            .expect("payload signs");
             assert!(Cell::from_boc(&boc).is_some(), "signed external BoC parses");
-            self.sent.lock().unwrap().push((*to, amount, body.opcode, init.is_some()));
+            self.sent
+                .lock()
+                .unwrap()
+                .push((*to, amount, body.opcode, init.is_some()));
         }
     }
     impl TonRpc for SigningRecorder {
-        fn send_internal(&self, to: &WalletAddress, amount: Amount, body: &MessageBody) -> Result<String, SettleError> {
+        fn send_internal(
+            &self,
+            to: &WalletAddress,
+            amount: Amount,
+            body: &MessageBody,
+        ) -> Result<String, SettleError> {
             self.sign_and_check(to, amount, body, None);
             Ok("ok".into())
         }
         fn run_get_int(&self, _addr: &WalletAddress, _method: &str) -> Result<i128, SettleError> {
             Ok(0)
         }
-        fn deploy(&self, to: &WalletAddress, amount: Amount, state_init: &Cell, body: &MessageBody) -> Result<String, SettleError> {
+        fn deploy(
+            &self,
+            to: &WalletAddress,
+            amount: Amount,
+            state_init: &Cell,
+            body: &MessageBody,
+        ) -> Result<String, SettleError> {
             self.sign_and_check(to, amount, body, Some(state_init.clone()));
             Ok("ok".into())
         }
@@ -1645,10 +2514,17 @@ mod tests {
 
         // --- settle: sends EscrowSettle to the escrow address, bounded by B. ---
         let s = TonSettlement::new(SigningRecorderRef(rec.clone()));
-        let h = EscrowHandle { job: JobId("j".into()), address: WalletAddress::new(0, [1u8; 32]), max_bid: 100 };
+        let h = EscrowHandle {
+            job: JobId("j".into()),
+            address: WalletAddress::new(0, [1u8; 32]),
+            max_bid: 100,
+        };
         let outcome = SettlementOutcome {
             result_hash: [4u8; 32],
-            winner: crate::types::Payout { to: WalletAddress::new(0, [2u8; 32]), amount: 60 },
+            winner: crate::types::Payout {
+                to: WalletAddress::new(0, [2u8; 32]),
+                amount: 60,
+            },
             participants: vec![],
             platform_fee: 2,
         };
@@ -1660,8 +2536,15 @@ mod tests {
         let config = CellBuilder::new().store_uint(0xCF, 8).build();
         let node = NodeId("b3:n".into());
         let mut inits = HashMap::new();
-        inits.insert(node.clone(), VaultInit { owner: WalletAddress::new(0, [5u8; 32]), binding_hash: [9u8; 32] });
-        let reg = TonStakeRegistry::new(SigningRecorderRef(rec.clone()), 0, 100, code, config, inits);
+        inits.insert(
+            node.clone(),
+            VaultInit {
+                owner: WalletAddress::new(0, [5u8; 32]),
+                binding_hash: [9u8; 32],
+            },
+        );
+        let reg =
+            TonStakeRegistry::new(SigningRecorderRef(rec.clone()), 0, 100, code, config, inits);
         reg.slash(&node, SlashReason::WrongResult, 10).unwrap();
         reg.request_unbond(&node, 5).unwrap();
 
@@ -1679,7 +2562,10 @@ mod tests {
         assert_eq!(handle.max_bid, 1_000);
 
         // --- anchor submit: broadcasts the epoch root. ---
-        let anchor = TonRecordAnchor::new(SigningRecorderRef(rec.clone()), WalletAddress::new(0, [0xDD; 32]));
+        let anchor = TonRecordAnchor::new(
+            SigningRecorderRef(rec.clone()),
+            WalletAddress::new(0, [0xDD; 32]),
+        );
         anchor.append(&JobRecord {
             job_id: "k".into(),
             query_hash: "q".into(),
@@ -1696,9 +2582,13 @@ mod tests {
         // settle, refund, slash, unbond, open_escrow(deploy), anchor = 6 ops.
         assert_eq!(sent.len(), 6);
         // The open_escrow op is the only deploy, funded with the max bid 1000.
-        assert!(sent.iter().any(|(_, amt, op, dep)| *dep && *amt == 1_000 && *op == OP_ESCROW_TOPUP));
+        assert!(sent
+            .iter()
+            .any(|(_, amt, op, dep)| *dep && *amt == 1_000 && *op == OP_ESCROW_TOPUP));
         // settle went out as EscrowSettle to the escrow address.
-        assert!(sent.iter().any(|(to, _, op, _)| *op == OP_ESCROW_SETTLE && to.hash == [1u8; 32]));
+        assert!(sent
+            .iter()
+            .any(|(to, _, op, _)| *op == OP_ESCROW_SETTLE && to.hash == [1u8; 32]));
         assert!(sent.iter().any(|(_, _, op, _)| *op == OP_STAKE_SLASH));
         assert!(sent.iter().any(|(_, _, op, _)| *op == OP_ANCHOR_SUBMIT));
     }
@@ -1707,13 +2597,24 @@ mod tests {
     /// impls require by value.
     struct SigningRecorderRef(std::sync::Arc<SigningRecorder>);
     impl TonRpc for SigningRecorderRef {
-        fn send_internal(&self, to: &WalletAddress, amount: Amount, body: &MessageBody) -> Result<String, SettleError> {
+        fn send_internal(
+            &self,
+            to: &WalletAddress,
+            amount: Amount,
+            body: &MessageBody,
+        ) -> Result<String, SettleError> {
             self.0.send_internal(to, amount, body)
         }
         fn run_get_int(&self, addr: &WalletAddress, method: &str) -> Result<i128, SettleError> {
             self.0.run_get_int(addr, method)
         }
-        fn deploy(&self, to: &WalletAddress, amount: Amount, state_init: &Cell, body: &MessageBody) -> Result<String, SettleError> {
+        fn deploy(
+            &self,
+            to: &WalletAddress,
+            amount: Amount,
+            state_init: &Cell,
+            body: &MessageBody,
+        ) -> Result<String, SettleError> {
             self.0.deploy(to, amount, state_init, body)
         }
     }
@@ -1752,16 +2653,21 @@ mod tests {
         let binding = hex32("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef");
         let code = CellBuilder::new().store_uint(0xC0DE, 16).build();
         let config = CellBuilder::new().store_uint(0xCF, 8).build();
-        let init = VaultInit { owner, binding_hash: binding };
+        let init = VaultInit {
+            owner,
+            binding_hash: binding,
+        };
         let data = build_vault_data(&init, config.clone());
         let addr = WalletAddress::from_state_init(BASECHAIN, &code, &data);
-        // Pinned to the Acton emulator probe (ton/scripts/_probe_addr.tolk,
-        // VAULT_SI) which now includes the trailing `upgrade` child ref
-        // (codeVersion/pendingCodeHash/pendingCodeAt = 0). The off-chain
-        // `build_vault_data` upgrade child must hash byte-identically to on-chain.
+        // Pinned to the Acton emulator probe (ton/scripts/_probe_v2.tolk,
+        // VAULT_SI_V2): the v2 `VaultStorage` includes the `upgrade` child ref
+        // (codeVersion/pendingCodeHash/pendingCodeAt = 0) AND the trailing `pending`
+        // empty `map<address, coins>` (`0` bit). The off-chain `build_vault_data`
+        // must hash byte-identically to on-chain — this address moved when `pending`
+        // was appended (additive storage change ⇒ new deterministic address).
         assert_eq!(
             hex::encode(addr.hash),
-            "f5076c5886d3627cebd5b4eb64eb9239559e1791330ff24f3401e7bc91e4fb58"
+            "6f473bbc159ca24a8508fd881ee6050d17eaecd9ec31d5e50d4b959dbd9f0e30"
         );
 
         // Same registry resolves the node to that exact vault address.
@@ -1779,7 +2685,8 @@ mod tests {
         let escrow_code = CellBuilder::new().store_uint(0xE5C0, 16).build();
         let terms = CellBuilder::new().store_uint(0x7e, 8).build();
         let arbiter = WalletAddress::new(0, [0xAB; 32]);
-        let s = TonSettlement::with_escrow_code(RecordingRpc::default(), escrow_code, terms, arbiter);
+        let s =
+            TonSettlement::with_escrow_code(RecordingRpc::default(), escrow_code, terms, arbiter);
         let requester = WalletAddress::new(0, [0x11; 32]);
         let a1 = s.escrow_address(&requester, 1_000, 42).unwrap();
         let a2 = s.escrow_address(&requester, 1_000, 42).unwrap();

@@ -8,7 +8,7 @@
 use p2p_proto::JobId;
 
 use crate::traits::Settlement;
-use crate::types::{Amount, SettlementOutcome, SettleError};
+use crate::types::{Amount, SettleError, SettlementOutcome};
 use crate::PaymentMode;
 
 /// Engage settlement for PAID jobs only.
@@ -43,8 +43,14 @@ mod tests {
     fn sample_outcome() -> SettlementOutcome {
         SettlementOutcome {
             result_hash: [7u8; 32],
-            winner: Payout { to: WalletAddress::new(0, [1u8; 32]), amount: 60 },
-            participants: vec![Payout { to: WalletAddress::new(0, [2u8; 32]), amount: 2 }],
+            winner: Payout {
+                to: WalletAddress::new(0, [1u8; 32]),
+                amount: 60,
+            },
+            participants: vec![Payout {
+                to: WalletAddress::new(0, [2u8; 32]),
+                amount: 2,
+            }],
             platform_fee: 2,
         }
     }
@@ -55,7 +61,11 @@ mod tests {
         fn open_escrow(&self, _: &JobId, _: Amount) -> Result<crate::EscrowHandle, SettleError> {
             panic!("settlement engaged on a FREE job (open_escrow)");
         }
-        fn settle(&self, _: &crate::EscrowHandle, _: &SettlementOutcome) -> Result<(), SettleError> {
+        fn settle(
+            &self,
+            _: &crate::EscrowHandle,
+            _: &SettlementOutcome,
+        ) -> Result<(), SettleError> {
             panic!("settlement engaged on a FREE job (settle)");
         }
         fn refund(&self, _: &crate::EscrowHandle) -> Result<(), SettleError> {
@@ -69,25 +79,41 @@ mod tests {
     #[test]
     fn free_job_never_touches_settlement() {
         // Even with a spy that panics on ANY call, a free job completes cleanly.
-        let engaged =
-            settle_if_paid(PaymentMode::Free, &PanicSettlement, &JobId("j".into()), 100, &sample_outcome())
-                .unwrap();
+        let engaged = settle_if_paid(
+            PaymentMode::Free,
+            &PanicSettlement,
+            &JobId("j".into()),
+            100,
+            &sample_outcome(),
+        )
+        .unwrap();
         assert!(!engaged, "free job must not engage settlement");
     }
 
     #[test]
     fn free_job_works_with_noop_rail() {
-        let engaged =
-            settle_if_paid(PaymentMode::Free, &NoopSettlement, &JobId("j".into()), 100, &sample_outcome())
-                .unwrap();
+        let engaged = settle_if_paid(
+            PaymentMode::Free,
+            &NoopSettlement,
+            &JobId("j".into()),
+            100,
+            &sample_outcome(),
+        )
+        .unwrap();
         assert!(!engaged);
     }
 
     #[test]
     fn paid_job_engages_settlement() {
         let mock = MockSettlement::new();
-        let engaged =
-            settle_if_paid(PaymentMode::Paid, &mock, &JobId("j".into()), 100, &sample_outcome()).unwrap();
+        let engaged = settle_if_paid(
+            PaymentMode::Paid,
+            &mock,
+            &JobId("j".into()),
+            100,
+            &sample_outcome(),
+        )
+        .unwrap();
         assert!(engaged, "paid job must engage settlement");
         // open_escrow + settle were both recorded.
         assert_eq!(mock.call_count(), 2);

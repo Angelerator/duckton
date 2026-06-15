@@ -96,7 +96,9 @@ mod tests {
 
     #[test]
     fn lz4_and_zstd_roundtrip() {
-        let data: Vec<u8> = (0..50_000u32).flat_map(|i| (i % 251) as u8 .. (i % 251) as u8 + 1).collect();
+        let data: Vec<u8> = (0..50_000u32)
+            .flat_map(|i| (i % 251) as u8..(i % 251) as u8 + 1)
+            .collect();
         for codec in [Compression::Lz4, Compression::Zstd] {
             let (applied, out) = maybe_compress(codec, 3, 0, &data);
             assert_eq!(applied, codec);
@@ -117,7 +119,10 @@ mod tests {
         // uncompressed_len of 4096.
         out[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
         let err = decompress(Compression::Lz4, data.len(), &out).unwrap_err();
-        assert!(err.contains("exceeds declared uncompressed_len"), "got: {err}");
+        assert!(
+            err.contains("exceeds declared uncompressed_len"),
+            "got: {err}"
+        );
     }
 
     #[test]

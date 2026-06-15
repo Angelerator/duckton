@@ -75,18 +75,13 @@ pub enum SettlementRail {
 /// confirm => true)`), because real TON is at stake.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum TonNetwork {
     /// TON testnet — free test coins, the safe default.
+    #[default]
     Testnet,
     /// TON mainnet — **real funds**. Requires explicit opt-in.
     Mainnet,
-}
-
-impl Default for TonNetwork {
-    fn default() -> Self {
-        // Safe default: never silently put real funds at risk.
-        TonNetwork::Testnet
-    }
 }
 
 impl TonNetwork {
@@ -366,7 +361,11 @@ impl Default for ReputationEconomics {
         // Mildly pessimistic prior (one pseudo-success, two pseudo-failures) plus
         // a ~95% Wilson lower bound: a brand-new correct node is sampled via the
         // exploration bonus rather than trusted outright.
-        Self { prior_alpha: 1.0, prior_beta: 2.0, confidence_z: 1.96 }
+        Self {
+            prior_alpha: 1.0,
+            prior_beta: 2.0,
+            confidence_z: 1.96,
+        }
     }
 }
 
@@ -471,7 +470,10 @@ pub struct RecordsEconomics {
 
 impl Default for RecordsEconomics {
     fn default() -> Self {
-        Self { epoch_secs: 60, anchor_quorum_pct: 0.66 }
+        Self {
+            epoch_secs: 60,
+            anchor_quorum_pct: 0.66,
+        }
     }
 }
 
@@ -544,16 +546,24 @@ impl EconomicsConfig {
         let inv = |m: String| Err(ConfigError::Invalid(m));
         let pct = |name: &str, x: f64| -> Result<(), ConfigError> {
             if !(0.0..=1.0).contains(&x) {
-                return Err(ConfigError::Invalid(format!("economics.{name} must be in [0,1], got {x}")));
+                return Err(ConfigError::Invalid(format!(
+                    "economics.{name} must be in [0,1], got {x}"
+                )));
             }
             Ok(())
         };
 
         if !matches!(self.custody.as_str(), "noncustodial") {
-            return inv(format!("economics.custody must be \"noncustodial\" (v1), got {}", self.custody));
+            return inv(format!(
+                "economics.custody must be \"noncustodial\" (v1), got {}",
+                self.custody
+            ));
         }
         if !matches!(self.accounting_unit.as_str(), "ton") {
-            return inv(format!("economics.accounting_unit must be \"ton\" (v1), got {}", self.accounting_unit));
+            return inv(format!(
+                "economics.accounting_unit must be \"ton\" (v1), got {}",
+                self.accounting_unit
+            ));
         }
 
         // Unbonding must outlast the challenge window so a cheater can't exit
@@ -569,7 +579,10 @@ impl EconomicsConfig {
         if !(self.stake.min_stake_sensitive >= self.stake.min_stake_internal
             && self.stake.min_stake_internal >= self.stake.min_stake)
         {
-            return inv("economics.stake: require min_stake_sensitive >= min_stake_internal >= min_stake".into());
+            return inv(
+                "economics.stake: require min_stake_sensitive >= min_stake_internal >= min_stake"
+                    .into(),
+            );
         }
         if self.stake.stake_cap < self.stake.min_stake {
             return inv("economics.stake.stake_cap must be >= min_stake".into());
@@ -577,15 +590,21 @@ impl EconomicsConfig {
 
         // Slash split must sum to 1.0.
         let s = &self.slashing;
-        let sum = s.slash_to_challenger + s.slash_to_redundancy + s.slash_to_burn + s.slash_to_treasury;
+        let sum =
+            s.slash_to_challenger + s.slash_to_redundancy + s.slash_to_burn + s.slash_to_treasury;
         if (sum - 1.0).abs() > 1e-9 {
-            return inv(format!("economics.slashing slash_to_* must sum to 1.0, got {sum}"));
+            return inv(format!(
+                "economics.slashing slash_to_* must sum to 1.0, got {sum}"
+            ));
         }
         pct("slashing.slash_wrong_result_pct", s.slash_wrong_result_pct)?;
         pct("slashing.slash_cheat_pct", s.slash_cheat_pct)?;
         pct("slashing.slash_downtime_pct", s.slash_downtime_pct)?;
         pct("slashing.slash_equivocation_pct", s.slash_equivocation_pct)?;
-        pct("slashing.slash_failed_commitment_pct", s.slash_failed_commitment_pct)?;
+        pct(
+            "slashing.slash_failed_commitment_pct",
+            s.slash_failed_commitment_pct,
+        )?;
         pct("slashing.slash_to_challenger", s.slash_to_challenger)?;
         pct("slashing.slash_to_redundancy", s.slash_to_redundancy)?;
         pct("slashing.slash_to_burn", s.slash_to_burn)?;
@@ -593,7 +612,10 @@ impl EconomicsConfig {
 
         // Fees.
         pct("fees.platform_fee_pct", self.fees.platform_fee_pct)?;
-        pct("fees.verification_surcharge_pct", self.fees.verification_surcharge_pct)?;
+        pct(
+            "fees.verification_surcharge_pct",
+            self.fees.verification_surcharge_pct,
+        )?;
         if !(0.0..=0.1).contains(&self.fees.participation_commission_frac) {
             return inv(format!(
                 "economics.fees.participation_commission_frac must be in [0,0.1], got {}",
@@ -621,7 +643,10 @@ impl EconomicsConfig {
         // Reputation confidence priors must be non-negative.
         let rep = &self.reputation;
         if rep.prior_alpha < 0.0 || rep.prior_beta < 0.0 || rep.confidence_z < 0.0 {
-            return inv("economics.reputation priors (prior_alpha, prior_beta, confidence_z) must be >= 0".into());
+            return inv(
+                "economics.reputation priors (prior_alpha, prior_beta, confidence_z) must be >= 0"
+                    .into(),
+            );
         }
 
         // Selection ordering.
@@ -629,9 +654,13 @@ impl EconomicsConfig {
         if sel.checksum_min < 1 {
             return inv("economics.selection.checksum_min must be >= 1".into());
         }
-        if !(sel.n_max >= sel.n_default && sel.n_default >= sel.n_public && sel.n_public >= sel.checksum_min) {
+        if !(sel.n_max >= sel.n_default
+            && sel.n_default >= sel.n_public
+            && sel.n_public >= sel.checksum_min)
+        {
             return inv(
-                "economics.selection: require n_max >= n_default >= n_public >= checksum_min".into(),
+                "economics.selection: require n_max >= n_default >= n_public >= checksum_min"
+                    .into(),
             );
         }
 
@@ -643,7 +672,11 @@ impl EconomicsConfig {
 
         // A fee recipient is required once on-chain fees can actually be charged
         // (the channel / on-chain rails). The noop and mock rails charge nothing.
-        if self.enabled && matches!(self.settlement, SettlementRail::Channel | SettlementRail::Onchain)
+        if self.enabled
+            && matches!(
+                self.settlement,
+                SettlementRail::Channel | SettlementRail::Onchain
+            )
         {
             match &self.fee_recipient {
                 Some(a) if !a.trim().is_empty() => {}
@@ -669,7 +702,10 @@ mod tests {
         e.validate().unwrap();
         assert!(!e.enabled);
         // disabled ⇒ every job is free regardless of class
-        assert_eq!(e.resolve_payment(DataClassCfg::Sensitive), PaymentMode::Free);
+        assert_eq!(
+            e.resolve_payment(DataClassCfg::Sensitive),
+            PaymentMode::Free
+        );
     }
 
     #[test]
@@ -682,7 +718,10 @@ mod tests {
         e.validate().unwrap();
         assert_eq!(e.resolve_payment(DataClassCfg::Public), PaymentMode::Free);
         assert_eq!(e.resolve_payment(DataClassCfg::Internal), PaymentMode::Paid);
-        assert_eq!(e.resolve_payment(DataClassCfg::Sensitive), PaymentMode::Paid);
+        assert_eq!(
+            e.resolve_payment(DataClassCfg::Sensitive),
+            PaymentMode::Paid
+        );
     }
 
     #[test]
@@ -692,7 +731,10 @@ mod tests {
         e.fee_recipient = Some("EQ...treasury".into());
         e.settlement = SettlementRail::Channel;
         e.default_payment = PaymentPref::Free;
-        assert_eq!(e.resolve_payment(DataClassCfg::Sensitive), PaymentMode::Free);
+        assert_eq!(
+            e.resolve_payment(DataClassCfg::Sensitive),
+            PaymentMode::Free
+        );
         e.default_payment = PaymentPref::Paid;
         assert_eq!(e.resolve_payment(DataClassCfg::Public), PaymentMode::Paid);
     }
@@ -752,11 +794,17 @@ mod tests {
         e.testnet.contracts.stake_vault = Some("kQtest".into());
         e.mainnet.contracts.stake_vault = Some("kQmain".into());
         e.mainnet.rpc = Some("https://my.mainnet.rpc/".into());
-        assert_eq!(e.active_settings().contracts.stake_vault.as_deref(), Some("kQtest"));
+        assert_eq!(
+            e.active_settings().contracts.stake_vault.as_deref(),
+            Some("kQtest")
+        );
 
         e.network = TonNetwork::Mainnet;
         e.mainnet_confirmed = true;
-        assert_eq!(e.active_settings().contracts.stake_vault.as_deref(), Some("kQmain"));
+        assert_eq!(
+            e.active_settings().contracts.stake_vault.as_deref(),
+            Some("kQmain")
+        );
         assert_eq!(e.resolved_rpc(), "https://my.mainnet.rpc/"); // override
         assert_eq!(e.resolved_explorer(), "tonviewer.com"); // mainnet default
     }

@@ -35,7 +35,7 @@ use std::time::Duration;
 
 use p2p_settlement::cell::Cell;
 use p2p_settlement::ton::{
-    build_anchor_submit, build_update_params, GlobalParams, ToncenterRpc, TonRpc,
+    build_anchor_submit, build_update_params, GlobalParams, TonRpc, ToncenterRpc,
 };
 use p2p_settlement::types::WalletAddress;
 
@@ -53,11 +53,20 @@ struct Env {
 }
 
 fn env() -> Option<Env> {
-    let rpc = std::env::var("TON_TESTNET_RPC").ok().filter(|s| !s.trim().is_empty())?;
-    let mnemonic =
-        std::env::var("TON_TESTNET_MNEMONIC").ok().filter(|s| !s.trim().is_empty())?;
-    let api_key = std::env::var("TON_TESTNET_API_KEY").ok().unwrap_or_default();
-    Some(Env { rpc: rpc.trim_end_matches('/').to_string(), api_key, mnemonic })
+    let rpc = std::env::var("TON_TESTNET_RPC")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let mnemonic = std::env::var("TON_TESTNET_MNEMONIC")
+        .ok()
+        .filter(|s| !s.trim().is_empty())?;
+    let api_key = std::env::var("TON_TESTNET_API_KEY")
+        .ok()
+        .unwrap_or_default();
+    Some(Env {
+        rpc: rpc.trim_end_matches('/').to_string(),
+        api_key,
+        mnemonic,
+    })
 }
 
 fn skip(reason: &str) {
@@ -98,7 +107,13 @@ fn run_get_method(env: &Env, addr: &str, method: &str) -> serde_json::Value {
 }
 
 fn balance(env: &Env, friendly: &str) -> i128 {
-    let raw = curl(env, &[format!("{}/getAddressInformation?address={friendly}", env.rpc)]);
+    let raw = curl(
+        env,
+        &[format!(
+            "{}/getAddressInformation?address={friendly}",
+            env.rpc
+        )],
+    );
     let v: serde_json::Value = serde_json::from_str(&raw).expect("balance JSON");
     v["result"]["balance"]
         .as_str()
@@ -220,8 +235,15 @@ fn read_params(env: &Env) -> (WalletAddress, GlobalParams) {
     let v = run_get_method(env, GLOBAL_PARAMS_FRIENDLY, "get_params");
     assert_eq!(v["ok"].as_bool(), Some(true), "get_params ok: {v}");
     let stack = v["result"]["stack"].as_array().expect("stack");
-    assert_eq!(stack.len(), 3, "get_params returns admin, feeRecipient, params");
-    let fee_recipient = stack_cell(&stack[1]).parser().load_address().expect("feeRecipient addr");
+    assert_eq!(
+        stack.len(),
+        3,
+        "get_params returns admin, feeRecipient, params"
+    );
+    let fee_recipient = stack_cell(&stack[1])
+        .parser()
+        .load_address()
+        .expect("feeRecipient addr");
     let params = parse_eco_params(&stack_cell(&stack[2]));
     (fee_recipient, params)
 }
@@ -230,8 +252,15 @@ fn read_params(env: &Env) -> (WalletAddress, GlobalParams) {
 /// array (an on-chain `uint256` root).
 fn hex_to_32(s: &str) -> [u8; 32] {
     let h = s.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let h = if h.len() % 2 == 1 { format!("0{h}") } else { h.to_string() };
-    let raw = (0..h.len()).step_by(2).map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap()).collect::<Vec<_>>();
+    let h = if h.len() % 2 == 1 {
+        format!("0{h}")
+    } else {
+        h.to_string()
+    };
+    let raw = (0..h.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+        .collect::<Vec<_>>();
     let mut out = [0u8; 32];
     out[32 - raw.len()..].copy_from_slice(&raw);
     out
@@ -280,7 +309,12 @@ fn wait_for_seqno(env: &Env, want: u32, label: &str) -> u32 {
 /// the Toncenter v3 API, for the human report. Never fails the test.
 fn print_recent_txs(env: &Env, friendly: &str, label: &str) {
     let v3 = env.rpc.replace("/api/v2", "/api/v3");
-    let raw = curl(env, &[format!("{v3}/transactions?account={friendly}&limit=2&sort=desc")]);
+    let raw = curl(
+        env,
+        &[format!(
+            "{v3}/transactions?account={friendly}&limit=2&sort=desc"
+        )],
+    );
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
         println!("  [{label}] (v3 tx fetch unavailable)");
         return;
@@ -311,7 +345,9 @@ fn set_platform_fee(env: &Env, rpc: &ToncenterRpc, gp_addr: &WalletAddress, new_
         params.platform_fee_bps
     );
     params.platform_fee_bps = new_fee;
-    params.validate().expect("toggled params still satisfy the §12 bounds");
+    params
+        .validate()
+        .expect("toggled params still satisfy the §12 bounds");
 
     let body = build_update_params(0xC0FFEE, &fee_recipient, &params);
     let res = rpc
@@ -345,19 +381,30 @@ fn rust_signed_update_params_is_accepted_on_chain() {
     };
 
     // The production signer/broadcaster under test.
-    let rpc = ToncenterRpc::new(&env.rpc, Some(env.api_key.clone()), "testnet", &env.mnemonic)
-        .expect("ToncenterRpc builds from the testnet mnemonic");
+    let rpc = ToncenterRpc::new(
+        &env.rpc,
+        Some(env.api_key.clone()),
+        "testnet",
+        &env.mnemonic,
+    )
+    .expect("ToncenterRpc builds from the testnet mnemonic");
 
     // 1) The Rust-derived wallet address must match the funded testnet wallet.
     let wallet = rpc.wallet_address();
     let expected = WalletAddress::from_base64_str(WALLET_FRIENDLY).unwrap();
-    assert_eq!(wallet, expected, "Rust-derived v5r1 address must equal the funded wallet");
+    assert_eq!(
+        wallet, expected,
+        "Rust-derived v5r1 address must equal the funded wallet"
+    );
     println!("wallet = {} ({WALLET_FRIENDLY})", wallet.to_raw_string());
 
     let gp_addr = WalletAddress::from_base64_str(GLOBAL_PARAMS_FRIENDLY).unwrap();
 
     let start_balance = balance(&env, WALLET_FRIENDLY);
-    println!("start balance = {start_balance} nanoton (~{} TON)", start_balance as f64 / 1e9);
+    println!(
+        "start balance = {start_balance} nanoton (~{} TON)",
+        start_balance as f64 / 1e9
+    );
 
     // Read the current value so the toggle (and revert) are exact + reversible.
     let (_, original) = read_params(&env);
@@ -372,7 +419,10 @@ fn rust_signed_update_params_is_accepted_on_chain() {
     set_platform_fee(&env, &rpc, &gp_addr, original_fee);
 
     let end_balance = balance(&env, WALLET_FRIENDLY);
-    println!("end balance = {end_balance} nanoton (~{} TON)", end_balance as f64 / 1e9);
+    println!(
+        "end balance = {end_balance} nanoton (~{} TON)",
+        end_balance as f64 / 1e9
+    );
     println!(
         "spent = {} nanoton (~{} TON) across 2 admin ops",
         start_balance - end_balance,
@@ -380,7 +430,10 @@ fn rust_signed_update_params_is_accepted_on_chain() {
     );
 
     let (_, restored) = read_params(&env);
-    assert_eq!(restored.platform_fee_bps, original_fee, "platformFeeBps restored to original");
+    assert_eq!(
+        restored.platform_fee_bps, original_fee,
+        "platformFeeBps restored to original"
+    );
     println!("RESULT: Rust-signed wallet-v5r1 BoC ACCEPTED on-chain; state toggled and restored.");
 }
 
@@ -395,14 +448,20 @@ fn rust_signed_anchor_submit_is_accepted_on_chain() {
     let Some(env) = env() else {
         return skip("TON_TESTNET_* not set");
     };
-    let rpc = ToncenterRpc::new(&env.rpc, Some(env.api_key.clone()), "testnet", &env.mnemonic)
-        .expect("ToncenterRpc builds");
+    let rpc = ToncenterRpc::new(
+        &env.rpc,
+        Some(env.api_key.clone()),
+        "testnet",
+        &env.mnemonic,
+    )
+    .expect("ToncenterRpc builds");
     let anchor = WalletAddress::from_base64_str(ANCHOR_FRIENDLY).unwrap();
 
     let (epoch, prev_root) = read_anchor_state(&env);
     let next_epoch = epoch + 1;
     // A fresh, recognizable test root chained onto the stored one.
-    let new_root: [u8; 32] = *blake3::hash(format!("rust-v5r1-anchor-epoch-{next_epoch}").as_bytes()).as_bytes();
+    let new_root: [u8; 32] =
+        *blake3::hash(format!("rust-v5r1-anchor-epoch-{next_epoch}").as_bytes()).as_bytes();
     // stakeWeight is off-chain metadata (NOT funds); clear the 100-TON threshold.
     let stake_weight: u128 = 100_000_000_000;
 
@@ -419,13 +478,28 @@ fn rust_signed_anchor_submit_is_accepted_on_chain() {
     println!("  sendBoc accepted: {res}");
 
     let after_seqno = wait_for_seqno(&env, before_seqno + 1, "wallet");
-    assert_eq!(after_seqno, before_seqno + 1, "wallet seqno must increment by 1");
+    assert_eq!(
+        after_seqno,
+        before_seqno + 1,
+        "wallet seqno must increment by 1"
+    );
 
     sleep(Duration::from_secs(4));
     let (epoch_after, last_after) = read_anchor_state(&env);
-    println!("  on-chain currentEpoch now = {epoch_after}, lastRoot = {}", hex::encode(last_after));
-    assert_eq!(epoch_after, next_epoch, "currentEpoch must advance to next_epoch (anchor body accepted)");
-    assert_eq!(last_after, new_root, "lastRoot must equal the submitted root");
+    println!(
+        "  on-chain currentEpoch now = {epoch_after}, lastRoot = {}",
+        hex::encode(last_after)
+    );
+    assert_eq!(
+        epoch_after, next_epoch,
+        "currentEpoch must advance to next_epoch (anchor body accepted)"
+    );
+    assert_eq!(
+        last_after, new_root,
+        "lastRoot must equal the submitted root"
+    );
     print_recent_txs(&env, ANCHOR_FRIENDLY, "anchor");
-    println!("RESULT: Rust-signed AnchorSubmitRoot ACCEPTED on-chain; epoch advanced + root chained.");
+    println!(
+        "RESULT: Rust-signed AnchorSubmitRoot ACCEPTED on-chain; epoch advanced + root chained."
+    );
 }

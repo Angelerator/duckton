@@ -131,13 +131,17 @@ pub fn verify_binding(b: &NodeWalletBinding, now: u64) -> Result<(), BindingErro
     }
 
     // node_id must be derived from the node public key (b3:BLAKE3(pubkey)).
-    let expected_node_id = format!("b3:{}", hex::encode(blake3::hash(&b.node_pubkey).as_bytes()));
+    let expected_node_id = format!(
+        "b3:{}",
+        hex::encode(blake3::hash(&b.node_pubkey).as_bytes())
+    );
     if expected_node_id != b.node_id {
         return Err(BindingError::NodeIdMismatch);
     }
 
     // Direction 1: node attests the wallet.
-    let node_vk = VerifyingKey::from_bytes(&b.node_pubkey).map_err(|_| BindingError::BadKeyOrSig)?;
+    let node_vk =
+        VerifyingKey::from_bytes(&b.node_pubkey).map_err(|_| BindingError::BadKeyOrSig)?;
     let node_sig_bytes: [u8; 64] = b
         .sig_node
         .as_slice()
@@ -234,7 +238,12 @@ mod tests {
             Err(BindingError::ProofExpired)
         );
         // Implausibly in the future.
-        let future = signed_proof(&sk, &addr, b"x".to_vec(), NOW + TON_PROOF_FUTURE_SKEW_SECS + 60);
+        let future = signed_proof(
+            &sk,
+            &addr,
+            b"x".to_vec(),
+            NOW + TON_PROOF_FUTURE_SKEW_SECS + 60,
+        );
         assert_eq!(
             verify_ton_proof(&addr, &pk, &future, EXPECTED_TON_PROOF_DOMAIN, NOW),
             Err(BindingError::ProofExpired)
@@ -254,7 +263,11 @@ mod tests {
         );
     }
 
-    fn make_binding(node_sk: &SigningKey, wallet_sk: &SigningKey, now_expiry: u64) -> NodeWalletBinding {
+    fn make_binding(
+        node_sk: &SigningKey,
+        wallet_sk: &SigningKey,
+        now_expiry: u64,
+    ) -> NodeWalletBinding {
         let node_pk = node_sk.verifying_key().to_bytes();
         let wallet_pk = wallet_sk.verifying_key().to_bytes();
         let node_id = format!("b3:{}", hex::encode(blake3::hash(&node_pk).as_bytes()));
@@ -303,7 +316,10 @@ mod tests {
         let wallet_sk = SigningKey::from_bytes(&[2u8; 32]);
         let mut b = make_binding(&node_sk, &wallet_sk, 2_000_000_000);
         b.node_id = "b3:deadbeef".into();
-        assert_eq!(verify_binding(&b, 1_700_000_000), Err(BindingError::NodeIdMismatch));
+        assert_eq!(
+            verify_binding(&b, 1_700_000_000),
+            Err(BindingError::NodeIdMismatch)
+        );
     }
 
     #[test]
@@ -324,6 +340,9 @@ mod tests {
         // Re-sign the proof with the wrong key.
         let digest = ton_proof_signing_hash(&b.wallet_address, &b.ton_proof);
         b.ton_proof.signature = other.sign(&digest).to_bytes().to_vec();
-        assert_eq!(verify_binding(&b, 1_700_000_000), Err(BindingError::TonProofInvalid));
+        assert_eq!(
+            verify_binding(&b, 1_700_000_000),
+            Err(BindingError::TonProofInvalid)
+        );
     }
 }

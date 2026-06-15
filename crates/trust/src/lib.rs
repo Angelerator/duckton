@@ -29,20 +29,18 @@ pub use antiabuse::{
     classify_failure, is_job_consensus_failure, is_nondeterministic, requester_trust_weight,
     sign_abuse_signal, verify_abuse_signal,
 };
+pub use attestation::{
+    AllowlistVerifier, AttestError, AttestationVerifier, Attestor, MockAttestor,
+};
 pub use canonical::{canonical_hash, evaluate_quorum, QuorumOutcome};
+pub use capability::{sign_capability_ad, verify_capability_ad, CapabilityDraft};
+pub use failure_detector::PhiDetector;
+pub use persistent::{RedbTrustStore, TrustStoreError};
 pub use receipt::{sign_receipt, signing_bytes, verify_receipt, ReceiptDraft, Signer};
 pub use reputation::{
     age_factor, attestation_gate, confidence_reputation, exploration_bonus, now_ts,
     soft_trust_score, InMemoryTrustStore, TrustInputs, TrustStore,
 };
-pub use attestation::{
-    AllowlistVerifier, AttestError, Attestor, AttestationVerifier, MockAttestor,
-};
-pub use capability::{sign_capability_ad, verify_capability_ad, CapabilityDraft};
-pub use failure_detector::PhiDetector;
-pub use persistent::{RedbTrustStore, TrustStoreError};
-pub use sealing::{
-    decrypt_at_rest, encrypt_at_rest, seal_to, SealedBlob, SealingKeypair,
-};
+pub use sealing::{decrypt_at_rest, encrypt_at_rest, seal_to, SealedBlob, SealingKeypair};
 pub use sybil::{make_vouch, mint_pow, verify_pow, verify_vouch, PowStamp, Vouch};
 pub use token::{AuthContext, CapabilityToken, Caveat, TokenError};

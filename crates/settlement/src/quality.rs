@@ -161,7 +161,10 @@ mod tests {
         let mut penalized = base.clone();
         penalized.penalties = vec![0.5];
         let q1 = quality_score(&penalized, &cfg());
-        assert!((q1 - 0.5 * q0).abs() < 1e-9, "a 50% penalty must halve Q ({q0} -> {q1})");
+        assert!(
+            (q1 - 0.5 * q0).abs() < 1e-9,
+            "a 50% penalty must halve Q ({q0} -> {q1})"
+        );
         // Stacked penalties compound.
         let mut stacked = base.clone();
         stacked.penalties = vec![0.5, 0.5];
@@ -175,7 +178,10 @@ mod tests {
         // at the same absolute latency, because the allowance scales with size.
         let big = latency_score(5 * c.latency_ref_ms, 10 * c.bytes_ref, &c);
         let small = latency_score(5 * c.latency_ref_ms, c.bytes_ref / 1000, &c);
-        assert!(big > small, "big job ({big}) should not be punished vs tiny ({small})");
+        assert!(
+            big > small,
+            "big job ({big}) should not be punished vs tiny ({small})"
+        );
         // Sub-reference jobs use the base latency_ref (floor at size_factor 1).
         assert_eq!(
             latency_score(c.latency_ref_ms, 1, &c),
@@ -189,7 +195,10 @@ mod tests {
         // Same bytes, faster (lower latency) ⇒ higher throughput score.
         let fast = throughput_score(100, c.bytes_ref, &c);
         let slow = throughput_score(10_000, c.bytes_ref, &c);
-        assert!(fast > slow, "higher rate must score higher ({fast} vs {slow})");
+        assert!(
+            fast > slow,
+            "higher rate must score higher ({fast} vs {slow})"
+        );
         // Touching huge volume very slowly does not max out the score.
         let slow_huge = throughput_score(10_000_000, c.bytes_ref * 100, &c);
         assert!(slow_huge < fast);

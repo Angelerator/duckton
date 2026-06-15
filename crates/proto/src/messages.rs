@@ -19,32 +19,22 @@ use crate::value::ResultSet;
 use crate::version::Version;
 
 /// Sensitivity class of the data a query touches (architecture §7.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DataClass {
+    #[default]
     Public,
     Internal,
     Sensitive,
 }
 
-impl Default for DataClass {
-    fn default() -> Self {
-        DataClass::Public
-    }
-}
-
 /// Verification mode chosen by the requester (architecture §11).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum VerifyMode {
     /// Return the fastest result; verify hashes in the background.
     Fast,
     /// Wait for `quorum` matching hashes before returning.
+    #[default]
     Quorum,
-}
-
-impl Default for VerifyMode {
-    fn default() -> Self {
-        VerifyMode::Quorum
-    }
 }
 
 /// Step 1: Requester probes a candidate worker.
@@ -171,17 +161,12 @@ pub struct ResultCommit {
 }
 
 /// Wire compression codec for result payloads (mirrors `p2p_config::CompressionAlgo`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Compression {
+    #[default]
     None,
     Lz4,
     Zstd,
-}
-
-impl Default for Compression {
-    fn default() -> Self {
-        Compression::None
-    }
 }
 
 /// Sent on the control stream *before* any bulk bytes, describing how the result
@@ -325,7 +310,10 @@ impl Verdict {
     /// may reduce a provider's reputation / incur a penalty). Requester/job-caused
     /// and non-attributable verdicts return `false`.
     pub fn is_provider_fault(self) -> bool {
-        matches!(self, Verdict::Incorrect | Verdict::Timeout | Verdict::Malformed)
+        matches!(
+            self,
+            Verdict::Incorrect | Verdict::Timeout | Verdict::Malformed
+        )
     }
 
     /// Whether this verdict should be recorded as an observation against a

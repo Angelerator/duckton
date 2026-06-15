@@ -17,12 +17,12 @@ use p2p_config::{
     DataClassCfg, GridConfig, IdentityConfig, LivenessConfig, PaymentPref, PinningMode,
     QueryOverrides, SettlementRail,
 };
-use p2p_proto::{Attestation, Bid, BidDecision, NodeId, Offer, Progress, Wire};
 use p2p_node::{
     AdmissionController, Candidate, CandidateFilter, Coordinator, CoordinatorError, Discovery,
     LivenessFilteredDiscovery, LivenessView, MockEngine, QueryEngine, StaticDiscovery, SwimVerdict,
     Worker, WorkerParams,
 };
+use p2p_proto::{Attestation, Bid, BidDecision, NodeId, Offer, Progress, Wire};
 use p2p_settlement::types::{Amount, SlashError};
 use p2p_settlement::{InMemoryStakeRegistry, SlashReason, StakeRegistry};
 use p2p_transport::endpoint::{read_msg, write_msg};
@@ -68,7 +68,13 @@ async fn spawn_worker_cfg(engine: Arc<dyn QueryEngine>, cfg: GridConfig) -> Work
     let params = WorkerParams::from_config(&cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -121,7 +127,8 @@ async fn spawn_stalling_worker(n_progress: usize, interval: Duration) -> WorkerH
                     tokio::spawn(async move {
                         match read_msg(&mut recv).await {
                             Ok(Wire::Offer(o)) => {
-                                let _ = write_msg(&mut send, &Wire::Bid(accept_bid(&o, &nid))).await;
+                                let _ =
+                                    write_msg(&mut send, &Wire::Bid(accept_bid(&o, &nid))).await;
                                 let _ = send.finish();
                             }
                             Ok(Wire::Dispatch(d)) => {
@@ -265,7 +272,10 @@ impl StakeRegistry for RecordingStakeRegistry {
         self.inner.stake_factor(node)
     }
     fn slash(&self, node: &NodeId, reason: SlashReason, amount: Amount) -> Result<(), SlashError> {
-        self.slashes.lock().unwrap().push((node.clone(), reason, amount));
+        self.slashes
+            .lock()
+            .unwrap()
+            .push((node.clone(), reason, amount));
         self.inner.slash(node, reason, amount)
     }
     fn request_unbond(&self, node: &NodeId, amount: Amount) -> Result<(), SlashError> {
@@ -298,9 +308,16 @@ async fn host_job_timeout_abandons_and_redispatches() {
     ]));
     let coord = coord_with(disc, fast_cfg(1, 1), store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    assert_eq!(outcome.winner.as_ref(), Some(&healthy.node_id), "fresh healthy node must win after abandon");
+    assert_eq!(
+        outcome.winner.as_ref(),
+        Some(&healthy.node_id),
+        "fresh healthy node must win after abandon"
+    );
 }
 
 // ===========================================================================
@@ -318,9 +335,15 @@ async fn all_silent_redispatches_to_a_fresh_set() {
     ]));
     let coord = coord_with(disc, fast_cfg(2, 2), store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    assert!(outcome.participants.iter().all(|p| *p == h1.node_id || *p == h2.node_id));
+    assert!(outcome
+        .participants
+        .iter()
+        .all(|p| *p == h1.node_id || *p == h2.node_id));
 }
 
 // ===========================================================================
@@ -337,9 +360,16 @@ async fn progress_stall_detected_redispatches() {
     ]));
     let coord = coord_with(disc, fast_cfg(1, 1), store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    assert_eq!(outcome.winner.as_ref(), Some(&healthy.node_id), "stalled node must be routed around");
+    assert_eq!(
+        outcome.winner.as_ref(),
+        Some(&healthy.node_id),
+        "stalled node must be routed around"
+    );
 }
 
 // ===========================================================================
@@ -357,11 +387,16 @@ async fn phi_convicted_node_is_excluded_from_selection() {
 
     let inner = Arc::new(StaticDiscovery::new(candidates_of(&[&dead, &healthy]), 64));
     let disc = Arc::new(LivenessFilteredDiscovery::new(inner, Arc::clone(&view)));
-    let coord = coord_with(disc, fast_cfg(1, 1), store()).await.with_liveness(view);
+    let coord = coord_with(disc, fast_cfg(1, 1), store())
+        .await
+        .with_liveness(view);
 
     // Run several times: the convicted node must never be selected/win.
     for _ in 0..4 {
-        let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
         assert_eq!(outcome.winner.as_ref(), Some(&healthy.node_id));
         assert!(outcome.participants.iter().all(|p| *p != dead.node_id));
     }
@@ -385,7 +420,10 @@ async fn unlimited_retry_until_a_later_healthy_node_succeeds() {
     cfg.scheduler.max_retries = 0; // unlimited
     let coord = coord_with(disc, cfg, store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     assert_eq!(outcome.winner.as_ref(), Some(&healthy.node_id));
 }
@@ -397,8 +435,9 @@ async fn unlimited_retry_until_a_later_healthy_node_succeeds() {
 async fn consensus_infeasible_query_stops_without_retry() {
     // All three selected nodes fail the SAME deterministic way (catalog error).
     let mk = || {
-        Arc::new(MockEngine::failing("Catalog Error: Table 'missing' does not exist"))
-            as Arc<dyn QueryEngine>
+        Arc::new(MockEngine::failing(
+            "Catalog Error: Table 'missing' does not exist",
+        )) as Arc<dyn QueryEngine>
     };
     let a = spawn_worker(mk()).await;
     let b = spawn_worker(mk()).await;
@@ -410,7 +449,10 @@ async fn consensus_infeasible_query_stops_without_retry() {
         .run_query("SELECT * FROM missing", QueryOverrides::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, CoordinatorError::Infeasible { .. }), "got {err:?}");
+    assert!(
+        matches!(err, CoordinatorError::Infeasible { .. }),
+        "got {err:?}"
+    );
 }
 
 // ===========================================================================
@@ -436,7 +478,10 @@ async fn retry_budget_caps_a_storm() {
     cfg.scheduler.retry_budget_refill_per_sec = 0.0; // no refill during the run
     let coord = coord_with(disc, cfg, store()).await;
 
-    let err = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap_err();
+    let err = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, CoordinatorError::RetryBudgetExhausted { attempts } if attempts == 3),
         "got {err:?}",
@@ -493,25 +538,44 @@ async fn paid_broken_commitment_is_fined() {
     // provider's failure is a broken commitment (not a query problem).
     let cfg = paid_cfg(fast_cfg(2, 1));
     let reg = Arc::new(RecordingStakeRegistry::new(InMemoryStakeRegistry::new(
-        0, 0, 0, 100_000 * TON,
+        0,
+        0,
+        0,
+        100_000 * TON,
     )));
     reg.inner.set_stake(&healthy.node_id, 1_000 * TON);
     reg.inner.set_stake(&failer.node_id, 1_000 * TON);
 
     // Both available; the silent one is dispatched alongside the healthy one.
-    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&healthy, &failer]), 64));
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates_of(&[&healthy, &failer]),
+        64,
+    ));
     let coord = coord_with(disc, cfg, store())
         .await
         .with_stake_registry(reg.clone());
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
-    assert!(outcome.verified, "single commit reaches quorum=1 → feasible");
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(
+        outcome.verified,
+        "single commit reaches quorum=1 → feasible"
+    );
     assert_eq!(outcome.winner.as_ref(), Some(&healthy.node_id));
 
     let slashes = reg.slashes();
-    assert_eq!(slashes.len(), 1, "exactly the one non-delivering provider is fined, got {slashes:?}");
+    assert_eq!(
+        slashes.len(),
+        1,
+        "exactly the one non-delivering provider is fined, got {slashes:?}"
+    );
     let (node, reason, amount) = &slashes[0];
-    assert_eq!(node, &failer.node_id, "the failer is fined, not the deliverer");
+    assert_eq!(
+        node, &failer.node_id,
+        "the failer is fined, not the deliverer"
+    );
     assert_eq!(*reason, SlashReason::FailedCommitment);
     assert_eq!(*amount, (1_000 * TON) / 10, "fine = 10% of bonded stake");
 }
@@ -521,8 +585,9 @@ async fn paid_broken_commitment_is_fined() {
 #[tokio::test]
 async fn consensus_infeasible_paid_job_fines_no_one() {
     let mk = || {
-        Arc::new(MockEngine::failing("Catalog Error: Table 'x' does not exist"))
-            as Arc<dyn QueryEngine>
+        Arc::new(MockEngine::failing(
+            "Catalog Error: Table 'x' does not exist",
+        )) as Arc<dyn QueryEngine>
     };
     let a = spawn_worker(mk()).await;
     let b = spawn_worker(mk()).await;
@@ -530,7 +595,10 @@ async fn consensus_infeasible_paid_job_fines_no_one() {
 
     let cfg = paid_cfg(fast_cfg(3, 2));
     let reg = Arc::new(RecordingStakeRegistry::new(InMemoryStakeRegistry::new(
-        0, 0, 0, 100_000 * TON,
+        0,
+        0,
+        0,
+        100_000 * TON,
     )));
     for w in [&a, &b, &c] {
         reg.inner.set_stake(&w.node_id, 1_000 * TON);
@@ -544,8 +612,14 @@ async fn consensus_infeasible_paid_job_fines_no_one() {
         .run_query("SELECT * FROM x", QueryOverrides::default())
         .await
         .unwrap_err();
-    assert!(matches!(err, CoordinatorError::Infeasible { .. }), "got {err:?}");
-    assert!(reg.slashes().is_empty(), "infeasible (job-fault) job fines nobody");
+    assert!(
+        matches!(err, CoordinatorError::Infeasible { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        reg.slashes().is_empty(),
+        "infeasible (job-fault) job fines nobody"
+    );
 }
 
 /// A FREE job with a non-delivering node → NO fine (no money was asked); the
@@ -559,21 +633,36 @@ async fn free_job_non_delivering_node_is_not_fined() {
     let cfg = fast_cfg(2, 1);
     assert!(!cfg.economics.enabled);
     let reg = Arc::new(RecordingStakeRegistry::new(InMemoryStakeRegistry::new(
-        0, 0, 0, 100_000 * TON,
+        0,
+        0,
+        0,
+        100_000 * TON,
     )));
     reg.inner.set_stake(&failer.node_id, 1_000 * TON); // staked, but free job
 
-    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&healthy, &failer]), 64));
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates_of(&[&healthy, &failer]),
+        64,
+    ));
     let coord = coord_with(disc, cfg, store())
         .await
         .with_stake_registry(reg.clone());
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    assert!(reg.slashes().is_empty(), "a free job never fines a non-delivering provider");
+    assert!(
+        reg.slashes().is_empty(),
+        "a free job never fines a non-delivering provider"
+    );
     // Reputation path still ran: the non-deliverer earned a (provider-fault) receipt.
     assert!(
-        outcome.receipts.iter().any(|r| r.worker_id == failer.node_id),
+        outcome
+            .receipts
+            .iter()
+            .any(|r| r.worker_id == failer.node_id),
         "the non-deliverer should still get a (reputation) receipt on a free job",
     );
 }
@@ -587,17 +676,26 @@ async fn unstaked_provider_is_not_fined() {
 
     let cfg = paid_cfg(fast_cfg(2, 1));
     let reg = Arc::new(RecordingStakeRegistry::new(InMemoryStakeRegistry::new(
-        0, 0, 0, 100_000 * TON,
+        0,
+        0,
+        0,
+        100_000 * TON,
     )));
     reg.inner.set_stake(&healthy.node_id, 1_000 * TON);
     // `failer` intentionally has ZERO stake (free-tier provider).
 
-    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&healthy, &failer]), 64));
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates_of(&[&healthy, &failer]),
+        64,
+    ));
     let coord = coord_with(disc, cfg, store())
         .await
         .with_stake_registry(reg.clone());
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     assert!(
         reg.slashes().is_empty(),

@@ -76,8 +76,10 @@ async fn coordinator(
         .iter()
         .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
         .collect();
-    let discovery =
-        Arc::new(StaticDiscovery::new(candidates, cfg.discovery.candidate_sample_size));
+    let discovery = Arc::new(StaticDiscovery::new(
+        candidates,
+        cfg.discovery.candidate_sample_size,
+    ));
     Coordinator::new(req_transport, discovery, store, cfg, "mock-1")
 }
 
@@ -100,8 +102,9 @@ fn worker_for_bids(
     blocklist: Option<Arc<Blocklist>>,
     rl: Option<Arc<RateLimiter>>,
 ) -> Worker {
-    let transport =
-        Arc::new(QuicTransport::bind(&cfg.network, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let transport = Arc::new(
+        QuicTransport::bind(&cfg.network, &idcfg(), NodeIdentity::generate().unwrap()).unwrap(),
+    );
     let admission = AdmissionController::new(&cfg.budget);
     let params = WorkerParams::from_config(cfg);
     Worker::new(
@@ -143,7 +146,10 @@ async fn nondeterministic_query_marks_non_verifiable_and_applies_no_penalty() {
         .run_query("SELECT random() AS r", Default::default())
         .await
         .expect("a non-verifiable query still returns a result");
-    assert!(!outcome.verified, "non-deterministic query must be flagged non-verified");
+    assert!(
+        !outcome.verified,
+        "non-deterministic query must be flagged non-verified"
+    );
     // No provider is penalized — not even the 'cheater' (its divergent hash is
     // expected for a non-deterministic query, not provable fault).
     assert_eq!(st.penalty(&bad.node_id), 0.0);
@@ -170,25 +176,49 @@ async fn requester_trust_weighting_gates_new_senders() {
     let h2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let bad = spawn_worker(Arc::new(MockEngine::deterministic().cheating())).await;
     let st = store();
-    let coord = coordinator(&[&h1, &h2, &bad], cfg.clone(), st.clone() as Arc<dyn TrustStore>).await;
-    let outcome = coord.run_query("SELECT 1", Default::default()).await.unwrap();
+    let coord = coordinator(
+        &[&h1, &h2, &bad],
+        cfg.clone(),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await;
+    let outcome = coord
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap();
     assert!(outcome.verified, "two honest workers still reach quorum");
     // The cheater is correctly identified...
-    let bad_receipt = outcome.receipts.iter().find(|r| r.worker_id == bad.node_id).unwrap();
+    let bad_receipt = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == bad.node_id)
+        .unwrap();
     assert_eq!(bad_receipt.verdict, p2p_proto::Verdict::Incorrect);
     // ...but a brand-new requester barely moves its score.
-    assert_eq!(st.penalty(&bad.node_id), 0.0, "new requester's penalty is gated to ~0");
+    assert_eq!(
+        st.penalty(&bad.node_id),
+        0.0,
+        "new requester's penalty is gated to ~0"
+    );
 
     // Established requester: seed this node's own requester reputation, then the
     // SAME cheater outcome applies the full penalty.
     let st2 = store();
-    let coord2 = coordinator(&[&h1, &h2, &bad], cfg.clone(), st2.clone() as Arc<dyn TrustStore>).await;
+    let coord2 = coordinator(
+        &[&h1, &h2, &bad],
+        cfg.clone(),
+        st2.clone() as Arc<dyn TrustStore>,
+    )
+    .await;
     let self_id = coord2.local_node_id().clone();
     let now = now_ts();
     for _ in 0..60 {
         st2.record_requester(&self_id, true, now);
     }
-    let outcome2 = coord2.run_query("SELECT 1", Default::default()).await.unwrap();
+    let outcome2 = coord2
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap();
     assert!(outcome2.verified);
     let penalty = st2.penalty(&bad.node_id);
     assert!(
@@ -210,7 +240,10 @@ async fn cost_gate_declines_over_budget_offer() {
 
     // Within budget ⇒ accepted.
     let ok = worker.bid_for(&offer("b3:req", Some(500_000), DataClass::Public));
-    assert!(matches!(ok.decision, BidDecision::Accept), "within budget should accept");
+    assert!(
+        matches!(ok.decision, BidDecision::Accept),
+        "within budget should accept"
+    );
 
     // Heavy query ⇒ declined (rejection, not a failure — no execution, no score).
     let heavy = worker.bid_for(&offer("b3:req", Some(50_000_000), DataClass::Public));
@@ -231,12 +264,20 @@ async fn blocklist_excludes_blocked_candidate_from_selection() {
     let st = store();
     let cfg = Arc::new(base_cfg(1, 1));
     let bl = Arc::new(Blocklist::new());
-    bl.block(blocked.node_id.as_str(), p2p_config::BlockKind::NodeId, "test", "manual");
+    bl.block(
+        blocked.node_id.as_str(),
+        p2p_config::BlockKind::NodeId,
+        "test",
+        "manual",
+    );
     let coord = coordinator(&[&good, &blocked], cfg, st as Arc<dyn TrustStore>)
         .await
         .with_blocklist(bl);
 
-    let outcome = coord.run_query("SELECT 1", Default::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap();
     // The blocked worker must never be selected.
     assert!(!outcome.participants.contains(&blocked.node_id));
     assert_eq!(outcome.winner.as_ref(), Some(&good.node_id));
@@ -274,21 +315,30 @@ async fn free_mode_rate_limit_triggers_per_requester() {
 
     // First two free offers accepted...
     assert!(matches!(
-        worker.bid_for(&offer("b3:spammer", None, DataClass::Public)).decision,
+        worker
+            .bid_for(&offer("b3:spammer", None, DataClass::Public))
+            .decision,
         BidDecision::Accept
     ));
     assert!(matches!(
-        worker.bid_for(&offer("b3:spammer", None, DataClass::Public)).decision,
+        worker
+            .bid_for(&offer("b3:spammer", None, DataClass::Public))
+            .decision,
         BidDecision::Accept
     ));
     // ...the third is rate-limited.
-    match worker.bid_for(&offer("b3:spammer", None, DataClass::Public)).decision {
+    match worker
+        .bid_for(&offer("b3:spammer", None, DataClass::Public))
+        .decision
+    {
         BidDecision::Reject { reason } => assert!(reason.contains("rate limit"), "got {reason}"),
         other => panic!("expected rate-limit reject, got {other:?}"),
     }
     // A different requester identity has its own budget.
     assert!(matches!(
-        worker.bid_for(&offer("b3:other", None, DataClass::Public)).decision,
+        worker
+            .bid_for(&offer("b3:other", None, DataClass::Public))
+            .decision,
         BidDecision::Accept
     ));
 }
@@ -301,10 +351,21 @@ async fn deterministic_cheater_still_penalized_by_default() {
     let h2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let bad = spawn_worker(Arc::new(MockEngine::deterministic().cheating())).await;
     let st = store();
-    let coord = coordinator(&[&h1, &h2, &bad], Arc::new(base_cfg(3, 2)), st.clone() as Arc<dyn TrustStore>).await;
-    let outcome = coord.run_query("SELECT 1", Default::default()).await.unwrap();
+    let coord = coordinator(
+        &[&h1, &h2, &bad],
+        Arc::new(base_cfg(3, 2)),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await;
+    let outcome = coord
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    assert!(st.penalty(&bad.node_id) > 0.0, "a real cheater is still penalized");
+    assert!(
+        st.penalty(&bad.node_id) > 0.0,
+        "a real cheater is still penalized"
+    );
 }
 
 #[cfg(feature = "discovery-libp2p")]
@@ -316,10 +377,15 @@ async fn gossipsub_peer_scoring_config_plumbs_and_builds() {
     let mut cfg = GridConfig::default();
     cfg.antiabuse.gossip.peer_scoring = true;
     let dc = Libp2pDiscoveryConfig::from_grid(&cfg).unwrap();
-    assert!(dc.gossip_peer_scoring, "peer scoring flag must plumb from config");
+    assert!(
+        dc.gossip_peer_scoring,
+        "peer scoring flag must plumb from config"
+    );
 
     // The overlay builds and listens with peer scoring enabled.
-    let disc = Libp2pDiscovery::spawn(dc).await.expect("overlay builds with peer scoring");
+    let disc = Libp2pDiscovery::spawn(dc)
+        .await
+        .expect("overlay builds with peer scoring");
     let addrs = disc.wait_listeners(Duration::from_secs(5)).await;
     assert!(!addrs.is_empty(), "overlay should bind a listen address");
 }

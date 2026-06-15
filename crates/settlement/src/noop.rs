@@ -36,7 +36,11 @@ pub struct NoopSettlement;
 impl Settlement for NoopSettlement {
     fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError> {
         // No funds are locked; return an inert handle for type-compatibility.
-        Ok(EscrowHandle { job: job.clone(), address: WalletAddress::new(0, [0u8; 32]), max_bid })
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address: WalletAddress::new(0, [0u8; 32]),
+            max_bid,
+        })
     }
     fn settle(&self, _h: &EscrowHandle, _outcome: &SettlementOutcome) -> Result<(), SettleError> {
         Ok(())
@@ -65,7 +69,12 @@ impl StakeRegistry for NoopStakeRegistry {
     fn stake_factor(&self, _node: &NodeId) -> f64 {
         0.0
     }
-    fn slash(&self, _node: &NodeId, _reason: SlashReason, _amount: Amount) -> Result<(), SlashError> {
+    fn slash(
+        &self,
+        _node: &NodeId,
+        _reason: SlashReason,
+        _amount: Amount,
+    ) -> Result<(), SlashError> {
         Ok(())
     }
     fn request_unbond(&self, _node: &NodeId, _amount: Amount) -> Result<(), SlashError> {
@@ -96,12 +105,20 @@ mod tests {
         let s = NoopSettlement;
         assert!(!s.is_onchain());
         let h = s.open_escrow(&JobId("j".into()), 100).unwrap();
-        assert!(s.settle(&h, &SettlementOutcome {
-            result_hash: [0u8; 32],
-            winner: crate::types::Payout { to: WalletAddress::new(0, [0u8; 32]), amount: 0 },
-            participants: vec![],
-            platform_fee: 0,
-        }).is_ok());
+        assert!(s
+            .settle(
+                &h,
+                &SettlementOutcome {
+                    result_hash: [0u8; 32],
+                    winner: crate::types::Payout {
+                        to: WalletAddress::new(0, [0u8; 32]),
+                        amount: 0
+                    },
+                    participants: vec![],
+                    platform_fee: 0,
+                }
+            )
+            .is_ok());
         assert!(s.refund(&h).is_ok());
     }
 

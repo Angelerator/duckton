@@ -245,13 +245,7 @@ pub struct ParquetMetadata {
 /// feature.
 pub fn parquet_metadata_from_resultset(rs: &ResultSet) -> ParquetMetadata {
     let col = |name: &str| rs.columns.iter().position(|c| c.eq_ignore_ascii_case(name));
-    let (
-        Some(i_rg),
-        Some(i_rows),
-        Some(i_path),
-        Some(i_vals),
-        Some(i_size),
-    ) = (
+    let (Some(i_rg), Some(i_rows), Some(i_path), Some(i_vals), Some(i_size)) = (
         col("row_group_id"),
         col("row_group_num_rows"),
         col("path_in_schema"),
@@ -396,8 +390,7 @@ impl ScanEstimate {
         } else {
             0
         };
-        let estimated_output_rows =
-            ((total_rows as f64) * surviving_selectivity).round() as u64;
+        let estimated_output_rows = ((total_rows as f64) * surviving_selectivity).round() as u64;
         Self {
             scanned_uncompressed_bytes: scanned_bytes,
             total_rows,
@@ -621,7 +614,9 @@ pub fn estimate_working_set(
     shape: &QueryShape,
     params: &EstimateParams,
 ) -> WorkingSetEstimate {
-    let scan_buffer_bytes = scan.scanned_uncompressed_bytes.min(params.scan_buffer_cap_bytes);
+    let scan_buffer_bytes = scan
+        .scanned_uncompressed_bytes
+        .min(params.scan_buffer_cap_bytes);
 
     let group_by_bytes = if shape.group_by {
         let payload = if shape.group_payload_bytes > 0 {
@@ -707,9 +702,12 @@ pub fn csv_metadata(
     let object_bytes = std::fs::metadata(path)
         .map_err(|e| EstimateError::Io(path.display().to_string(), e))?
         .len();
-    let mut f = std::fs::File::open(path).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
     let mut buf = vec![0u8; sample_limit_bytes.min(object_bytes as usize)];
-    let n = f.read(&mut buf).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
+    let n = f
+        .read(&mut buf)
+        .map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
     buf.truncate(n);
 
     // Count complete lines in the sample (newline-terminated).
@@ -759,9 +757,12 @@ pub fn ndjson_metadata(
     let object_bytes = std::fs::metadata(path)
         .map_err(|e| EstimateError::Io(path.display().to_string(), e))?
         .len();
-    let mut f = std::fs::File::open(path).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
+    let mut f =
+        std::fs::File::open(path).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
     let mut buf = vec![0u8; sample_limit_bytes.min(object_bytes as usize)];
-    let n = f.read(&mut buf).map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
+    let n = f
+        .read(&mut buf)
+        .map_err(|e| EstimateError::Io(path.display().to_string(), e))?;
     buf.truncate(n);
 
     let newline_positions: Vec<usize> = buf
@@ -833,7 +834,11 @@ pub fn delta_metadata(table_dir: &std::path::Path) -> Result<DeltaMetadata, Esti
                 }
             }
             if let Some(add) = v.get("add") {
-                let p = add.get("path").and_then(|s| s.as_str()).unwrap_or("").to_string();
+                let p = add
+                    .get("path")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let size = add.get("size").and_then(|s| s.as_u64()).unwrap_or(0);
                 let (num_records, bounds) = parse_delta_stats(add.get("stats"));
                 added_paths.insert(
@@ -888,7 +893,10 @@ fn parse_delta_stats(
         },
         other => other.clone(),
     };
-    let num_records = parsed.get("numRecords").and_then(|n| n.as_u64()).unwrap_or(0);
+    let num_records = parsed
+        .get("numRecords")
+        .and_then(|n| n.as_u64())
+        .unwrap_or(0);
     let mins = parsed.get("minValues").and_then(|m| m.as_object());
     let maxs = parsed.get("maxValues").and_then(|m| m.as_object());
     if let Some(mins) = mins {
@@ -932,7 +940,7 @@ pub fn parse_explain_cardinality(explain_text: &str) -> Option<u64> {
 
     let mut max_ec: Option<u64> = None;
     let mut bump = |v: u64| max_ec = Some(max_ec.map_or(v, |m: u64| m.max(v)));
-    for raw in explain_text.split(|c| c == '\n' || c == '|') {
+    for raw in explain_text.split(['\n', '|']) {
         let line = raw.trim();
         // Legacy DuckDB annotation: `EC: <n>`.
         if let Some(idx) = line.find("EC:") {
@@ -962,7 +970,13 @@ pub fn parse_explain_cardinality(explain_text: &str) -> Option<u64> {
 mod tests {
     use super::*;
 
-    fn chunk(name: &str, bytes: u64, vals: u64, min: Option<f64>, max: Option<f64>) -> ColumnChunkMeta {
+    fn chunk(
+        name: &str,
+        bytes: u64,
+        vals: u64,
+        min: Option<f64>,
+        max: Option<f64>,
+    ) -> ColumnChunkMeta {
         ColumnChunkMeta {
             name: name.into(),
             total_uncompressed_size: bytes,
@@ -1042,7 +1056,10 @@ mod tests {
         // scanned bytes 16000).
         let streaming = estimate_working_set(&scan, &QueryShape::streaming(), &p);
         assert_eq!(streaming.group_by_bytes, 0);
-        assert_eq!(streaming.peak_working_set_bytes, scan.scanned_uncompressed_bytes);
+        assert_eq!(
+            streaming.peak_working_set_bytes,
+            scan.scanned_uncompressed_bytes
+        );
 
         // High-cardinality GROUP BY: 2000 distinct groups * (8-byte width + 32
         // overhead) = 80000, which dominates the 16000 scan buffer.
@@ -1098,8 +1115,16 @@ mod tests {
         let meta = TableFilesMetadata {
             all_columns: vec!["ts".into(), "a".into(), "b".into(), "c".into()],
             files: vec![
-                DataFileMeta { size_bytes: 1_000_000, record_count: 10_000, bounds: f1_bounds },
-                DataFileMeta { size_bytes: 1_000_000, record_count: 10_000, bounds: f2_bounds },
+                DataFileMeta {
+                    size_bytes: 1_000_000,
+                    record_count: 10_000,
+                    bounds: f1_bounds,
+                },
+                DataFileMeta {
+                    size_bytes: 1_000_000,
+                    record_count: 10_000,
+                    bounds: f2_bounds,
+                },
             ],
         };
         let p = EstimateParams::default();

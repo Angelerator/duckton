@@ -14,9 +14,7 @@
 //! The codec actually applied is carried in the manifest, so the receiver
 //! decodes correctly regardless of its own configuration.
 
-use p2p_proto::{
-    Compression, JobId, ResultChunk, ResultManifest, ResultPart, ResultSet, Wire,
-};
+use p2p_proto::{Compression, JobId, ResultChunk, ResultManifest, ResultPart, ResultSet, Wire};
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, RecvStream, SendStream, TransportError};
 
@@ -326,17 +324,23 @@ mod tests {
     use std::time::Duration;
 
     fn idcfg() -> IdentityConfig {
-        IdentityConfig { key_path: None, pinning_mode: PinningMode::Tofu, allowlist: vec![] }
+        IdentityConfig {
+            key_path: None,
+            pinning_mode: PinningMode::Tofu,
+            allowlist: vec![],
+        }
     }
 
     /// Establish a loopback QUIC connection, returning (server_conn, client_conn)
     /// plus the transports (kept alive by the caller).
     async fn conn_pair() -> (Conn, Conn, Arc<QuicTransport>, Arc<QuicTransport>) {
         let net = GridConfig::default().network;
-        let server =
-            Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
-        let client =
-            Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+        let server = Arc::new(
+            QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap(),
+        );
+        let client = Arc::new(
+            QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap(),
+        );
         let addr = server.local_addr().unwrap();
         let server_id = server.local_node_id().clone();
         let srv = server.clone();
@@ -413,15 +417,23 @@ mod tests {
         let job = JobId::new();
         let rs = ResultSet::new(
             vec!["k".into(), "v".into()],
-            (0..100u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+            (0..100u8)
+                .map(|i| vec![Value::Int(i as i64), Value::Int(7)])
+                .collect(),
         );
         let rs_clone = rs.clone();
         let job_w = job.clone();
         let writer = tokio::spawn(async move {
             let (mut send, _recv) = client_conn.open_bi().await.unwrap();
-            send_result(&client_conn, &mut send, &job_w, &rs_clone, &SendOpts::default())
-                .await
-                .unwrap();
+            send_result(
+                &client_conn,
+                &mut send,
+                &job_w,
+                &rs_clone,
+                &SendOpts::default(),
+            )
+            .await
+            .unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
         });
 

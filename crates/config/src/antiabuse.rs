@@ -296,7 +296,8 @@ impl AntiAbuseConfig {
             }
             if self.free_rate_limit.max_free_per_window == 0 {
                 return Err(ConfigError::Invalid(
-                    "antiabuse.free_rate_limit.max_free_per_window must be >= 1 when enabled".into(),
+                    "antiabuse.free_rate_limit.max_free_per_window must be >= 1 when enabled"
+                        .into(),
                 ));
             }
             if self.free_rate_limit.max_tracked_requesters == 0 {

@@ -40,8 +40,8 @@ fn local_scoped_cfg(dir: &str) -> StorageConfig {
 async fn parquet_footer_probe_drives_estimate_with_pruning() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nums.parquet");
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
 
     // Write a multi-row-group Parquet file: 4000 rows, small row-group size so
     // the footer has several row-groups with id min/max stats for pruning.
@@ -75,7 +75,10 @@ async fn parquet_footer_probe_drives_estimate_with_pruning() {
         &[Predicate::new("id", Cmp::Ge, 3000.0)],
         &params,
     );
-    assert!(pruned.units_scanned < proj_id.units_scanned, "stats should prune row-groups");
+    assert!(
+        pruned.units_scanned < proj_id.units_scanned,
+        "stats should prune row-groups"
+    );
     assert!(pruned.total_rows <= 1000 + proj_id.total_rows / meta.row_groups.len() as u64 + 1);
 
     // A high-cardinality GROUP BY working set dominates the streaming scan.
@@ -87,8 +90,8 @@ async fn parquet_footer_probe_drives_estimate_with_pruning() {
 #[tokio::test]
 async fn explain_cardinality_probe_returns_estimate() {
     let dir = tempfile::tempdir().unwrap();
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
     let ec = eng
         .probe_explain_cardinality(
             "SELECT i % 10 AS g, count(*) FROM range(10000) t(i) GROUP BY g",
@@ -97,5 +100,8 @@ async fn explain_cardinality_probe_returns_estimate() {
         .await
         .unwrap();
     // DuckDB annotates the plan with EC: n; we should parse a positive estimate.
-    assert!(ec.unwrap_or(0) > 0, "expected a positive EXPLAIN cardinality, got {ec:?}");
+    assert!(
+        ec.unwrap_or(0) > 0,
+        "expected a positive EXPLAIN cardinality, got {ec:?}"
+    );
 }

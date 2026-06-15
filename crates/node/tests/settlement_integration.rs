@@ -23,16 +23,16 @@ use p2p_config::{
     DataClassCfg, GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides,
     SettlementRail,
 };
-use p2p_proto::{Attestation, JobId, NodeId};
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
     WorkerParams,
 };
+use p2p_proto::{Attestation, JobId, NodeId};
 use p2p_settlement::types::{Amount, SlashError};
 use p2p_settlement::{
-    merkle, settle_if_paid, EscrowHandle, Hash32, InclusionProof, InMemoryRecordAnchor,
-    InMemoryStakeRegistry, JobRecord, NoopRecordAnchor, OnchainPolicy, ParamsSource, PaymentMode,
-    Payout, RecordAnchor, Settlement, SettlementEvent, SettleError, SettlementOutcome, SlashReason,
+    merkle, settle_if_paid, EscrowHandle, Hash32, InMemoryRecordAnchor, InMemoryStakeRegistry,
+    InclusionProof, JobRecord, NoopRecordAnchor, OnchainPolicy, ParamsSource, PaymentMode, Payout,
+    RecordAnchor, SettleError, Settlement, SettlementEvent, SettlementOutcome, SlashReason,
     StakeRegistry, WalletAddress,
 };
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
@@ -70,7 +70,13 @@ async fn spawn_worker(engine: Arc<dyn QueryEngine>) -> WorkerHandle {
     let params = WorkerParams::from_config(&cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -112,7 +118,11 @@ fn store() -> Arc<InMemoryTrustStore> {
     ))
 }
 
-async fn coordinator(workers: &[&WorkerHandle], cfg: GridConfig, st: Arc<dyn TrustStore>) -> Coordinator {
+async fn coordinator(
+    workers: &[&WorkerHandle],
+    cfg: GridConfig,
+    st: Arc<dyn TrustStore>,
+) -> Coordinator {
     let net = GridConfig::default().network;
     let req =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
@@ -120,7 +130,10 @@ async fn coordinator(workers: &[&WorkerHandle], cfg: GridConfig, st: Arc<dyn Tru
         .iter()
         .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
         .collect();
-    let disc = Arc::new(StaticDiscovery::new(candidates, cfg.discovery.candidate_sample_size));
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates,
+        cfg.discovery.candidate_sample_size,
+    ));
     Coordinator::new(req, disc, st, Arc::new(cfg), "mock-1")
 }
 
@@ -154,7 +167,10 @@ struct SpyStakeRegistry {
 
 impl SpyStakeRegistry {
     fn new(inner: InMemoryStakeRegistry) -> Self {
-        Self { inner, factor_calls: AtomicUsize::new(0) }
+        Self {
+            inner,
+            factor_calls: AtomicUsize::new(0),
+        }
     }
     fn factor_calls(&self) -> usize {
         self.factor_calls.load(Ordering::SeqCst)
@@ -201,24 +217,39 @@ async fn free_job_runs_full_grid_path_with_zero_chain_calls() {
 
     // Default economics => disabled => every job is free.
     let cfg = base_cfg(2, 2);
-    assert!(!cfg.economics.enabled, "default grid must be free / no-chain");
+    assert!(
+        !cfg.economics.enabled,
+        "default grid must be free / no-chain"
+    );
     let coord = coordinator(&[&a, &b], cfg, st.clone() as Arc<dyn TrustStore>).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
 
     // Grid path, verified, with signed receipts and reputation updated.
     assert!(!outcome.executed_locally);
     assert!(outcome.verified);
-    assert!(!outcome.receipts.is_empty(), "a free job must still emit receipts");
+    assert!(
+        !outcome.receipts.is_empty(),
+        "a free job must still emit receipts"
+    );
     let winner = outcome.winner.clone().unwrap();
-    assert!(st.reputation(&winner, now_ts()).is_some(), "free work must score");
+    assert!(
+        st.reputation(&winner, now_ts()).is_some(),
+        "free work must score"
+    );
     assert!(st.observation_count(&winner) >= 1);
 
     // The settlement decision for a free job NEVER reaches the rail: even a
     // settlement that panics on any call is safe here.
     let dummy = SettlementOutcome {
         result_hash: [0u8; 32],
-        winner: Payout { to: wallet(1), amount: 0 },
+        winner: Payout {
+            to: wallet(1),
+            amount: 0,
+        },
         participants: vec![],
         platform_fee: 0,
     };
@@ -263,24 +294,45 @@ async fn paid_job_settles_split_and_anchors_record() {
         .await
         .with_stake_registry(reg);
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    let agreed = outcome.agreed_hash.clone().expect("quorum agreed on a hash");
+    let agreed = outcome
+        .agreed_hash
+        .clone()
+        .expect("quorum agreed on a hash");
     let winner = outcome.winner.clone().unwrap();
     // Agreeing non-winners receive participation commissions.
-    let others: Vec<NodeId> =
-        outcome.participants.iter().filter(|p| **p != winner).cloned().collect();
-    assert_eq!(others.len(), 1, "one agreeing participant beside the winner");
+    let others: Vec<NodeId> = outcome
+        .participants
+        .iter()
+        .filter(|p| **p != winner)
+        .cloned()
+        .collect();
+    assert_eq!(
+        others.len(),
+        1,
+        "one agreeing participant beside the winner"
+    );
 
     // Build the settlement split, bounded by the escrowed max bid `B`.
     let max_bid = 100 * TON;
     let settlement_outcome = SettlementOutcome {
         result_hash: blake3::hash(agreed.as_bytes()).into(),
-        winner: Payout { to: wallet(0xA1), amount: 60 * TON },
-        participants: others.iter().enumerate().map(|(i, _)| Payout {
-            to: wallet(0xB0 + i as u8),
-            amount: 5 * TON,
-        }).collect(),
+        winner: Payout {
+            to: wallet(0xA1),
+            amount: 60 * TON,
+        },
+        participants: others
+            .iter()
+            .enumerate()
+            .map(|(i, _)| Payout {
+                to: wallet(0xB0 + i as u8),
+                amount: 5 * TON,
+            })
+            .collect(),
         platform_fee: 3 * TON,
     };
     let expected_total = 60 * TON + 5 * TON + 3 * TON; // winner + 1 commission + fee
@@ -289,15 +341,26 @@ async fn paid_job_settles_split_and_anchors_record() {
 
     // Engage the paid rail: open escrow + settle (HTLC keyed on the result hash).
     let mock = p2p_settlement::MockSettlement::new();
-    let engaged =
-        settle_if_paid(PaymentMode::Paid, &mock, &outcome.job_id, max_bid, &settlement_outcome)
-            .unwrap();
+    let engaged = settle_if_paid(
+        PaymentMode::Paid,
+        &mock,
+        &outcome.job_id,
+        max_bid,
+        &settlement_outcome,
+    )
+    .unwrap();
     assert!(engaged, "paid job must engage settlement");
     assert_eq!(
         mock.events(),
         vec![
-            SettlementEvent::Opened { job: outcome.job_id.clone(), max_bid },
-            SettlementEvent::Settled { job: outcome.job_id.clone(), total: expected_total },
+            SettlementEvent::Opened {
+                job: outcome.job_id.clone(),
+                max_bid
+            },
+            SettlementEvent::Settled {
+                job: outcome.job_id.clone(),
+                total: expected_total
+            },
         ]
     );
 
@@ -327,8 +390,13 @@ async fn paid_job_settles_split_and_anchors_record() {
         params_version: 0,
     });
     let root = anchor.epoch_root();
-    let proof = anchor.prove_inclusion(&outcome.job_id).expect("anchored record proves inclusion");
-    assert!(merkle::verify_inclusion(&root, &proof), "inclusion proof must verify");
+    let proof = anchor
+        .prove_inclusion(&outcome.job_id)
+        .expect("anchored record proves inclusion");
+    assert!(
+        merkle::verify_inclusion(&root, &proof),
+        "inclusion proof must verify"
+    );
 
     // Reputation still updated for paid work.
     assert!(st.reputation(&winner, now_ts()).is_some());
@@ -342,18 +410,33 @@ async fn paid_settlement_rejects_payout_exceeding_escrow() {
     let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let st = store();
     let coord = coordinator(&[&w], paid_cfg(1, 1), st as Arc<dyn TrustStore>).await;
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
 
     let max_bid = 50 * TON;
     let over_budget = SettlementOutcome {
         result_hash: [9u8; 32],
-        winner: Payout { to: wallet(0xA1), amount: 60 * TON }, // already over the 50 bid
+        winner: Payout {
+            to: wallet(0xA1),
+            amount: 60 * TON,
+        }, // already over the 50 bid
         participants: vec![],
         platform_fee: 0,
     };
-    let err = settle_if_paid(PaymentMode::Paid, &p2p_settlement::MockSettlement::new(), &outcome.job_id, max_bid, &over_budget)
-        .unwrap_err();
-    assert!(matches!(err, SettleError::PayoutExceedsEscrow { .. }), "got {err:?}");
+    let err = settle_if_paid(
+        PaymentMode::Paid,
+        &p2p_settlement::MockSettlement::new(),
+        &outcome.job_id,
+        max_bid,
+        &over_budget,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, SettleError::PayoutExceedsEscrow { .. }),
+        "got {err:?}"
+    );
 }
 
 // --------------------------------------------------------------------------
@@ -370,30 +453,53 @@ async fn stake_seam_consulted_only_when_paid_and_enabled() {
     {
         let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
         let st = store();
-        let spy = Arc::new(SpyStakeRegistry::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON)));
+        let spy = Arc::new(SpyStakeRegistry::new(InMemoryStakeRegistry::new(
+            0,
+            0,
+            0,
+            100_000 * TON,
+        )));
         spy.inner.set_stake(&w.node_id, 1_000 * TON);
         let coord = coordinator(&[&w], base_cfg(1, 1), st as Arc<dyn TrustStore>)
             .await
             .with_stake_registry(spy.clone());
 
-        let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
         assert!(outcome.verified);
-        assert_eq!(spy.factor_calls(), 0, "free job must not consult the stake seam");
+        assert_eq!(
+            spy.factor_calls(),
+            0,
+            "free job must not consult the stake seam"
+        );
     }
 
     // --- Paid + enabled grid: the seam IS consulted. ---
     {
         let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
         let st = store();
-        let spy = Arc::new(SpyStakeRegistry::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON)));
+        let spy = Arc::new(SpyStakeRegistry::new(InMemoryStakeRegistry::new(
+            0,
+            0,
+            0,
+            100_000 * TON,
+        )));
         spy.inner.set_stake(&w.node_id, 1_000 * TON);
         let coord = coordinator(&[&w], paid_cfg(1, 1), st as Arc<dyn TrustStore>)
             .await
             .with_stake_registry(spy.clone());
 
-        let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
         assert!(outcome.verified);
-        assert!(spy.factor_calls() >= 1, "paid+enabled job must consult the stake seam");
+        assert!(
+            spy.factor_calls() >= 1,
+            "paid+enabled job must consult the stake seam"
+        );
     }
 }
 
@@ -426,14 +532,21 @@ async fn paid_job_drives_coordinator_open_settle_anchor() {
         .with_settlement(settlement.clone())
         .with_record_anchor(anchor.clone());
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     let winner = outcome.winner.clone().unwrap();
 
     // The coordinator opened escrow for B (max_bid 100 TON) and then settled.
     let max_bid = 100 * TON;
     let events = settlement.events();
-    assert_eq!(events.len(), 2, "open then settle (no refund), got {events:?}");
+    assert_eq!(
+        events.len(),
+        2,
+        "open then settle (no refund), got {events:?}"
+    );
     assert!(
         matches!(&events[0], SettlementEvent::Opened { job, max_bid: b } if *job == outcome.job_id && *b == max_bid),
         "first event must be Opened with the escrowed B, got {:?}",
@@ -444,15 +557,23 @@ async fn paid_job_drives_coordinator_open_settle_anchor() {
     match &events[1] {
         SettlementEvent::Settled { job, total } => {
             assert_eq!(*job, outcome.job_id);
-            assert!(*total <= max_bid, "settle total {total} must not exceed escrow {max_bid}");
-            assert_eq!(*total, max_bid, "winner takes the remainder ⇒ total spends all of B");
+            assert!(
+                *total <= max_bid,
+                "settle total {total} must not exceed escrow {max_bid}"
+            );
+            assert_eq!(
+                *total, max_bid,
+                "winner takes the remainder ⇒ total spends all of B"
+            );
         }
         other => panic!("second event must be Settled, got {other:?}"),
     }
 
     // The settled paid job anchored exactly one record, which proves inclusion.
     assert_eq!(anchor.len(), 1, "settled paid job appends one JobRecord");
-    let proof = anchor.prove_inclusion(&outcome.job_id).expect("anchored record proves inclusion");
+    let proof = anchor
+        .prove_inclusion(&outcome.job_id)
+        .expect("anchored record proves inclusion");
     let root = anchor.epoch_root();
     assert!(merkle::verify_inclusion(&root, &proof));
 
@@ -469,19 +590,32 @@ struct CapturingSettlement {
 }
 impl CapturingSettlement {
     fn new() -> Self {
-        Self { opened: std::sync::Mutex::new(Vec::new()), settled: std::sync::Mutex::new(Vec::new()) }
+        Self {
+            opened: std::sync::Mutex::new(Vec::new()),
+            settled: std::sync::Mutex::new(Vec::new()),
+        }
     }
 }
 impl Settlement for CapturingSettlement {
     fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError> {
         self.opened.lock().unwrap().push(max_bid);
-        Ok(EscrowHandle { job: job.clone(), address: wallet(0xEE), max_bid })
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address: wallet(0xEE),
+            max_bid,
+        })
     }
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
         if outcome.total() > h.max_bid {
-            return Err(SettleError::PayoutExceedsEscrow { payout: outcome.total(), escrow: h.max_bid });
+            return Err(SettleError::PayoutExceedsEscrow {
+                payout: outcome.total(),
+                escrow: h.max_bid,
+            });
         }
-        self.settled.lock().unwrap().push((h.max_bid, outcome.clone()));
+        self.settled
+            .lock()
+            .unwrap()
+            .push((h.max_bid, outcome.clone()));
         Ok(())
     }
     fn refund(&self, _: &EscrowHandle) -> Result<(), SettleError> {
@@ -513,37 +647,70 @@ async fn paid_job_settles_two_agreeing_participant_commissions() {
     let settlement = Arc::new(CapturingSettlement::new());
     let anchor = Arc::new(InMemoryRecordAnchor::new());
 
-    let coord = coordinator(&[&w1, &w2, &w3], cfg.clone(), st.clone() as Arc<dyn TrustStore>)
-        .await
-        .with_stake_registry(reg)
-        .with_settlement(settlement.clone())
-        .with_record_anchor(anchor.clone());
+    let coord = coordinator(
+        &[&w1, &w2, &w3],
+        cfg.clone(),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await
+    .with_stake_registry(reg)
+    .with_settlement(settlement.clone())
+    .with_record_anchor(anchor.clone());
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     let winner = outcome.winner.clone().unwrap();
-    let agreeing: Vec<NodeId> =
-        outcome.participants.iter().filter(|p| **p != winner).cloned().collect();
-    assert_eq!(agreeing.len(), 2, "two agreeing non-winners beside the winner");
+    let agreeing: Vec<NodeId> = outcome
+        .participants
+        .iter()
+        .filter(|p| **p != winner)
+        .cloned()
+        .collect();
+    assert_eq!(
+        agreeing.len(),
+        2,
+        "two agreeing non-winners beside the winner"
+    );
 
     let max_bid = 100 * TON;
     let opened = settlement.opened.lock().unwrap().clone();
-    assert_eq!(opened, vec![max_bid], "escrow opened once for B before dispatch");
+    assert_eq!(
+        opened,
+        vec![max_bid],
+        "escrow opened once for B before dispatch"
+    );
 
     let settled = settlement.settled.lock().unwrap().clone();
     assert_eq!(settled.len(), 1, "settled exactly once");
     let (b, split) = &settled[0];
     assert_eq!(*b, max_bid);
     // Two participation commissions, each the same fixed κ·B, both > 0.
-    assert_eq!(split.participants.len(), 2, "two participant commissions in the split");
+    assert_eq!(
+        split.participants.len(),
+        2,
+        "two participant commissions in the split"
+    );
     let c0 = split.participants[0].amount;
     let c1 = split.participants[1].amount;
-    assert!(c0 > 0 && c0 == c1, "each agreeing non-winner earns the same fixed commission");
+    assert!(
+        c0 > 0 && c0 == c1,
+        "each agreeing non-winner earns the same fixed commission"
+    );
     // Distinct payout wallets for the two participants.
     assert_ne!(split.participants[0].to, split.participants[1].to);
     // Winner takes the remainder; the whole split is bounded by B and spends it.
-    assert!(split.total() <= max_bid, "payout split must not exceed the escrow B");
-    assert_eq!(split.total(), max_bid, "winner takes the remainder ⇒ total spends all of B");
+    assert!(
+        split.total() <= max_bid,
+        "payout split must not exceed the escrow B"
+    );
+    assert_eq!(
+        split.total(),
+        max_bid,
+        "winner takes the remainder ⇒ total spends all of B"
+    );
     assert_eq!(split.winner.amount, max_bid - split.platform_fee - c0 - c1);
 
     // The settled paid job anchored exactly one record.
@@ -569,7 +736,10 @@ async fn free_job_never_engages_coordinator_settlement() {
 
     // If the coordinator engaged the rail on this free job, PanicSettlement would
     // panic and fail the test. It completes cleanly instead.
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     assert_eq!(anchor.len(), 0, "free job anchors nothing");
 }
@@ -605,8 +775,15 @@ impl Settlement for TermsRecordingSettlement {
     fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError> {
         // The coordinator must use the terms-aware entry; record a sentinel hash
         // so a regression (calling the termless path) is caught.
-        self.opened.lock().unwrap().push((max_bid, [0xFFu8; 32], u32::MAX));
-        Ok(EscrowHandle { job: job.clone(), address: wallet(0xEE), max_bid })
+        self.opened
+            .lock()
+            .unwrap()
+            .push((max_bid, [0xFFu8; 32], u32::MAX));
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address: wallet(0xEE),
+            max_bid,
+        })
     }
     fn open_escrow_with_terms(
         &self,
@@ -615,14 +792,27 @@ impl Settlement for TermsRecordingSettlement {
         expected_hash: &Hash32,
         params_version: u32,
     ) -> Result<EscrowHandle, SettleError> {
-        self.opened.lock().unwrap().push((max_bid, *expected_hash, params_version));
-        Ok(EscrowHandle { job: job.clone(), address: wallet(0xEE), max_bid })
+        self.opened
+            .lock()
+            .unwrap()
+            .push((max_bid, *expected_hash, params_version));
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address: wallet(0xEE),
+            max_bid,
+        })
     }
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
         if outcome.total() > h.max_bid {
-            return Err(SettleError::PayoutExceedsEscrow { payout: outcome.total(), escrow: h.max_bid });
+            return Err(SettleError::PayoutExceedsEscrow {
+                payout: outcome.total(),
+                escrow: h.max_bid,
+            });
         }
-        self.settled.lock().unwrap().push((h.max_bid, outcome.clone()));
+        self.settled
+            .lock()
+            .unwrap()
+            .push((h.max_bid, outcome.clone()));
         Ok(())
     }
     fn refund(&self, _: &EscrowHandle) -> Result<(), SettleError> {
@@ -640,7 +830,9 @@ struct CapturingAnchor {
 }
 impl CapturingAnchor {
     fn new() -> Self {
-        Self { records: std::sync::Mutex::new(Vec::new()) }
+        Self {
+            records: std::sync::Mutex::new(Vec::new()),
+        }
     }
 }
 impl RecordAnchor for CapturingAnchor {
@@ -698,9 +890,15 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
     assert_eq!(synced.version, 9);
     assert_eq!(coord.current_params_version(), 9);
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
-    let agreed = outcome.agreed_hash.clone().expect("quorum agreed on a hash");
+    let agreed = outcome
+        .agreed_hash
+        .clone()
+        .expect("quorum agreed on a hash");
     let max_bid = 100 * TON;
 
     // (2) The per-job escrow terms carry the synced version + the HTLC lock = the
@@ -710,20 +908,34 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
     let (b, expected_hash, version) = opened[0];
     assert_eq!(b, max_bid);
     assert_eq!(version, 9, "escrow terms bind the SYNCED params version");
-    assert_eq!(expected_hash, *blake3::hash(agreed.as_bytes()).as_bytes(), "HTLC lock = quorum hash");
+    assert_eq!(
+        expected_hash,
+        *blake3::hash(agreed.as_bytes()).as_bytes(),
+        "HTLC lock = quorum hash"
+    );
 
     // (1) The 10% on-chain fee overlaid the 2% config default in the settle split.
     let settled = settlement.settled.lock().unwrap().clone();
     assert_eq!(settled.len(), 1);
     let (sb, split) = &settled[0];
     assert_eq!(*sb, max_bid);
-    assert_eq!(split.platform_fee, max_bid / 10, "synced 10% fee overlaid the 2% default");
-    assert!(split.participants.iter().all(|p| p.amount == 0), "0% participation commission synced");
+    assert_eq!(
+        split.platform_fee,
+        max_bid / 10,
+        "synced 10% fee overlaid the 2% default"
+    );
+    assert!(
+        split.participants.iter().all(|p| p.amount == 0),
+        "0% participation commission synced"
+    );
 
     // (3) The anchored record is stamped with the synced version.
     let records = anchor.records.lock().unwrap().clone();
     assert_eq!(records.len(), 1, "settled paid job anchors one record");
-    assert_eq!(records[0].params_version, 9, "anchored record stamped with synced version");
+    assert_eq!(
+        records[0].params_version, 9,
+        "anchored record stamped with synced version"
+    );
 }
 
 /// On the paid grid the staked worker out-ranks an unstaked peer with identical
@@ -739,15 +951,22 @@ async fn paid_stake_factor_decides_single_replica_winner() {
 
     let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
     reg.set_stake(&staked.node_id, 100_000 * TON); // at the cap => stake_factor ~ 1.0
-    // `unstaked` intentionally has zero stake.
+                                                   // `unstaked` intentionally has zero stake.
 
     // Both workers are fresh (equal bootstrap reputation); with one replica the
     // strictly higher stake-boosted score must select `staked` every time.
     for _ in 0..5 {
-        let coord = coordinator(&[&staked, &unstaked], paid_cfg(1, 1), st.clone() as Arc<dyn TrustStore>)
+        let coord = coordinator(
+            &[&staked, &unstaked],
+            paid_cfg(1, 1),
+            st.clone() as Arc<dyn TrustStore>,
+        )
+        .await
+        .with_stake_registry(reg.clone());
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
             .await
-            .with_stake_registry(reg.clone());
-        let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+            .unwrap();
         assert_eq!(
             outcome.winner.as_ref(),
             Some(&staked.node_id),

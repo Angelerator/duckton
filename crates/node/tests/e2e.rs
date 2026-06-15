@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use p2p_config::{GridConfig, IdentityConfig, PinningMode};
-use p2p_proto::{Attestation, NodeId, Verdict};
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, CoordinatorError, MockEngine, QueryEngine,
     StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_node::{IdentitySigner, MembershipTable};
 use p2p_proto::AttestationLevel;
+use p2p_proto::{Attestation, NodeId, Verdict};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
 use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
@@ -39,13 +39,20 @@ fn idcfg() -> IdentityConfig {
 
 async fn spawn_worker(engine: Arc<dyn QueryEngine>) -> WorkerHandle {
     let net = GridConfig::default().network;
-    let transport = Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let transport =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
     let budget = GridConfig::default().budget;
     let admission = AdmissionController::new(&budget);
     let params = WorkerParams::from_config(&GridConfig::default());
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -81,7 +88,10 @@ async fn make_coordinator(
         .iter()
         .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
         .collect();
-    let discovery = Arc::new(StaticDiscovery::new(candidates, cfg.discovery.candidate_sample_size));
+    let discovery = Arc::new(StaticDiscovery::new(
+        candidates,
+        cfg.discovery.candidate_sample_size,
+    ));
     Coordinator::new(req_transport, discovery, store, cfg, "mock-1")
 }
 
@@ -103,7 +113,10 @@ async fn phase0_single_worker_end_to_end() {
     let coord = make_coordinator(&[&w], cfg, st.clone()).await;
 
     let outcome = coord
-        .run_query("SELECT region, count(*) FROM events GROUP BY region", Default::default())
+        .run_query(
+            "SELECT region, count(*) FROM events GROUP BY region",
+            Default::default(),
+        )
         .await
         .expect("query should succeed");
 
@@ -130,7 +143,10 @@ async fn phase1_hedged_race_fastest_agreeing_wins() {
     let st = store();
     let coord = make_coordinator(&[&fast1, &fast2, &slow], cfg, st.clone()).await;
 
-    let outcome = coord.run_query("SELECT 42", Default::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 42", Default::default())
+        .await
+        .unwrap();
 
     assert!(outcome.verified);
     assert_eq!(outcome.participants.len(), 3);
@@ -138,7 +154,10 @@ async fn phase1_hedged_race_fastest_agreeing_wins() {
     assert_ne!(outcome.winner.as_ref(), Some(&slow.node_id));
     // All honest workers agree → quorum of 3.
     assert!(outcome.agreement >= 2);
-    assert!(outcome.receipts.iter().all(|r| r.verdict == Verdict::Correct));
+    assert!(outcome
+        .receipts
+        .iter()
+        .all(|r| r.verdict == Verdict::Correct));
 }
 
 // ---------------------------------------------------------------------------
@@ -156,13 +175,18 @@ async fn phase2_quorum_detects_and_penalizes_cheater() {
     let st_dyn: Arc<dyn TrustStore> = st.clone();
     let coord = make_coordinator(&[&honest1, &honest2, &cheater], cfg, st_dyn).await;
 
-    let outcome = coord.run_query("SELECT 7", Default::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 7", Default::default())
+        .await
+        .unwrap();
 
     assert!(outcome.verified);
     assert_eq!(outcome.agreement, 2, "two honest workers agree");
     // Winner is one of the honest workers.
-    assert!(outcome.winner.as_ref() == Some(&honest1.node_id)
-        || outcome.winner.as_ref() == Some(&honest2.node_id));
+    assert!(
+        outcome.winner.as_ref() == Some(&honest1.node_id)
+            || outcome.winner.as_ref() == Some(&honest2.node_id)
+    );
 
     // The cheater got an Incorrect receipt...
     let cheater_receipt = outcome
@@ -202,8 +226,14 @@ async fn phase2_quorum_fails_when_all_disagree() {
     let st = store();
     let coord = make_coordinator(&[&a, &b, &c], cfg, st.clone()).await;
 
-    let err = coord.run_query("SELECT x", Default::default()).await.unwrap_err();
-    assert!(matches!(err, CoordinatorError::QuorumFailed { .. }), "got {err:?}");
+    let err = coord
+        .run_query("SELECT x", Default::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::QuorumFailed { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -237,14 +267,20 @@ async fn quorum_split_equivocation_is_surfaced_not_resolved() {
     let st = store();
     let coord = make_coordinator(&[&a1, &a2, &b1, &b2], cfg, st.clone()).await;
 
-    let err = coord.run_query("SELECT split", Default::default()).await.unwrap_err();
+    let err = coord
+        .run_query("SELECT split", Default::default())
+        .await
+        .unwrap_err();
     // A split surfaces as QuorumFailed with BOTH hashes at the quorum count (2/2)
     // — the signature of the equivocation branch (a generic shortfall would carry
     // a lower agreement). The coordinator never silently picked A or B.
     match err {
         CoordinatorError::QuorumFailed { agreement, quorum } => {
             assert_eq!(quorum, 2, "got {err:?}");
-            assert_eq!(agreement, 2, "split: both hashes reached quorum; got {err:?}");
+            assert_eq!(
+                agreement, 2,
+                "split: both hashes reached quorum; got {err:?}"
+            );
         }
         other => panic!("expected QuorumFailed (split), got {other:?}"),
     }
@@ -316,7 +352,10 @@ async fn phase3_discovery_via_capability_ads() {
     let st = store();
     let coord = Coordinator::new(req_transport, membership, st, cfg, "mock-1");
 
-    let outcome = coord.run_query("SELECT 1", Default::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     assert_eq!(outcome.participants.len(), 3);
 }
@@ -333,8 +372,14 @@ async fn insufficient_workers_when_trust_gate_excludes_all() {
     let st = store();
     let coord = make_coordinator(&[&w], cfg, st.clone()).await;
 
-    let err = coord.run_query("SELECT 1", Default::default()).await.unwrap_err();
-    assert!(matches!(err, CoordinatorError::InsufficientWorkers { .. }), "got {err:?}");
+    let err = coord
+        .run_query("SELECT 1", Default::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::InsufficientWorkers { .. }),
+        "got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +391,10 @@ async fn insufficient_workers_when_trust_gate_excludes_all() {
 // ---------------------------------------------------------------------------
 mod cancel_timing {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use async_trait::async_trait;
     use p2p_node::{EngineError, ExecLease, QueryEngine};
     use p2p_proto::{ResultSet, Value};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// An engine that sleeps `delay` and only THEN records a completion. If its
     /// execution future is dropped (the worker aborted a cancelled job) the
@@ -367,7 +412,9 @@ mod cancel_timing {
             self.completed.fetch_add(1, Ordering::SeqCst);
             Ok(ResultSet::new(
                 vec!["k".into(), "v".into()],
-                (0..3u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+                (0..3u8)
+                    .map(|i| vec![Value::Int(i as i64), Value::Int(7)])
+                    .collect(),
             ))
         }
         fn version(&self) -> String {
@@ -383,7 +430,9 @@ mod cancel_timing {
         // (same rows), so all three would agree — the slow one only loses on speed.
         let fast_rows = ResultSet::new(
             vec!["k".into(), "v".into()],
-            (0..3u8).map(|i| vec![Value::Int(i as i64), Value::Int(7)]).collect(),
+            (0..3u8)
+                .map(|i| vec![Value::Int(i as i64), Value::Int(7)])
+                .collect(),
         );
         let mut fix = HashMap::new();
         fix.insert("SELECT loser_cancel".to_string(), fast_rows);
@@ -427,10 +476,17 @@ mod cancel_timing {
         let coord = make_coordinator(&[&fast1, &fast2, &slow], cfg, st).await;
 
         let start = std::time::Instant::now();
-        let outcome = coord.run_query("SELECT loser_cancel", Default::default()).await.unwrap();
+        let outcome = coord
+            .run_query("SELECT loser_cancel", Default::default())
+            .await
+            .unwrap();
         // The fast workers decided the race well before the loser's delay elapsed.
         assert!(outcome.verified);
-        assert_ne!(outcome.winner.as_ref(), Some(&slow.node_id), "slow worker must not win");
+        assert_ne!(
+            outcome.winner.as_ref(),
+            Some(&slow.node_id),
+            "slow worker must not win"
+        );
         assert!(
             start.elapsed() < loser_delay,
             "race should resolve (from the fast workers) before the loser would finish ({:?})",

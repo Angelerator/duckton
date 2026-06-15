@@ -143,12 +143,7 @@ impl MockEngine {
         let hash = blake3::hash(sql.as_bytes());
         let bytes = hash.as_bytes();
         let rows: Vec<Vec<Value>> = (0..3u8)
-            .map(|i| {
-                vec![
-                    Value::Int(i as i64),
-                    Value::Int(bytes[i as usize] as i64),
-                ]
-            })
+            .map(|i| vec![Value::Int(i as i64), Value::Int(bytes[i as usize] as i64)])
             .collect();
         ResultSet::new(vec!["k".into(), "v".into()], rows)
     }
@@ -169,7 +164,8 @@ impl QueryEngine for MockEngine {
         };
         if self.perturb {
             // Corrupt the result so its canonical hash diverges from honest peers.
-            rs.rows.push(vec![Value::Int(-1), Value::Text("tampered".into())]);
+            rs.rows
+                .push(vec![Value::Int(-1), Value::Text("tampered".into())]);
         }
         Ok(rs)
     }

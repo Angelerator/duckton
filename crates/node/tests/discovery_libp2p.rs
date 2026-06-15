@@ -140,7 +140,7 @@ async fn two_nodes_propagate_signed_ad_via_gossip() {
     let ad = signed_ad("127.0.0.1:19494", now_ts());
     node_a.publish_ad(&ad).await.unwrap();
 
-    let got = wait_until(Duration::from_secs(20), || node_b.membership().len() >= 1).await;
+    let got = wait_until(Duration::from_secs(20), || !node_b.membership().is_empty()).await;
     assert!(got, "node B should receive node A's gossiped ad");
 
     let cands = node_b.find_candidates(8, filter()).await;
@@ -175,15 +175,9 @@ async fn three_nodes_discover_each_other() {
 
     // B learns C's ad even though B and C are not directly bootstrapped to each
     // other — gossipsub relays it through the mesh.
-    let b_learns_c = wait_until(Duration::from_secs(25), || {
-        node_b.membership().len() >= 1
-    })
-    .await;
+    let b_learns_c = wait_until(Duration::from_secs(25), || !node_b.membership().is_empty()).await;
     assert!(b_learns_c, "node B should learn C's ad via gossip relay");
-    let c_learns_b = wait_until(Duration::from_secs(25), || {
-        node_c.membership().len() >= 1
-    })
-    .await;
+    let c_learns_b = wait_until(Duration::from_secs(25), || !node_c.membership().is_empty()).await;
     assert!(c_learns_b, "node C should learn B's ad via gossip relay");
 }
 
@@ -218,7 +212,10 @@ async fn churn_node_leaving_ages_out_of_bounded_view() {
     // After the TTL elapses with no refresh, the stale ad is excluded from
     // candidate sampling (bounded view reflects the churn).
     let aged_out = wait_candidate_count(&node_b, Duration::from_secs(15), |n| n == 0).await;
-    assert!(aged_out, "left node's ad should age out of the candidate sample");
+    assert!(
+        aged_out,
+        "left node's ad should age out of the candidate sample"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +336,10 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
     // The requester's discovery node bootstraps to the worker's overlay and
     // learns the worker purely through gossip.
     let req_disc = Arc::new(Libp2pDiscovery::spawn(disc_config(w_boot)).await.unwrap());
-    let learned = wait_until(Duration::from_secs(20), || req_disc.membership().len() >= 1).await;
+    let learned = wait_until(Duration::from_secs(20), || {
+        !req_disc.membership().is_empty()
+    })
+    .await;
     assert!(learned, "requester should discover the worker via gossip");
 
     // Build a Coordinator on the libp2p Discovery seam and run a real query.
@@ -359,7 +359,10 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
     let coord = Coordinator::new(req_transport, discovery, store, cfg, "mock-1");
 
     let outcome = coord
-        .run_query("SELECT region, count(*) FROM events GROUP BY region", Default::default())
+        .run_query(
+            "SELECT region, count(*) FROM events GROUP BY region",
+            Default::default(),
+        )
         .await
         .expect("query over gossip-discovered worker should succeed");
     assert!(outcome.verified);
@@ -413,8 +416,11 @@ async fn swarm_builds_with_nat_stack_disabled_and_still_gossips() {
 
     let ad = signed_ad("127.0.0.1:19710", now_ts());
     node_a.publish_ad(&ad).await.unwrap();
-    let got = wait_until(Duration::from_secs(20), || node_b.membership().len() >= 1).await;
-    assert!(got, "gossip must still propagate with the NAT stack disabled");
+    let got = wait_until(Duration::from_secs(20), || !node_b.membership().is_empty()).await;
+    assert!(
+        got,
+        "gossip must still propagate with the NAT stack disabled"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -430,15 +436,22 @@ async fn act_as_relay_node_builds_and_peers_connect() {
     relay_cfg.nat.act_as_relay = true; // volunteer relay
     let relay_node = Libp2pDiscovery::spawn(relay_cfg).await.unwrap();
     let relay_addrs = relay_node.wait_listeners(Duration::from_secs(5)).await;
-    assert!(!relay_addrs.is_empty(), "relay node must bind a listen addr");
+    assert!(
+        !relay_addrs.is_empty(),
+        "relay node must bind a listen addr"
+    );
 
     // A client bootstraps to the relay and they exchange a gossiped ad, proving
     // the relay-capable node participates normally in the overlay.
-    let client = Libp2pDiscovery::spawn(disc_config(relay_addrs)).await.unwrap();
+    let client = Libp2pDiscovery::spawn(disc_config(relay_addrs))
+        .await
+        .unwrap();
     let ad = signed_ad("127.0.0.1:19720", now_ts());
     client.publish_ad(&ad).await.unwrap();
-    let relay_learned =
-        wait_until(Duration::from_secs(20), || relay_node.membership().len() >= 1).await;
+    let relay_learned = wait_until(Duration::from_secs(20), || {
+        !relay_node.membership().is_empty()
+    })
+    .await;
     assert!(relay_learned, "relay node should learn the client's ad");
 }
 
@@ -465,7 +478,10 @@ async fn mdns_nodes_discover_each_other_on_loopback() {
     cfg_a.topic = unique_topic.clone();
     let node_a = Libp2pDiscovery::spawn(cfg_a).await.unwrap();
     assert!(
-        !node_a.wait_listeners(Duration::from_secs(5)).await.is_empty(),
+        !node_a
+            .wait_listeners(Duration::from_secs(5))
+            .await
+            .is_empty(),
         "mDNS-enabled node A must build and bind a listener"
     );
 
@@ -474,7 +490,10 @@ async fn mdns_nodes_discover_each_other_on_loopback() {
     cfg_b.topic = unique_topic;
     let node_b = Libp2pDiscovery::spawn(cfg_b).await.unwrap();
     assert!(
-        !node_b.wait_listeners(Duration::from_secs(5)).await.is_empty(),
+        !node_b
+            .wait_listeners(Duration::from_secs(5))
+            .await
+            .is_empty(),
         "mDNS-enabled node B must build and bind a listener"
     );
 
@@ -483,7 +502,7 @@ async fn mdns_nodes_discover_each_other_on_loopback() {
 
     // With no bootstrap configured, B can only learn A's ad if mDNS discovered
     // A and the gossip mesh formed over that auto-discovered link.
-    let discovered = wait_until(Duration::from_secs(20), || node_b.membership().len() >= 1).await;
+    let discovered = wait_until(Duration::from_secs(20), || !node_b.membership().is_empty()).await;
     if discovered {
         let cands = node_b.find_candidates(8, filter()).await;
         assert_eq!(cands.len(), 1);

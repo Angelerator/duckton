@@ -28,20 +28,20 @@ use p2p_proto::messages::{
     Bid, BidDecision, DataClass, Dispatch, Offer, ResultCommit, ScopedCredential, VerifyMode,
 };
 use p2p_proto::{Attestation, AttestationLevel, JobId, NodeId, QueryHash, ResultSet, Value};
+use p2p_settlement::base64_encode;
 use p2p_settlement::cell::Cell;
 use p2p_settlement::merkle;
 use p2p_settlement::ton::{
     build_anchor_submit, build_escrow_data, build_escrow_settle, build_escrow_terms,
-    build_stake_deposit, build_update_params, escrow_code_from_boc_base64, EscrowInit, GlobalParams,
-    OP_ANCHOR_SUBMIT, OP_ANCHOR_UPGRADE_CODE, OP_ESCROW_REFUND, OP_ESCROW_SETTLE, OP_ESCROW_TOPUP,
-    OP_STAKE_ANNOUNCE_UPGRADE, OP_STAKE_APPLY_UPGRADE, OP_STAKE_CANCEL_UPGRADE, OP_STAKE_DEPOSIT,
-    OP_STAKE_SLASH, OP_STAKE_UNBOND, OP_STAKE_WITHDRAW, OP_UPDATE_ADMIN, OP_UPDATE_PARAMS,
-    OP_UPGRADE_CODE,
+    build_stake_deposit, build_update_params, candidates_commitment, escrow_code_from_boc_base64,
+    EscrowInit, GlobalParams, OP_ANCHOR_SUBMIT, OP_ANCHOR_UPGRADE_CODE, OP_ESCROW_REFUND,
+    OP_ESCROW_SETTLE, OP_ESCROW_TOPUP, OP_STAKE_ANNOUNCE_UPGRADE, OP_STAKE_APPLY_UPGRADE,
+    OP_STAKE_CANCEL_UPGRADE, OP_STAKE_DEPOSIT, OP_STAKE_SLASH, OP_STAKE_UNBOND, OP_STAKE_WITHDRAW,
+    OP_UPDATE_ADMIN, OP_UPDATE_PARAMS, OP_UPGRADE_CODE,
 };
-use p2p_settlement::base64_encode;
+use p2p_settlement::ton_proof::{node_bind_message, ton_proof_signing_hash, verify_binding};
 use p2p_settlement::traits::Settlement;
 use p2p_settlement::types::{Amount, EscrowHandle, SettleError, SettlementOutcome};
-use p2p_settlement::ton_proof::{node_bind_message, ton_proof_signing_hash, verify_binding};
 use p2p_settlement::types::{NodeWalletBinding, TonProof, WalletAddress};
 use p2p_settlement::{
     quality_score, stake_factor, throughput_score, InMemoryRecordAnchor, InMemoryStakeRegistry,
@@ -129,7 +129,8 @@ async fn spawn_worker(spec: &Spec) -> WorkerHandle {
         "fail" => MockEngine::failing("simulated worker fault"),
         _ => MockEngine::deterministic(),
     };
-    let engine: Arc<dyn QueryEngine> = Arc::new(base.with_delay(Duration::from_millis(spec.delay_ms)));
+    let engine: Arc<dyn QueryEngine> =
+        Arc::new(base.with_delay(Duration::from_millis(spec.delay_ms)));
 
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
@@ -175,7 +176,8 @@ async fn make_coordinator(
     store: Arc<dyn TrustStore>,
 ) -> Coordinator {
     let net = GridConfig::default().network;
-    let req = Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let req =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
     let candidates: Vec<Candidate> = workers
         .iter()
         .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
@@ -244,14 +246,78 @@ async fn export_console_snapshot() {
 
     // --- Bring up a real, heterogeneous grid over loopback QUIC --------------
     let specs = [
-        Spec { alias: "frost-owl",   level: AttestationLevel::L2, mem_gb: 64, threads: 32, max_jobs: 12, delay_ms: 12,  behavior: "honest" },
-        Spec { alias: "harbor-vole", level: AttestationLevel::L2, mem_gb: 96, threads: 40, max_jobs: 10, delay_ms: 22,  behavior: "honest" },
-        Spec { alias: "tidal-fox",   level: AttestationLevel::L1, mem_gb: 32, threads: 16, max_jobs: 6,  delay_ms: 30,  behavior: "honest" },
-        Spec { alias: "amber-mole",  level: AttestationLevel::L1, mem_gb: 24, threads: 12, max_jobs: 4,  delay_ms: 45,  behavior: "honest" },
-        Spec { alias: "pine-marten", level: AttestationLevel::L0, mem_gb: 16, threads: 8,  max_jobs: 4,  delay_ms: 60,  behavior: "honest" },
-        Spec { alias: "slate-heron", level: AttestationLevel::L0, mem_gb: 8,  threads: 4,  max_jobs: 2,  delay_ms: 110, behavior: "honest" },
-        Spec { alias: "rust-shrike", level: AttestationLevel::L0, mem_gb: 8,  threads: 4,  max_jobs: 2,  delay_ms: 18,  behavior: "cheat" },
-        Spec { alias: "cobalt-stoat",level: AttestationLevel::L0, mem_gb: 4,  threads: 2,  max_jobs: 1,  delay_ms: 25,  behavior: "fail" },
+        Spec {
+            alias: "frost-owl",
+            level: AttestationLevel::L2,
+            mem_gb: 64,
+            threads: 32,
+            max_jobs: 12,
+            delay_ms: 12,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "harbor-vole",
+            level: AttestationLevel::L2,
+            mem_gb: 96,
+            threads: 40,
+            max_jobs: 10,
+            delay_ms: 22,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "tidal-fox",
+            level: AttestationLevel::L1,
+            mem_gb: 32,
+            threads: 16,
+            max_jobs: 6,
+            delay_ms: 30,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "amber-mole",
+            level: AttestationLevel::L1,
+            mem_gb: 24,
+            threads: 12,
+            max_jobs: 4,
+            delay_ms: 45,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "pine-marten",
+            level: AttestationLevel::L0,
+            mem_gb: 16,
+            threads: 8,
+            max_jobs: 4,
+            delay_ms: 60,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "slate-heron",
+            level: AttestationLevel::L0,
+            mem_gb: 8,
+            threads: 4,
+            max_jobs: 2,
+            delay_ms: 110,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "rust-shrike",
+            level: AttestationLevel::L0,
+            mem_gb: 8,
+            threads: 4,
+            max_jobs: 2,
+            delay_ms: 18,
+            behavior: "cheat",
+        },
+        Spec {
+            alias: "cobalt-stoat",
+            level: AttestationLevel::L0,
+            mem_gb: 4,
+            threads: 2,
+            max_jobs: 1,
+            delay_ms: 25,
+            behavior: "fail",
+        },
     ];
     let mut workers = Vec::new();
     for s in &specs {
@@ -415,7 +481,11 @@ async fn export_console_snapshot() {
         let effective = (soft + expl).clamp(0.0, 1.0);
         let c = *correct.get(&id).unwrap_or(&0);
         let f = *faults.get(&id).unwrap_or(&0);
-        let success = if c + f == 0 { 1.0 } else { c as f64 / (c + f) as f64 };
+        let success = if c + f == 0 {
+            1.0
+        } else {
+            c as f64 / (c + f) as f64
+        };
         let p50 = median(lats.get(&id).cloned().unwrap_or_default());
         let stake_ton = stakes_ton.get(w.alias.as_str()).copied().unwrap_or(0);
 
@@ -459,11 +529,17 @@ async fn export_console_snapshot() {
         let mut cands: Vec<J> = Vec::new();
         // sort receipts by latency for a realistic race order
         let mut rs: Vec<&p2p_proto::Receipt> = jr.receipts.iter().collect();
-        rs.sort_by_key(|r| if r.latency_ms == 0 { u64::MAX } else { r.latency_ms });
+        rs.sort_by_key(|r| {
+            if r.latency_ms == 0 {
+                u64::MAX
+            } else {
+                r.latency_ms
+            }
+        });
         for r in &rs {
             let is_winner = winner.as_ref() == Some(&r.worker_id);
-            let agreeing = jr.agreed_hash.as_deref() == Some(r.result_hash.as_str())
-                && r.verdict.is_correct();
+            let agreeing =
+                jr.agreed_hash.as_deref() == Some(r.result_hash.as_str()) && r.verdict.is_correct();
             let state = if is_winner {
                 "won"
             } else if r.verdict.is_correct() && agreeing {
@@ -491,11 +567,16 @@ async fn export_console_snapshot() {
         let mut agree_lats: Vec<u64> = jr
             .receipts
             .iter()
-            .filter(|r| jr.agreed_hash.as_deref() == Some(r.result_hash.as_str()) && r.verdict.is_correct())
+            .filter(|r| {
+                jr.agreed_hash.as_deref() == Some(r.result_hash.as_str()) && r.verdict.is_correct()
+            })
             .map(|r| r.latency_ms)
             .collect();
         agree_lats.sort_unstable();
-        let verify_ms = agree_lats.get(jr.quorum.saturating_sub(1)).copied().unwrap_or(jr.latency_ms);
+        let verify_ms = agree_lats
+            .get(jr.quorum.saturating_sub(1))
+            .copied()
+            .unwrap_or(jr.latency_ms);
         let first_commit = agree_lats.first().copied().unwrap_or(0);
         let mut timeline = vec![
             json!({"tMs": 0, "stage": "offer", "label": format!("Offer broadcast to {} candidates", jr.receipts.len()), "detail": "query_hash bound with fresh nonce"}),
@@ -536,7 +617,7 @@ async fn export_console_snapshot() {
             "resultHash": jr.agreed_hash,
             "latencyMs": jr.latency_ms,
             "escrowTon": 0,
-            "winner": winner.as_ref().map(|w| alias_of(w)),
+            "winner": winner.as_ref().map(&alias_of),
             "winnerId": winner.as_ref().map(|w| w.0.clone()),
             "source": "in-process mock engine (loopback)",
             "candidates": cands,
@@ -578,9 +659,21 @@ async fn export_console_snapshot() {
     let sample_rs = ResultSet::new(
         vec!["region".into(), "orders".into(), "gmv".into()],
         vec![
-            vec![Value::Text("emea".into()), Value::Int(184_233), Value::Float(2_481_002.50)],
-            vec![Value::Text("amer".into()), Value::Int(201_980), Value::Float(3_120_550.00)],
-            vec![Value::Text("apac".into()), Value::Int(98_120), Value::Float(1_044_980.75)],
+            vec![
+                Value::Text("emea".into()),
+                Value::Int(184_233),
+                Value::Float(2_481_002.50),
+            ],
+            vec![
+                Value::Text("amer".into()),
+                Value::Int(201_980),
+                Value::Float(3_120_550.00),
+            ],
+            vec![
+                Value::Text("apac".into()),
+                Value::Int(98_120),
+                Value::Float(1_044_980.75),
+            ],
         ],
     );
     let sample_hash = canonical_hash(&sample_rs);
@@ -591,7 +684,13 @@ async fn export_console_snapshot() {
     );
     let reordered_hash = canonical_hash(&reordered);
     let q = evaluate_quorum(
-        [sample_hash.as_str(), sample_hash.as_str(), reordered_hash.as_str(), "b3:divergent"].into_iter(),
+        [
+            sample_hash.as_str(),
+            sample_hash.as_str(),
+            reordered_hash.as_str(),
+            "b3:divergent",
+        ]
+        .into_iter(),
         3,
     );
 
@@ -618,11 +717,13 @@ async fn export_console_snapshot() {
         .with_record_anchor(anchor.clone());
 
     let mut paid_jobs: Vec<J> = Vec::new();
-    for (i, q) in ["SELECT cohort, count(DISTINCT user_id) FROM events GROUP BY cohort",
-                   "SELECT sku, sum(qty*price) gmv FROM line_items GROUP BY sku ORDER BY gmv DESC LIMIT 50",
-                   "SELECT segment, avg(ltv) FROM customers GROUP BY segment"]
-        .iter()
-        .enumerate()
+    for (i, q) in [
+        "SELECT cohort, count(DISTINCT user_id) FROM events GROUP BY cohort",
+        "SELECT sku, sum(qty*price) gmv FROM line_items GROUP BY sku ORDER BY gmv DESC LIMIT 50",
+        "SELECT segment, avg(ltv) FROM customers GROUP BY segment",
+    ]
+    .iter()
+    .enumerate()
     {
         let t0 = Instant::now();
         let created = unix_ms();
@@ -643,7 +744,7 @@ async fn export_console_snapshot() {
                 "resultHash": o.agreed_hash,
                 "latencyMs": t0.elapsed().as_millis() as u64,
                 "escrowTon": 100,
-                "winner": o.winner.as_ref().map(|w| alias_of(w)),
+                "winner": o.winner.as_ref().map(&alias_of),
                 "winnerId": o.winner.as_ref().map(|w| w.0.clone()),
                 "source": "in-process mock engine (loopback)",
                 "candidates": [],
@@ -794,7 +895,7 @@ async fn export_console_snapshot() {
     let sample_job = JobId::new();
     let req_id = NodeId::from_pubkey(b"requester-demo-key");
     let wid = workers[0].node_id.clone();
-    let qh = QueryHash::compute(&queries[0], "mock-1");
+    let qh = QueryHash::compute(queries[0], "mock-1");
     let offer = Offer {
         job_id: sample_job.clone(),
         requester_id: req_id.clone(),
@@ -867,7 +968,19 @@ async fn export_console_snapshot() {
                 continue;
             }
             let l = r.latency_ms;
-            let b = if l < 25 { 0 } else if l < 50 { 1 } else if l < 100 { 2 } else if l < 250 { 3 } else if l < 1000 { 4 } else { 5 };
+            let b = if l < 25 {
+                0
+            } else if l < 50 {
+                1
+            } else if l < 100 {
+                2
+            } else if l < 250 {
+                3
+            } else if l < 1000 {
+                4
+            } else {
+                5
+            };
             buckets[b] += 1;
         }
     }
@@ -891,7 +1004,10 @@ async fn export_console_snapshot() {
         .collect();
 
     let avg_trust = {
-        let vals: Vec<f64> = workers_json.iter().map(|w| w["trust"].as_f64().unwrap_or(0.0)).collect();
+        let vals: Vec<f64> = workers_json
+            .iter()
+            .map(|w| w["trust"].as_f64().unwrap_or(0.0))
+            .collect();
         vals.iter().sum::<f64>() / vals.len() as f64
     };
     let total_stake: u64 = stakes_ton.values().sum();
@@ -941,10 +1057,31 @@ async fn export_console_snapshot() {
         if let Ok(v) = serde_json::from_str::<J>(art) {
             if let Some(code_b64) = v.get("code_boc64").and_then(|x| x.as_str()) {
                 if let Ok(code) = escrow_code_from_boc_base64(code_b64) {
-                    let terms = build_escrow_terms(&treasury, &real_result_hash, 1);
+                    // B1: the requester's pre-committed payout-eligible candidate set
+                    // = the winner ∪ each participant of the verdict split. The
+                    // escrow terms commit to its hash; settle re-presents the SAME
+                    // set, so the on-chain candidatesCommitment check passes.
+                    let candidates: Vec<WalletAddress> = split0
+                        .as_ref()
+                        .map(|s| {
+                            let mut c = vec![s.winner.to];
+                            for p in &s.participants {
+                                if !c.contains(&p.to) {
+                                    c.push(p.to);
+                                }
+                            }
+                            c
+                        })
+                        .unwrap_or_default();
+                    let candidates_hash = candidates_commitment(&candidates);
+                    let terms =
+                        build_escrow_terms(&treasury, &real_result_hash, &candidates_hash, 1);
                     let terms_hash = hex::encode(terms.repr_hash());
                     let init = EscrowInit {
-                        requester: WalletAddress::new(0, *blake3::hash(b"requester-demo").as_bytes()),
+                        requester: WalletAddress::new(
+                            0,
+                            *blake3::hash(b"requester-demo").as_bytes(),
+                        ),
                         arbiter: WalletAddress::new(0, *blake3::hash(b"arbiter-demo").as_bytes()),
                         escrow_amount: escrow_b,
                         deadline: (now + 3600) as u32,
@@ -957,11 +1094,13 @@ async fn export_console_snapshot() {
                         "codeHash": code_hash,
                         "termsCellHash": terms_hash,
                         "expectedHashHex": hex::encode(real_result_hash),
+                        "candidatesHashHex": hex::encode(candidates_hash),
                         "paramsVersion": 1,
                         "escrowTon": paid_cfg.economics.pricing.max_bid,
-                        "deterministic": "address = hash(StateInit{code, data}); data binds requester+arbiter+B+deadline+^terms",
+                        "deterministic": "address = hash(StateInit{code, data}); data binds requester+arbiter+B+deadline+^terms (terms bind expectedHash+candidatesHash+paramsVersion)",
                     });
-                    // A real EscrowSettle message keyed on the real quorum hash.
+                    // A real EscrowSettle message keyed on the real quorum hash,
+                    // presenting the committed candidate set.
                     if let Some(s) = &split0 {
                         let settle = build_escrow_settle(
                             1,
@@ -970,8 +1109,13 @@ async fn export_console_snapshot() {
                             s.winner.amount,
                             s.platform_fee,
                             &s.participants,
+                            &candidates,
                         );
-                        ton_messages.push(body_json("EscrowSettle (HTLC release)", settle.opcode, &settle.cell));
+                        ton_messages.push(body_json(
+                            "EscrowSettle (HTLC release)",
+                            settle.opcode,
+                            &settle.cell,
+                        ));
                     }
                 }
             }
@@ -979,11 +1123,23 @@ async fn export_console_snapshot() {
     }
     // More real message bodies (op-coded TL-B cells the node actually broadcasts).
     let deposit = build_stake_deposit(1, 50 * TON);
-    ton_messages.push(body_json("StakeDeposit (bond 50 TON)", deposit.opcode, &deposit.cell));
+    ton_messages.push(body_json(
+        "StakeDeposit (bond 50 TON)",
+        deposit.opcode,
+        &deposit.cell,
+    ));
     let anchor_msg = build_anchor_submit(1, 1, &epoch_root, &[0u8; 32], 0);
-    ton_messages.push(body_json("AnchorSubmit (epoch 1 root)", anchor_msg.opcode, &anchor_msg.cell));
+    ton_messages.push(body_json(
+        "AnchorSubmit (epoch 1 root)",
+        anchor_msg.opcode,
+        &anchor_msg.cell,
+    ));
     let refund = build_update_params(2, &treasury, &gp);
-    ton_messages.push(body_json("UpdateParams (set GlobalParams)", refund.opcode, &refund.cell));
+    ton_messages.push(body_json(
+        "UpdateParams (set GlobalParams)",
+        refund.opcode,
+        &refund.cell,
+    ));
 
     let opgrp = |pairs: &[(&str, u32)]| -> Vec<J> {
         pairs

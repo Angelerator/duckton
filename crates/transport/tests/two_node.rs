@@ -123,9 +123,14 @@ async fn allowlist_blocks_unknown_peer() {
         pinning_mode: PinningMode::Allowlist,
         allowlist: vec!["b3:not-the-client".to_string()],
     };
-    let server = QuicTransport::bind(&net, &server_idcfg, NodeIdentity::generate().unwrap()).unwrap();
-    let client =
-        QuicTransport::bind(&net, &tofu_identity_cfg(), NodeIdentity::generate().unwrap()).unwrap();
+    let server =
+        QuicTransport::bind(&net, &server_idcfg, NodeIdentity::generate().unwrap()).unwrap();
+    let client = QuicTransport::bind(
+        &net,
+        &tofu_identity_cfg(),
+        NodeIdentity::generate().unwrap(),
+    )
+    .unwrap();
     let server_addr = server.local_addr().unwrap();
     let server_id = server.local_node_id().clone();
 

@@ -29,7 +29,7 @@ use p2p_node::{
     AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
     WorkerParams,
 };
-use p2p_proto::{Attestation, AttestationLevel, NodeId, ResultSet, Value};
+use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
 use p2p_settlement::types::Amount;
 use p2p_settlement::{InMemoryStakeRegistry, StakeRegistry};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
@@ -72,7 +72,11 @@ struct Spec {
 }
 
 fn idcfg() -> IdentityConfig {
-    IdentityConfig { key_path: None, pinning_mode: PinningMode::Tofu, allowlist: vec![] }
+    IdentityConfig {
+        key_path: None,
+        pinning_mode: PinningMode::Tofu,
+        allowlist: vec![],
+    }
 }
 
 fn attest(level: AttestationLevel) -> Attestation {
@@ -112,7 +116,13 @@ async fn spawn_worker(spec: &Spec) -> WorkerHandle {
         Arc::new(base.with_delay(Duration::from_millis(spec.delay_ms)));
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, attest(spec.level), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        attest(spec.level),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         alias: spec.alias.to_string(),
@@ -130,7 +140,10 @@ async fn spawn_worker(spec: &Spec) -> WorkerHandle {
 }
 
 fn unix_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 fn median(mut v: Vec<u64>) -> u64 {
     if v.is_empty() {
@@ -187,7 +200,14 @@ impl Grid {
     }
 
     /// Run one real job and fold it into the accumulator. Returns the job record.
-    async fn run(&mut self, sql: &str, replicas: usize, quorum: usize, data_class: &str, requester: &str) -> J {
+    async fn run(
+        &mut self,
+        sql: &str,
+        replicas: usize,
+        quorum: usize,
+        data_class: &str,
+        requester: &str,
+    ) -> J {
         let mut ov = QueryOverrides::default();
         ov.replicas = Some(replicas);
         ov.quorum = Some(quorum);
@@ -235,7 +255,13 @@ impl Grid {
                 // candidates
                 let winner = o.winner.clone();
                 let mut rs: Vec<&p2p_proto::Receipt> = o.receipts.iter().collect();
-                rs.sort_by_key(|r| if r.latency_ms == 0 { u64::MAX } else { r.latency_ms });
+                rs.sort_by_key(|r| {
+                    if r.latency_ms == 0 {
+                        u64::MAX
+                    } else {
+                        r.latency_ms
+                    }
+                });
                 let cands: Vec<J> = rs
                     .iter()
                     .map(|r| {
@@ -267,12 +293,18 @@ impl Grid {
                 let mut agree_lats: Vec<u64> = o
                     .receipts
                     .iter()
-                    .filter(|r| o.agreed_hash.as_deref() == Some(r.result_hash.as_str()) && r.verdict.is_correct())
+                    .filter(|r| {
+                        o.agreed_hash.as_deref() == Some(r.result_hash.as_str())
+                            && r.verdict.is_correct()
+                    })
                     .map(|r| r.latency_ms)
                     .collect();
                 agree_lats.sort_unstable();
                 let first_commit = agree_lats.first().copied().unwrap_or(0);
-                let verify_ms = agree_lats.get(quorum.saturating_sub(1)).copied().unwrap_or(lat);
+                let verify_ms = agree_lats
+                    .get(quorum.saturating_sub(1))
+                    .copied()
+                    .unwrap_or(lat);
                 let timeline = json!([
                     {"tMs":0,"stage":"offer","label":format!("Offer broadcast to {} candidates", o.receipts.len()),"detail":"query_hash + nonce"},
                     {"tMs":2,"stage":"bidding","label":"Bids collected","detail":"top-k by trust + ETA"},
@@ -383,25 +415,52 @@ impl Grid {
         for r in &self.acc.receipts {
             if r["verdict"] == "Correct" {
                 let l = r["latencyMs"].as_u64().unwrap_or(0);
-                let b = if l < 25 { 0 } else if l < 50 { 1 } else if l < 100 { 2 } else if l < 250 { 3 } else if l < 1000 { 4 } else { 5 };
+                let b = if l < 25 {
+                    0
+                } else if l < 50 {
+                    1
+                } else if l < 100 {
+                    2
+                } else if l < 250 {
+                    3
+                } else if l < 1000 {
+                    4
+                } else {
+                    5
+                };
                 buckets[b] += 1;
             }
         }
-        let latency_hist: Vec<J> = blabels.iter().enumerate().map(|(i, b)| json!({"bucket": b, "count": buckets[i]})).collect();
+        let latency_hist: Vec<J> = blabels
+            .iter()
+            .enumerate()
+            .map(|(i, b)| json!({"bucket": b, "count": buckets[i]}))
+            .collect();
 
         let mut att: BTreeMap<&str, u64> = BTreeMap::new();
         for w in &self.workers {
             *att.entry(w.attestation.as_str()).or_default() += 1;
         }
-        let att_fill = |l: &str| match l { "L2" => "var(--chart-1)", "L1" => "var(--chart-2)", _ => "var(--chart-3)" };
+        let att_fill = |l: &str| match l {
+            "L2" => "var(--chart-1)",
+            "L1" => "var(--chart-2)",
+            _ => "var(--chart-3)",
+        };
         let attestation_mix: Vec<J> = ["L0", "L1", "L2"].iter().map(|l| json!({
             "level": format!("{} — {}", l, match *l {"L2"=>"TEE enclave","L1"=>"measured boot",_=>"anonymous"}),
             "count": att.get(l).copied().unwrap_or(0), "fill": att_fill(l)
         })).collect();
 
         let avg_trust = {
-            let v: Vec<f64> = workers.iter().map(|w| w["trust"].as_f64().unwrap_or(0.0)).collect();
-            if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 }
+            let v: Vec<f64> = workers
+                .iter()
+                .map(|w| w["trust"].as_f64().unwrap_or(0.0))
+                .collect();
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f64>() / v.len() as f64
+            }
         };
         let total_stake: u64 = self.stakes.values().sum();
         let free_mem: u64 = self.workers.iter().map(|w| w.budget_mem).sum();
@@ -431,13 +490,23 @@ impl Grid {
         let mut nodes: HashMap<String, J> = HashMap::new();
         let mut degree: HashMap<String, u64> = HashMap::new();
         for w in &self.workers {
-            let group = if w.behavior == "honest" { "worker" } else { w.behavior };
+            let group = if w.behavior == "honest" {
+                "worker"
+            } else {
+                w.behavior
+            };
             nodes.insert(w.node_id.0.clone(), json!({"id": w.node_id.0, "label": w.alias, "group": group, "degree": 0, "trust": 0.0}));
         }
         let mut edges: HashMap<String, J> = HashMap::new();
         let mut bump = |a: &str, b: &str, kind: &str, deg: &mut HashMap<String, u64>| {
-            let key = if kind == "quorum" && a > b { format!("{b}|{a}|{kind}") } else { format!("{a}|{b}|{kind}") };
-            let e = edges.entry(key).or_insert_with(|| json!({"source": a, "target": b, "weight": 0, "kind": kind}));
+            let key = if kind == "quorum" && a > b {
+                format!("{b}|{a}|{kind}")
+            } else {
+                format!("{a}|{b}|{kind}")
+            };
+            let e = edges
+                .entry(key)
+                .or_insert_with(|| json!({"source": a, "target": b, "weight": 0, "kind": kind}));
             e["weight"] = json!(e["weight"].as_u64().unwrap_or(0) + 1);
             *deg.entry(a.to_string()).or_default() += 1;
             *deg.entry(b.to_string()).or_default() += 1;
@@ -447,7 +516,9 @@ impl Grid {
         for r in &self.acc.receipts {
             let rid = r["requesterId"].as_str().unwrap_or("").to_string();
             let wid = r["workerId"].as_str().unwrap_or("").to_string();
-            if rid.is_empty() || wid.is_empty() { continue; }
+            if rid.is_empty() || wid.is_empty() {
+                continue;
+            }
             if !req_label.contains_key(&rid) {
                 req_idx += 1;
                 req_label.insert(rid.clone(), format!("requester-{req_idx}"));
@@ -457,7 +528,11 @@ impl Grid {
         }
         for j in &self.acc.jobs {
             if let Some(cands) = j["candidates"].as_array() {
-                let agree: Vec<String> = cands.iter().filter(|c| c["verdict"] == "Correct").filter_map(|c| c["workerId"].as_str().map(String::from)).collect();
+                let agree: Vec<String> = cands
+                    .iter()
+                    .filter(|c| c["verdict"] == "Correct")
+                    .filter_map(|c| c["workerId"].as_str().map(String::from))
+                    .collect();
                 for a in 0..agree.len() {
                     for b in (a + 1)..agree.len() {
                         bump(&agree[a], &agree[b], "quorum", &mut degree);
@@ -529,14 +604,15 @@ async fn stream_handler(
     let init = s.latest.lock().unwrap().to_string();
     let rx = s.bcast.subscribe();
     let head = stream::once(async move { Ok(Event::default().data(init)) });
-    let tail = BroadcastStream::new(rx).filter_map(|r| async move {
-        r.ok().map(|d| Ok(Event::default().data(d)))
-    });
+    let tail = BroadcastStream::new(rx)
+        .filter_map(|r| async move { r.ok().map(|d| Ok(Event::default().data(d))) });
     Sse::new(head.chain(tail)).keep_alive(KeepAlive::default())
 }
 
 async fn query_handler(State(s): State<AppState>, Json(body): Json<QueryBody>) -> Json<J> {
-    let sql = body.sql.unwrap_or_else(|| "SELECT region, count(*) FROM orders GROUP BY region".into());
+    let sql = body
+        .sql
+        .unwrap_or_else(|| "SELECT region, count(*) FROM orders GROUP BY region".into());
     let k = body.k.unwrap_or(6).clamp(1, 8);
     let quorum = body.quorum.unwrap_or(3).clamp(1, k);
     let (tx, rx) = oneshot::channel();
@@ -570,20 +646,87 @@ const AMBIENT_SQL: &[&str] = &[
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
     let specs = [
-        Spec { alias: "frost-owl", level: AttestationLevel::L2, mem_gb: 64, threads: 32, max_jobs: 12, delay_ms: 12, behavior: "honest" },
-        Spec { alias: "harbor-vole", level: AttestationLevel::L2, mem_gb: 96, threads: 40, max_jobs: 10, delay_ms: 22, behavior: "honest" },
-        Spec { alias: "tidal-fox", level: AttestationLevel::L1, mem_gb: 32, threads: 16, max_jobs: 6, delay_ms: 30, behavior: "honest" },
-        Spec { alias: "amber-mole", level: AttestationLevel::L1, mem_gb: 24, threads: 12, max_jobs: 4, delay_ms: 45, behavior: "honest" },
-        Spec { alias: "pine-marten", level: AttestationLevel::L0, mem_gb: 16, threads: 8, max_jobs: 4, delay_ms: 60, behavior: "honest" },
-        Spec { alias: "slate-heron", level: AttestationLevel::L0, mem_gb: 8, threads: 4, max_jobs: 2, delay_ms: 110, behavior: "honest" },
-        Spec { alias: "rust-shrike", level: AttestationLevel::L0, mem_gb: 8, threads: 4, max_jobs: 2, delay_ms: 18, behavior: "cheat" },
-        Spec { alias: "cobalt-stoat", level: AttestationLevel::L0, mem_gb: 4, threads: 2, max_jobs: 1, delay_ms: 25, behavior: "fail" },
+        Spec {
+            alias: "frost-owl",
+            level: AttestationLevel::L2,
+            mem_gb: 64,
+            threads: 32,
+            max_jobs: 12,
+            delay_ms: 12,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "harbor-vole",
+            level: AttestationLevel::L2,
+            mem_gb: 96,
+            threads: 40,
+            max_jobs: 10,
+            delay_ms: 22,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "tidal-fox",
+            level: AttestationLevel::L1,
+            mem_gb: 32,
+            threads: 16,
+            max_jobs: 6,
+            delay_ms: 30,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "amber-mole",
+            level: AttestationLevel::L1,
+            mem_gb: 24,
+            threads: 12,
+            max_jobs: 4,
+            delay_ms: 45,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "pine-marten",
+            level: AttestationLevel::L0,
+            mem_gb: 16,
+            threads: 8,
+            max_jobs: 4,
+            delay_ms: 60,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "slate-heron",
+            level: AttestationLevel::L0,
+            mem_gb: 8,
+            threads: 4,
+            max_jobs: 2,
+            delay_ms: 110,
+            behavior: "honest",
+        },
+        Spec {
+            alias: "rust-shrike",
+            level: AttestationLevel::L0,
+            mem_gb: 8,
+            threads: 4,
+            max_jobs: 2,
+            delay_ms: 18,
+            behavior: "cheat",
+        },
+        Spec {
+            alias: "cobalt-stoat",
+            level: AttestationLevel::L0,
+            mem_gb: 4,
+            threads: 2,
+            max_jobs: 1,
+            delay_ms: 25,
+            behavior: "fail",
+        },
     ];
     let mut workers = Vec::new();
     for s in &specs {
         workers.push(spawn_worker(s).await);
     }
-    let store = Arc::new(InMemoryTrustStore::new(&GridConfig::default().trust, &GridConfig::default().limits));
+    let store = Arc::new(InMemoryTrustStore::new(
+        &GridConfig::default().trust,
+        &GridConfig::default().limits,
+    ));
     store.add_vouch(&workers[0].node_id, 0.6);
     store.add_vouch(&workers[1].node_id, 0.4);
     store.add_vouch(&workers[2].node_id, 0.2);
@@ -591,9 +734,15 @@ async fn main() {
     let eco = GridConfig::default().economics;
     let reg = Arc::new(InMemoryStakeRegistry::from_config(&eco.stake));
     let stakes: BTreeMap<&'static str, u64> = [
-        ("frost-owl", 4200), ("harbor-vole", 2600), ("tidal-fox", 1500),
-        ("amber-mole", 800), ("pine-marten", 300), ("slate-heron", 120),
-    ].into_iter().collect();
+        ("frost-owl", 4200),
+        ("harbor-vole", 2600),
+        ("tidal-fox", 1500),
+        ("amber-mole", 800),
+        ("pine-marten", 300),
+        ("slate-heron", 120),
+    ]
+    .into_iter()
+    .collect();
     for w in &workers {
         if let Some(t) = stakes.get(w.alias.as_str()) {
             reg.set_stake(&w.node_id, *t as Amount * TON);
@@ -611,12 +760,26 @@ async fn main() {
     c.discovery.candidate_sample_size = 32;
     let cfg = Arc::new(c);
     let net = GridConfig::default().network;
-    let req = Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
-    let candidates: Vec<Candidate> = workers.iter().map(|w| Candidate::new(Some(w.node_id.clone()), w.addr)).collect();
-    let disc = Arc::new(StaticDiscovery::new(candidates, cfg.discovery.candidate_sample_size));
+    let req =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let candidates: Vec<Candidate> = workers
+        .iter()
+        .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
+        .collect();
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates,
+        cfg.discovery.candidate_sample_size,
+    ));
     let coord = Coordinator::new(req, disc, store.clone(), cfg, "mock-1");
 
-    let mut grid = Grid { workers, store, reg, coord, stakes, acc: Acc::default() };
+    let mut grid = Grid {
+        workers,
+        store,
+        reg,
+        coord,
+        stakes,
+        acc: Acc::default(),
+    };
 
     let (q_tx, mut q_rx) = mpsc::channel::<QueryReq>(64);
     let (bcast, _) = broadcast::channel::<String>(64);
@@ -628,7 +791,15 @@ async fn main() {
         let latest = latest.clone();
         tokio::spawn(async move {
             while let Some(reqq) = q_rx.recv().await {
-                let job = grid.run(&reqq.sql, reqq.replicas, reqq.quorum, &reqq.data_class, &reqq.requester).await;
+                let job = grid
+                    .run(
+                        &reqq.sql,
+                        reqq.replicas,
+                        reqq.quorum,
+                        &reqq.data_class,
+                        &reqq.requester,
+                    )
+                    .await;
                 let state = grid.live_json();
                 *latest.lock().unwrap() = state.clone();
                 let _ = bcast.send(state.to_string());
@@ -650,7 +821,14 @@ async fn main() {
                 let sql = AMBIENT_SQL[i % AMBIENT_SQL.len()];
                 i += 1;
                 let _ = q_tx
-                    .send(QueryReq { sql: sql.into(), replicas: 6, quorum: 3, data_class: "Public".into(), requester: "ambient".into(), resp: None })
+                    .send(QueryReq {
+                        sql: sql.into(),
+                        replicas: 6,
+                        quorum: 3,
+                        data_class: "Public".into(),
+                        requester: "ambient".into(),
+                        resp: None,
+                    })
                     .await;
             }
         });
@@ -662,10 +840,16 @@ async fn main() {
         .route("/api/query", post(query_handler))
         .route("/api/health", get(|| async { "ok" }))
         .layer(CorsLayer::very_permissive())
-        .with_state(AppState { q_tx, bcast, latest });
+        .with_state(AppState {
+            q_tx,
+            bcast,
+            latest,
+        });
 
     let addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
-    println!("console-server live grid → http://{addr}  (SSE: /api/stream, query: POST /api/query)");
+    println!(
+        "console-server live grid → http://{addr}  (SSE: /api/stream, query: POST /api/query)"
+    );
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

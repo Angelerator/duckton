@@ -222,7 +222,10 @@ mod tests {
     fn quorum_not_reached_when_split() {
         let out = evaluate_quorum(["h1", "h2", "h3"], 2);
         assert!(!out.reached());
-        assert!(!out.split, "no hash reached quorum, so it is not an equivocation");
+        assert!(
+            !out.split,
+            "no hash reached quorum, so it is not an equivocation"
+        );
     }
 
     #[test]

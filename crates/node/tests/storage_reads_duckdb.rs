@@ -21,9 +21,7 @@
 use std::collections::BTreeMap;
 
 use p2p_config::StorageConfig;
-use p2p_node::{
-    CloudCredential, DuckDbEngine, ExecLease, JobContext, QueryEngine, StorageSetup,
-};
+use p2p_node::{CloudCredential, DuckDbEngine, ExecLease, JobContext, QueryEngine, StorageSetup};
 use p2p_proto::{ScopedCredential, Value};
 
 fn lease() -> ExecLease {
@@ -48,8 +46,8 @@ async fn local_scoped_reads_csv_fixture() {
     let path = dir.path().join("events.csv");
     std::fs::write(&path, "region,n\nus,3\neu,5\nap,2\n").unwrap();
 
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
     let sql = format!(
         "SELECT region, n FROM read_csv_auto('{}') ORDER BY region",
         path.display()
@@ -66,8 +64,8 @@ async fn local_scoped_reads_json_fixture() {
     let path = dir.path().join("rows.json");
     std::fs::write(&path, "{\"a\":1,\"b\":\"x\"}\n{\"a\":2,\"b\":\"y\"}\n").unwrap();
 
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
     let sql = format!(
         "SELECT a, b FROM read_json_auto('{}') ORDER BY a",
         path.display()
@@ -82,8 +80,8 @@ async fn local_scoped_reads_json_fixture() {
 async fn local_scoped_reads_parquet_fixture() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("nums.parquet");
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
 
     // Create the Parquet fixture through the engine itself (COPY TO is permitted
     // because the dir is in allowed_directories).
@@ -106,20 +104,23 @@ async fn local_scoped_reads_parquet_fixture() {
 #[tokio::test]
 async fn local_scoped_still_blocks_paths_outside_allowlist() {
     let dir = tempfile::tempdir().unwrap();
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
     // The allow-list only covers the fixture dir — /etc/passwd is still blocked.
     let r = eng
         .execute("SELECT * FROM read_csv_auto('/etc/passwd')", lease())
         .await;
-    assert!(r.is_err(), "out-of-allowlist read must be blocked, got {r:?}");
+    assert!(
+        r.is_err(),
+        "out-of-allowlist read must be blocked, got {r:?}"
+    );
 }
 
 #[tokio::test]
 async fn local_scoped_still_blocks_install() {
     let dir = tempfile::tempdir().unwrap();
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
     let r = eng.execute("INSTALL httpfs", lease()).await;
     assert!(r.is_err(), "INSTALL must remain blocked under lockdown");
 }
@@ -128,8 +129,8 @@ async fn local_scoped_still_blocks_install() {
 async fn parquet_modular_encryption_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("secret.parquet");
-    let eng = DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap()))
-        .unwrap();
+    let eng =
+        DuckDbEngine::from_storage_config(&local_scoped_cfg(dir.path().to_str().unwrap())).unwrap();
 
     // 256-bit named key delivered per job (stands in for a key opened from a
     // sealed blob in the confidential tier).
@@ -297,7 +298,13 @@ async fn sealed_minio_credential_installs_scoped_secret() {
         region: Some("us-east-1".into()),
         ..Default::default()
     };
-    let scoped = sealed_credential("s3", &worker_key.public_bytes(), &cred, "warehouse/delta/", 900);
+    let scoped = sealed_credential(
+        "s3",
+        &worker_key.public_bytes(),
+        &cred,
+        "warehouse/delta/",
+        900,
+    );
     // The opaque token is ciphertext only — the secret never appears in it.
     assert!(scoped.token.starts_with("sealed:v1:"));
     assert!(!scoped.token.contains("super-secret-minio-key"));
@@ -347,5 +354,8 @@ fn storage_setup_resolves_providers_and_options() {
     assert!(setup.providers.get("s3").is_some());
     assert!(setup.providers.get("az").is_some());
     assert!(setup.providers.get("gcs").is_some());
-    assert_eq!(setup.providers.options_for("s3").region.as_deref(), Some("eu-central-1"));
+    assert_eq!(
+        setup.providers.options_for("s3").region.as_deref(),
+        Some("eu-central-1")
+    );
 }

@@ -272,10 +272,14 @@ impl NatParams {
             relay_limits: RelayLimits {
                 max_reservations: cfg.relay_limits.max_reservations,
                 max_reservations_per_peer: cfg.relay_limits.max_reservations_per_peer,
-                reservation_duration: Duration::from_secs(cfg.relay_limits.reservation_duration_secs),
+                reservation_duration: Duration::from_secs(
+                    cfg.relay_limits.reservation_duration_secs,
+                ),
                 max_circuits: cfg.relay_limits.max_circuits,
                 max_circuits_per_peer: cfg.relay_limits.max_circuits_per_peer,
-                max_circuit_duration: Duration::from_secs(cfg.relay_limits.max_circuit_duration_secs),
+                max_circuit_duration: Duration::from_secs(
+                    cfg.relay_limits.max_circuit_duration_secs,
+                ),
                 max_circuit_bytes: cfg.relay_limits.max_circuit_bytes,
             },
         })
@@ -312,8 +316,7 @@ pub fn evaluate_ad(
         Ok(a) => a,
         Err(_) => return AdOutcome::Malformed,
     };
-    if ad.schema_version != p2p_proto::SCHEMA_VERSION
-        || ad.protocol_version.major != expected_major
+    if ad.schema_version != p2p_proto::SCHEMA_VERSION || ad.protocol_version.major != expected_major
     {
         return AdOutcome::IncompatibleVersion;
     }
@@ -464,13 +467,9 @@ impl Libp2pDiscovery {
                     topic_params.mesh_message_deliveries_threshold = 0.0;
                     topic_params.mesh_failure_penalty_weight = 0.0;
                     params.topics.insert(topic_hash, topic_params);
-                    params
-                        .validate()
-                        .map_err(std::io::Error::other)?;
+                    params.validate().map_err(std::io::Error::other)?;
                     let thresholds = gossipsub::PeerScoreThresholds::default();
-                    thresholds
-                        .validate()
-                        .map_err(std::io::Error::other)?;
+                    thresholds.validate().map_err(std::io::Error::other)?;
                     gossipsub
                         .with_peer_score(params, thresholds)
                         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -494,15 +493,16 @@ impl Libp2pDiscovery {
                 ));
 
                 // --- Global NAT-traversal stack (each toggled by config) ---
-                let autonat = Toggle::from(nat.autonat.then(|| {
-                    autonat::Behaviour::new(peer_id, autonat::Config::default())
-                }));
+                let autonat = Toggle::from(
+                    nat.autonat
+                        .then(|| autonat::Behaviour::new(peer_id, autonat::Config::default())),
+                );
                 let dcutr = Toggle::from(nat.dcutr.then(|| dcutr::Behaviour::new(peer_id)));
-                let relay_client =
-                    Toggle::from(nat.relay_client.then_some(relay_client_behaviour));
-                let relay_server = Toggle::from(nat.act_as_relay.then(|| {
-                    relay::Behaviour::new(peer_id, nat.relay_limits.to_relay_config())
-                }));
+                let relay_client = Toggle::from(nat.relay_client.then_some(relay_client_behaviour));
+                let relay_server =
+                    Toggle::from(nat.act_as_relay.then(|| {
+                        relay::Behaviour::new(peer_id, nat.relay_limits.to_relay_config())
+                    }));
                 let mdns = Toggle::from(if nat.mdns {
                     let mdns_cfg = mdns::Config {
                         query_interval: nat.mdns_query_interval,
@@ -521,9 +521,8 @@ impl Libp2pDiscovery {
 
                 // Connection limits: enforced first so a flood of inbound dials is
                 // rejected before reaching the per-protocol behaviours.
-                let connection_limits = libp2p::connection_limits::Behaviour::new(
-                    conn_limits.to_connection_limits(),
-                );
+                let connection_limits =
+                    libp2p::connection_limits::Behaviour::new(conn_limits.to_connection_limits());
 
                 Ok(DiscoveryBehaviour {
                     connection_limits,
@@ -872,10 +871,7 @@ impl SwarmDriver {
         {
             return;
         }
-        let is_relay = info
-            .protocols
-            .iter()
-            .any(|p| *p == relay::HOP_PROTOCOL_NAME);
+        let is_relay = info.protocols.contains(&relay::HOP_PROTOCOL_NAME);
         if !is_relay {
             return;
         }
@@ -888,9 +884,7 @@ impl SwarmDriver {
         else {
             return;
         };
-        let circuit = base
-            .with(Protocol::P2p(peer))
-            .with(Protocol::P2pCircuit);
+        let circuit = base.with(Protocol::P2p(peer)).with(Protocol::P2pCircuit);
         match self.swarm.listen_on(circuit) {
             Ok(_) => {
                 debug!("autorelay: reserving circuit via relay {peer}");

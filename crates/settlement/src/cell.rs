@@ -65,19 +65,31 @@ impl Cell {
     /// (e.g. decode the on-chain `EcoParams` cell + `feeRecipient` address back
     /// into typed values before re-broadcasting a toggled `update_params`).
     pub fn parser(&self) -> CellParser<'_> {
-        CellParser { cell: self, bit: 0, next_ref: 0 }
+        CellParser {
+            cell: self,
+            bit: 0,
+            next_ref: 0,
+        }
     }
 
     /// Cell tree depth: 0 for a ref-less cell, else `1 + max(child depth)`.
     pub fn depth(&self) -> u16 {
-        self.refs.iter().map(|r| r.depth()).max().map_or(0, |m| m + 1)
+        self.refs
+            .iter()
+            .map(|r| r.depth())
+            .max()
+            .map_or(0, |m| m + 1)
     }
 
     /// Two descriptor bytes `(d1, d2)` for an ordinary, level-0 cell.
     fn descriptor(&self) -> [u8; 2] {
         let d1 = self.refs.len() as u8;
         let full = self.bit_len / 8;
-        let d2 = if self.bit_len % 8 == 0 { 2 * full } else { 2 * full + 1 } as u8;
+        let d2 = if self.bit_len.is_multiple_of(8) {
+            2 * full
+        } else {
+            2 * full + 1
+        } as u8;
         [d1, d2]
     }
 
@@ -143,7 +155,11 @@ impl CellBuilder {
 
     /// Store a signed integer in `nbits` two's-complement, MSB first.
     pub fn store_int(self, value: i64, nbits: u32) -> Self {
-        let mask: u128 = if nbits >= 128 { u128::MAX } else { (1u128 << nbits) - 1 };
+        let mask: u128 = if nbits >= 128 {
+            u128::MAX
+        } else {
+            (1u128 << nbits) - 1
+        };
         self.store_uint((value as i128 as u128) & mask, nbits)
     }
 
@@ -165,10 +181,14 @@ impl CellBuilder {
     /// Store a TL-B `coins` (VarUInteger 16): a 4-bit byte-length prefix `L`
     /// followed by the `L` big-endian value bytes (`0` ⇒ just the 4-bit `0`).
     pub fn store_coins(mut self, value: u128) -> Self {
-        let used = if value == 0 { 0 } else { ((128 - value.leading_zeros()) as usize).div_ceil(8) };
+        let used = if value == 0 {
+            0
+        } else {
+            ((128 - value.leading_zeros()) as usize).div_ceil(8)
+        };
         self = self.store_uint(used as u128, 4);
         for i in (0..used).rev() {
-            self = self.store_uint(((value >> (i * 8)) & 0xff) as u128, 8);
+            self = self.store_uint((value >> (i * 8)) & 0xff, 8);
         }
         self
     }
@@ -205,7 +225,8 @@ impl CellBuilder {
         if entries.is_empty() {
             self.store_uint(0, 1)
         } else {
-            self.store_uint(1, 1).store_ref(build_hashmap_root(key_bits, entries))
+            self.store_uint(1, 1)
+                .store_ref(build_hashmap_root(key_bits, entries))
         }
     }
 
@@ -351,7 +372,9 @@ pub fn address_key_bits(addr: &WalletAddress) -> Vec<bool> {
 
 /// All `bit_len` bits of `c` as an MSB-first boolean vector.
 fn cell_bits(c: &Cell) -> Vec<bool> {
-    (0..c.bit_len).map(|i| (c.data[i / 8] >> (7 - (i % 8))) & 1 == 1).collect()
+    (0..c.bit_len)
+        .map(|i| (c.data[i / 8] >> (7 - (i % 8))) & 1 == 1)
+        .collect()
 }
 
 /// Bits needed to encode a label length in `[0, max_n]` (`ceil(log2(max_n+1))`),
@@ -396,7 +419,9 @@ fn store_label(cb: CellBuilder, bits: &[bool], max_n: usize) -> CellBuilder {
         cb
     } else {
         // hml_same$11: `11`, the repeated bit, len in k bits (no label bits).
-        cb.store_uint(0b11, 2).store_uint(bits[0] as u128, 1).store_uint(l as u128, k)
+        cb.store_uint(0b11, 2)
+            .store_uint(bits[0] as u128, 1)
+            .store_uint(l as u128, k)
     }
 }
 
@@ -423,12 +448,19 @@ fn common_prefix_len(entries: &[(&[bool], &Cell)]) -> usize {
 fn build_hashmap_node(entries: &[(&[bool], &Cell)], n: usize) -> Cell {
     if entries.len() == 1 {
         let (key, val) = entries[0];
-        debug_assert_eq!(key.len(), n, "leaf key must consume the full remaining width");
+        debug_assert_eq!(
+            key.len(),
+            n,
+            "leaf key must consume the full remaining width"
+        );
         let cb = store_label(CellBuilder::new(), key, n);
         return cb.store_cell_inline(val).build();
     }
     let l = common_prefix_len(entries);
-    debug_assert!(l < n, "a fork must branch within the key width (distinct keys)");
+    debug_assert!(
+        l < n,
+        "a fork must branch within the key width (distinct keys)"
+    );
     let mut cb = store_label(CellBuilder::new(), &entries[0].0[..l], n);
     let child_n = n - l - 1;
     let mut left: Vec<(&[bool], &Cell)> = Vec::new();
@@ -441,7 +473,10 @@ fn build_hashmap_node(entries: &[(&[bool], &Cell)], n: usize) -> Cell {
             left.push((rest, *val));
         }
     }
-    debug_assert!(!left.is_empty() && !right.is_empty(), "common-prefix split is non-trivial");
+    debug_assert!(
+        !left.is_empty() && !right.is_empty(),
+        "common-prefix split is non-trivial"
+    );
     cb = cb.store_ref(build_hashmap_node(&left, child_n));
     cb = cb.store_ref(build_hashmap_node(&right, child_n));
     cb.build()
@@ -453,7 +488,10 @@ fn build_hashmap_node(entries: &[(&[bool], &Cell)], n: usize) -> Cell {
 /// Entries may be in any order (the resulting tree is canonical, so the cell
 /// hash is order-independent); duplicate keys must be merged by the caller.
 pub fn build_hashmap_root(n: usize, entries: &[DictEntry]) -> Cell {
-    assert!(!entries.is_empty(), "build_hashmap_root requires at least one entry");
+    assert!(
+        !entries.is_empty(),
+        "build_hashmap_root requires at least one entry"
+    );
     let refs: Vec<(&[bool], &Cell)> = entries
         .iter()
         .map(|e| {
@@ -523,7 +561,11 @@ impl WalletAddress {
 impl Cell {
     /// Build a [`Cell`] directly from raw parts (used by the BoC parser/tests).
     fn from_parts(data: Vec<u8>, bit_len: usize, refs: Vec<Cell>) -> Self {
-        Cell { data, bit_len, refs }
+        Cell {
+            data,
+            bit_len,
+            refs,
+        }
     }
 
     /// Serialized size of this cell in a BoC body (descriptors + data + refs).
@@ -580,7 +622,7 @@ impl Cell {
 
         let mut out = Vec::new();
         out.extend_from_slice(&[0xb5, 0xee, 0x9c, 0x72]); // magic
-        // flags byte: has_idx=0, has_crc32c=1, has_cache=0, flags=0, size=ref_size.
+                                                          // flags byte: has_idx=0, has_crc32c=1, has_cache=0, flags=0, size=ref_size.
         out.push((1 << 6) | (ref_size as u8 & 0b111));
         out.push(off_bytes as u8);
         out.extend_from_slice(&be_bytes(cell_count as u64, ref_size)); // cells
@@ -636,7 +678,11 @@ impl Cell {
         if has_idx {
             p += cell_count * off_bytes; // skip index table
         }
-        let body_end = if has_crc { bytes.len().checked_sub(4)? } else { bytes.len() };
+        let body_end = if has_crc {
+            bytes.len().checked_sub(4)?
+        } else {
+            bytes.len()
+        };
         // Parse raw (descriptor + data + ref indices) for each cell in order.
         let mut raw: Vec<(Vec<u8>, usize, Vec<usize>)> = Vec::with_capacity(cell_count);
         for _ in 0..cell_count {
@@ -714,7 +760,11 @@ pub fn crc32c(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82F6_3B78 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82F6_3B78
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -829,9 +879,10 @@ mod tests {
     fn code_hash_state_init_matches_full_cell_derivation() {
         // The (code_hash, depth) StateInit hasher must agree with hashing a full
         // code cell — so the wallet-v5r1 address derivation is exact.
-        let code = CellBuilder::new().store_uint(0xC0DE, 16).store_ref(
-            CellBuilder::new().store_uint(0xBEEF, 16).build(),
-        ).build();
+        let code = CellBuilder::new()
+            .store_uint(0xC0DE, 16)
+            .store_ref(CellBuilder::new().store_uint(0xBEEF, 16).build())
+            .build();
         let data = CellBuilder::new().store_uint(0x1234_5678, 32).build();
         let full = WalletAddress::from_state_init(BASECHAIN, &code, &data);
         let via_hash = WalletAddress::from_code_hash_state_init(

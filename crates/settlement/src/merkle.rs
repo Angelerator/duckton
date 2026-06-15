@@ -137,7 +137,7 @@ pub fn build_proof(values: &[Hash32], index: usize) -> Option<InclusionProof> {
     let mut siblings = Vec::new();
     let mut idx = index;
     for level in &all[..all.len() - 1] {
-        if idx % 2 == 0 {
+        if idx.is_multiple_of(2) {
             // Left child: sibling on the right — unless this node was promoted
             // (no right neighbor at this level), in which case there is no step.
             if idx + 1 < level.len() {
@@ -216,8 +216,12 @@ mod tests {
         );
         // ROOT4 over the v2 tree (leaves are hashLeaf'd first):
         // hashPair(hashPair(hashLeaf(L0),hashLeaf(L1)), hashPair(hashLeaf(L2),hashLeaf(L3))).
-        let root =
-            merkle_root(&[leaf_u32(0x1111), leaf_u32(0x2222), leaf_u32(0x3333), leaf_u32(0x4444)]);
+        let root = merkle_root(&[
+            leaf_u32(0x1111),
+            leaf_u32(0x2222),
+            leaf_u32(0x3333),
+            leaf_u32(0x4444),
+        ]);
         assert_eq!(
             hex::encode(root),
             "d71883509985078d4b68f441a4647296db9a1c514c913a1ceacfe35458918824"
@@ -230,7 +234,12 @@ mod tests {
     /// `[L1 (right), hashPair(L2,L3) (right)]`, matching `anchor.test.tolk`.
     #[test]
     fn four_leaf_proof_matches_onchain_layout() {
-        let leaves = [leaf_u32(0x1111), leaf_u32(0x2222), leaf_u32(0x3333), leaf_u32(0x4444)];
+        let leaves = [
+            leaf_u32(0x1111),
+            leaf_u32(0x2222),
+            leaf_u32(0x3333),
+            leaf_u32(0x4444),
+        ];
         let root = merkle_root(&leaves);
         let proof = build_proof(&leaves, 0).unwrap();
         // Both siblings are to the RIGHT (dir = 0 on-chain). Level-0 siblings are
@@ -238,7 +247,10 @@ mod tests {
         assert_eq!(proof.siblings.len(), 2);
         assert!(!proof.siblings[0].0, "L1 is the right sibling");
         assert_eq!(proof.siblings[0].1, hash_leaf(&leaf_u32(0x2222)));
-        assert!(!proof.siblings[1].0, "hashPair(hashLeaf(L2),hashLeaf(L3)) is the right sibling");
+        assert!(
+            !proof.siblings[1].0,
+            "hashPair(hashLeaf(L2),hashLeaf(L3)) is the right sibling"
+        );
         assert_eq!(
             proof.siblings[1].1,
             hash_node(&hash_leaf(&leaf_u32(0x3333)), &hash_leaf(&leaf_u32(0x4444)))
@@ -248,7 +260,11 @@ mod tests {
 
     #[test]
     fn empty_tree_has_no_root() {
-        assert_eq!(try_merkle_root(&[]), None, "an empty epoch has no anchorable root");
+        assert_eq!(
+            try_merkle_root(&[]),
+            None,
+            "an empty epoch has no anchorable root"
+        );
         assert_eq!(merkle_root(&[]), [0u8; 32], "query convenience only");
         assert!(build_proof(&[], 0).is_none());
     }
@@ -262,8 +278,14 @@ mod tests {
         let node = hash_node(&hash_leaf(&leaf_u32(1)), &hash_leaf(&leaf_u32(2))); // == root
         assert_eq!(node, root);
         // Forge a "proof" claiming the node value is itself a leaf with no siblings.
-        let forged = InclusionProof { leaf: node, siblings: vec![] };
-        assert!(!verify_inclusion(&root, &forged), "node-as-leaf must be rejected");
+        let forged = InclusionProof {
+            leaf: node,
+            siblings: vec![],
+        };
+        assert!(
+            !verify_inclusion(&root, &forged),
+            "node-as-leaf must be rejected"
+        );
     }
 
     #[test]
@@ -288,7 +310,8 @@ mod tests {
         let record = |i: usize| JobRecord {
             job_id: format!("job-{i}"),
             query_hash: format!("q{i}"),
-            requester_wallet: "0:1111111111111111111111111111111111111111111111111111111111111111".into(),
+            requester_wallet: "0:1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
             max_bid: 1_000 + i as u128,
             result_hash: format!("r{i}"),
             epoch: 7,
@@ -302,19 +325,28 @@ mod tests {
 
             for i in 0..count {
                 let proof = build_proof(&leaves, i).unwrap();
-                assert!(verify_inclusion(&root, &proof), "count={count} leaf {i} must verify");
+                assert!(
+                    verify_inclusion(&root, &proof),
+                    "count={count} leaf {i} must verify"
+                );
 
                 // Tamper the leaf: rejected.
                 let mut bad_leaf = proof.clone();
                 bad_leaf.leaf[0] ^= 0xff;
-                assert!(!verify_inclusion(&root, &bad_leaf), "count={count} tampered leaf {i} must fail");
+                assert!(
+                    !verify_inclusion(&root, &bad_leaf),
+                    "count={count} tampered leaf {i} must fail"
+                );
 
                 // Tamper a sibling (if any): rejected.
                 if let Some(first) = proof.siblings.first().copied() {
                     let mut bad_sib = proof.clone();
                     bad_sib.siblings[0].1[0] ^= 0xff;
                     assert_ne!(bad_sib.siblings[0].1, first.1);
-                    assert!(!verify_inclusion(&root, &bad_sib), "count={count} tampered sibling {i} must fail");
+                    assert!(
+                        !verify_inclusion(&root, &bad_sib),
+                        "count={count} tampered sibling {i} must fail"
+                    );
                 }
             }
         }

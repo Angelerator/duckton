@@ -283,7 +283,9 @@ mod tests {
                 Caveat::ExpiresAt(2000),
             ],
         );
-        let who = token.verify(&issuer.verifying_key().to_bytes(), &ctx()).unwrap();
+        let who = token
+            .verify(&issuer.verifying_key().to_bytes(), &ctx())
+            .unwrap();
         assert_eq!(who, holder.verifying_key().to_bytes());
     }
 
@@ -341,7 +343,11 @@ mod tests {
         );
         // holder delegates to `delegate`, adding a row cap
         let attenuated = root
-            .attenuate(&holder, &delegate.verifying_key().to_bytes(), vec![Caveat::MaxRows(1000)])
+            .attenuate(
+                &holder,
+                &delegate.verifying_key().to_bytes(),
+                vec![Caveat::MaxRows(1000)],
+            )
             .unwrap();
         let who = attenuated
             .verify(&issuer.verifying_key().to_bytes(), &ctx())

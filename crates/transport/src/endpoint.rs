@@ -14,7 +14,9 @@ use p2p_config::{CongestionAlgo, IdentityConfig, NetworkConfig, QuicTuningConfig
 use p2p_proto::{NodeId, VersionReject, Wire, MAX_FRAME_BYTES};
 use quinn::congestion::{BbrConfig, CubicConfig, NewRenoConfig};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
-use quinn::{ClientConfig, Endpoint, RecvStream, SendStream, ServerConfig, TransportConfig, VarInt};
+use quinn::{
+    ClientConfig, Endpoint, RecvStream, SendStream, ServerConfig, TransportConfig, VarInt,
+};
 use rustls_pki_types::CertificateDer;
 use tokio::sync::{mpsc, Mutex, Semaphore};
 
@@ -121,10 +123,9 @@ impl QuicTransport {
         ));
         server_config.transport_config(transport_config.clone());
 
-        let bind_addr: SocketAddr = net
-            .bind_addr
-            .parse()
-            .map_err(|e| TransportError::Endpoint(format!("bad bind_addr {}: {e}", net.bind_addr)))?;
+        let bind_addr: SocketAddr = net.bind_addr.parse().map_err(|e| {
+            TransportError::Endpoint(format!("bad bind_addr {}: {e}", net.bind_addr))
+        })?;
         let mut endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| TransportError::Endpoint(e.to_string()))?;
 
@@ -319,8 +320,11 @@ async fn accept_one(
     // Version handshake (server role): accept the hello stream and reply with our
     // Hello, or a typed VersionReject — bounded so a peer that opens a connection
     // and then never speaks cannot hold a handshake slot forever.
-    match tokio::time::timeout(handshake_timeout, handshake_server(&connection, version, my_id))
-        .await
+    match tokio::time::timeout(
+        handshake_timeout,
+        handshake_server(&connection, version, my_id),
+    )
+    .await
     {
         Ok(Ok(negotiated)) => Ok(Conn {
             connection,
@@ -596,7 +600,9 @@ pub async fn read_msg(recv: &mut RecvStream) -> Result<Wire> {
         return Err(TransportError::FrameTooLarge(len, MAX_FRAME_BYTES));
     }
     if len < 2 {
-        return Err(TransportError::Stream("frame too short for schema tag".into()));
+        return Err(TransportError::Stream(
+            "frame too short for schema tag".into(),
+        ));
     }
     let mut body = vec![0u8; len];
     recv.read_exact(&mut body)
@@ -616,6 +622,7 @@ pub async fn read_msg(recv: &mut RecvStream) -> Result<Wire> {
 pub async fn request_response(conn: &Conn, request: &Wire) -> Result<Wire> {
     let (mut send, mut recv) = conn.open_bi().await?;
     write_msg(&mut send, request).await?;
-    send.finish().map_err(|e| TransportError::Stream(e.to_string()))?;
+    send.finish()
+        .map_err(|e| TransportError::Stream(e.to_string()))?;
     read_msg(&mut recv).await
 }

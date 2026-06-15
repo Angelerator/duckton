@@ -17,9 +17,7 @@ use std::sync::Arc;
 
 use p2p_config::{LimitsConfig, TrustConfig};
 use p2p_proto::{NodeId, Receipt};
-use redb::{
-    Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
-};
+use redb::{Database, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 use crate::reputation::TrustStore;

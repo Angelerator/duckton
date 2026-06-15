@@ -194,7 +194,11 @@ mod tests {
         let far = d.phi(last + 30_000);
         assert!(far > near);
         // A very long pause relative to the 1s cadence convicts the peer.
-        assert!(!d.is_available(last + 60_000), "phi={}", d.phi(last + 60_000));
+        assert!(
+            !d.is_available(last + 60_000),
+            "phi={}",
+            d.phi(last + 60_000)
+        );
     }
 
     #[test]

@@ -93,7 +93,11 @@ impl BlocklistStore {
         if let Some(Value::Array(entries)) = table.get("entry") {
             for v in entries {
                 if let Value::Table(t) = v {
-                    let id = t.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                    let id = t
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     if id.is_empty() {
                         continue;
                     }
@@ -102,14 +106,24 @@ impl BlocklistStore {
                         .and_then(Value::as_str)
                         .and_then(BlockKind::parse)
                         .unwrap_or(BlockKind::NodeId);
-                    let reason = t.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+                    let reason = t
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
                     let source = t
                         .get("source")
                         .and_then(Value::as_str)
                         .unwrap_or("manual")
                         .to_string();
                     let ts = t.get("ts").and_then(Value::as_integer).unwrap_or(0) as u64;
-                    out.push(BlockEntry { id, kind, reason, source, ts });
+                    out.push(BlockEntry {
+                        id,
+                        kind,
+                        reason,
+                        source,
+                        ts,
+                    });
                 }
             }
         }
@@ -127,7 +141,10 @@ impl BlocklistStore {
             .map(|e| {
                 let mut t = BTreeMap::new();
                 t.insert("id".to_string(), Value::String(e.id.clone()));
-                t.insert("kind".to_string(), Value::String(e.kind.as_str().to_string()));
+                t.insert(
+                    "kind".to_string(),
+                    Value::String(e.kind.as_str().to_string()),
+                );
                 t.insert("reason".to_string(), Value::String(e.reason.clone()));
                 t.insert("source".to_string(), Value::String(e.source.clone()));
                 t.insert("ts".to_string(), Value::Integer(e.ts as i64));
@@ -197,14 +214,18 @@ mod tests {
 
     fn store() -> (BlocklistStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        (BlocklistStore::with_path(dir.path().join("blocklist.toml")), dir)
+        (
+            BlocklistStore::with_path(dir.path().join("blocklist.toml")),
+            dir,
+        )
     }
 
     #[test]
     fn block_unblock_roundtrip_persists() {
         let (s, dir) = store();
         assert!(s.list().unwrap().is_empty());
-        s.block("b3:bad", BlockKind::NodeId, "cheating", "manual", 10).unwrap();
+        s.block("b3:bad", BlockKind::NodeId, "cheating", "manual", 10)
+            .unwrap();
         assert!(s.is_blocked("b3:bad").unwrap());
         // survives reopen
         let reopened = BlocklistStore::with_path(dir.path().join("blocklist.toml"));
@@ -217,8 +238,10 @@ mod tests {
     #[test]
     fn block_is_idempotent_on_id() {
         let (s, _d) = store();
-        s.block("kQwallet", BlockKind::Wallet, "r1", "manual", 1).unwrap();
-        s.block("kQwallet", BlockKind::Wallet, "r2", "auto", 2).unwrap();
+        s.block("kQwallet", BlockKind::Wallet, "r1", "manual", 1)
+            .unwrap();
+        s.block("kQwallet", BlockKind::Wallet, "r2", "auto", 2)
+            .unwrap();
         let entries = s.list().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].reason, "r2");

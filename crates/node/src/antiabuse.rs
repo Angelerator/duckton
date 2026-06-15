@@ -143,7 +143,10 @@ impl Blocklist {
         self.block(
             signal.subject_id.as_str(),
             BlockKind::NodeId,
-            &format!("abuse signal: {} (from {})", signal.reason, signal.reporter_id),
+            &format!(
+                "abuse signal: {} (from {})",
+                signal.reason, signal.reporter_id
+            ),
             "gossip",
         );
         if let Some(w) = &signal.subject_wallet {

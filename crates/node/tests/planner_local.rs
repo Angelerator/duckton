@@ -13,10 +13,10 @@ use std::sync::Arc;
 
 use p2p_config::{GridConfig, IdentityConfig, PinningMode, PreferMode, QueryOverrides};
 use p2p_node::{
-    csv_metadata, delta_metadata, estimate_table_files, estimate_text, estimate_working_set,
-    Cmp, Coordinator, CoordinatorError, DefaultPlanner, ExecLease, LocalExecutor,
-    LocalOrRemotePlanner, MockEngine, Predicate, Projection, QueryEngine, QueryShape, ScanEstimate,
-    StaticDiscovery, WorkingSetEstimate,
+    csv_metadata, delta_metadata, estimate_table_files, estimate_text, estimate_working_set, Cmp,
+    Coordinator, CoordinatorError, DefaultPlanner, ExecLease, LocalExecutor, LocalOrRemotePlanner,
+    MockEngine, Predicate, Projection, QueryEngine, QueryShape, ScanEstimate, StaticDiscovery,
+    WorkingSetEstimate,
 };
 use p2p_transport::{NodeIdentity, QuicTransport};
 use p2p_trust::InMemoryTrustStore;
@@ -32,7 +32,12 @@ fn csv_estimator_accuracy_on_local_fixture() {
     let path = dir.path().join("events.csv");
     let mut text = String::from("region,user_id,amount\n");
     for i in 0..1000 {
-        text.push_str(&format!("us-east-{:03},{:06},{}\n", i % 100, i, (i * 7) % 1000));
+        text.push_str(&format!(
+            "us-east-{:03},{:06},{}\n",
+            i % 100,
+            i,
+            (i * 7) % 1000
+        ));
     }
     let actual_rows = 1000u64;
     std::fs::write(&path, &text).unwrap();
@@ -56,8 +61,12 @@ fn csv_estimator_accuracy_on_local_fixture() {
         projected.scanned_uncompressed_bytes < scan.scanned_uncompressed_bytes,
         "projection should reduce scanned bytes"
     );
-    let ratio = projected.scanned_uncompressed_bytes as f64 / scan.scanned_uncompressed_bytes as f64;
-    assert!((0.28..0.39).contains(&ratio), "projection ratio was {ratio}");
+    let ratio =
+        projected.scanned_uncompressed_bytes as f64 / scan.scanned_uncompressed_bytes as f64;
+    assert!(
+        (0.28..0.39).contains(&ratio),
+        "projection ratio was {ratio}"
+    );
 
     // A streaming SELECT amount has a tiny working set (bounded scan buffer).
     let ws = estimate_working_set(&projected, &QueryShape::streaming(), &params);
@@ -135,11 +144,13 @@ fn local_coordinator(
     let net = GridConfig::default().network;
     let transport =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
-    let disc = Arc::new(StaticDiscovery::new(vec![], cfg.discovery.candidate_sample_size));
+    let disc = Arc::new(StaticDiscovery::new(
+        vec![],
+        cfg.discovery.candidate_sample_size,
+    ));
     let store = Arc::new(InMemoryTrustStore::new(&cfg.trust, &cfg.limits));
     let local = LocalExecutor::new(engine, cfg.budget.memory_bytes, &cfg.planner);
-    let planner: Arc<dyn LocalOrRemotePlanner> =
-        Arc::new(DefaultPlanner::new(cfg.planner.clone()));
+    let planner: Arc<dyn LocalOrRemotePlanner> = Arc::new(DefaultPlanner::new(cfg.planner.clone()));
     let coord = Coordinator::new(transport, disc, store, Arc::new(cfg), "mock-1")
         .with_local_execution(Arc::clone(&local), planner);
     (coord, local)
@@ -164,7 +175,8 @@ fn fitting_estimate() -> WorkingSetEstimate {
 
 #[tokio::test]
 async fn prefer_local_runs_free_local_path() {
-    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
+    let (coord, _local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
     let sql = "SELECT region, count(*) FROM 's3://b/e/*.parquet' GROUP BY region";
 
     let overrides = QueryOverrides {
@@ -181,7 +193,13 @@ async fn prefer_local_runs_free_local_path() {
 
     // Result equals the same deterministic engine computed independently.
     let expected = MockEngine::deterministic()
-        .execute(sql, ExecLease { memory_bytes: 1 << 20, threads: 1 })
+        .execute(
+            sql,
+            ExecLease {
+                memory_bytes: 1 << 20,
+                threads: 1,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(outcome.result, expected);
@@ -189,7 +207,8 @@ async fn prefer_local_runs_free_local_path() {
 
 #[tokio::test]
 async fn prefer_remote_bypasses_local_and_dispatches_to_grid() {
-    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
+    let (coord, _local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
     let overrides = QueryOverrides {
         prefer: Some(PreferMode::Remote),
         ..Default::default()
@@ -202,9 +221,14 @@ async fn prefer_remote_bypasses_local_and_dispatches_to_grid() {
 
 #[tokio::test]
 async fn auto_fitting_estimate_runs_local() {
-    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
+    let (coord, _local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), GridConfig::default());
     let outcome = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap();
     assert!(outcome.executed_locally);
@@ -224,7 +248,11 @@ async fn auto_too_big_estimate_goes_remote() {
     // Estimate peak ~1MB >> 256KiB headroom → planner routes remote → no workers
     // → NoCandidates.
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
@@ -244,7 +272,11 @@ async fn locally_saturated_falls_back_to_remote() {
     // A fitting estimate would normally go local, but the slot is taken → remote
     // → NoCandidates.
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
@@ -257,14 +289,23 @@ async fn adaptive_failover_redispatches_to_grid_on_oom() {
     // with a resource-exhaustion error, and the coordinator fails over to the
     // grid (which, lacking workers, surfaces NoCandidates — proving the
     // re-dispatch happened rather than the local error being returned).
-    let oom = Arc::new(MockEngine::failing("Out of Memory Error: failed to allocate 8GB"));
+    let oom = Arc::new(MockEngine::failing(
+        "Out of Memory Error: failed to allocate 8GB",
+    ));
     let (coord, _local) = local_coordinator(oom, GridConfig::default());
 
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap_err();
-    assert!(matches!(err, CoordinatorError::NoCandidates), "expected failover to grid, got {err:?}");
+    assert!(
+        matches!(err, CoordinatorError::NoCandidates),
+        "expected failover to grid, got {err:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -284,13 +325,18 @@ async fn remote_only_mode_dispatches_tiny_fitting_query_to_grid() {
     // A tiny query that WOULD fit locally must still be dispatched to the grid
     // when local execution is disabled. With no workers, going remote surfaces
     // NoCandidates — proving the local path was NOT taken.
-    let (coord, local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    let (coord, local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
     // Sanity: a local slot IS available and the estimate fits, so the ONLY reason
     // we go remote is the remote-only hard gate (not saturation / size).
     assert!(local.slot_available());
 
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
@@ -300,7 +346,8 @@ async fn remote_only_mode_dispatches_tiny_fitting_query_to_grid() {
 async fn remote_only_mode_hard_gate_overrides_per_call_prefer_local() {
     // Even an explicit `prefer => local` cannot make a remote-only node run a
     // query on its own machine: the hard gate wins → grid → NoCandidates.
-    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    let (coord, _local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
     let overrides = QueryOverrides {
         prefer: Some(PreferMode::Local),
         ..Default::default()
@@ -315,10 +362,16 @@ async fn remote_only_mode_skips_adaptive_failover_start_local_path() {
     // the "start local" path is skipped entirely, so the engine is never invoked
     // and we go straight to the grid (NoCandidates). A LocalExecution error here
     // would mean the local path ran, which must not happen.
-    let oom = Arc::new(MockEngine::failing("Out of Memory Error: failed to allocate 8GB"));
+    let oom = Arc::new(MockEngine::failing(
+        "Out of Memory Error: failed to allocate 8GB",
+    ));
     let (coord, _local) = local_coordinator(oom, remote_only_cfg());
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(fitting_estimate()))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(fitting_estimate()),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
@@ -330,16 +383,23 @@ async fn thin_client_remote_only_dispatches_and_surfaces_no_candidates() {
     // local execution disabled. `p2p_query` must dispatch to hosts (no dependency
     // on a local executor) and, with no reachable peers, surface NoCandidates
     // cleanly rather than running locally.
-    let (coord, _local) = local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
+    let (coord, _local) =
+        local_coordinator(Arc::new(MockEngine::deterministic()), remote_only_cfg());
     // Default overrides → planner.prefer = auto, but the hard gate forces remote.
     let err = coord
-        .run_query("SELECT region, count(*) FROM 's3://b/e/*.parquet' GROUP BY region", QueryOverrides::default())
+        .run_query(
+            "SELECT region, count(*) FROM 's3://b/e/*.parquet' GROUP BY region",
+            QueryOverrides::default(),
+        )
         .await
         .unwrap_err();
     assert!(matches!(err, CoordinatorError::NoCandidates), "got {err:?}");
     // The actionable message points at p2p_join / bootstrap seeds.
     let msg = err.to_string();
-    assert!(msg.contains("p2p_join") || msg.contains("bootstrap"), "unfriendly: {msg}");
+    assert!(
+        msg.contains("p2p_join") || msg.contains("bootstrap"),
+        "unfriendly: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -354,5 +414,8 @@ async fn prefer_local_does_not_failover_and_surfaces_local_error() {
         ..Default::default()
     };
     let err = coord.run_query("SELECT 1", overrides).await.unwrap_err();
-    assert!(matches!(err, CoordinatorError::LocalExecution(_)), "got {err:?}");
+    assert!(
+        matches!(err, CoordinatorError::LocalExecution(_)),
+        "got {err:?}"
+    );
 }

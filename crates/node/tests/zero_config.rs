@@ -35,12 +35,21 @@ async fn zero_config_query_just_works() {
     // Auto-initialized + ran on the free local path (no grid, no payment).
     assert!(outcome.executed_locally, "should run locally with no seeds");
     assert!(outcome.verified, "own machine is trusted");
-    assert!(outcome.receipts.is_empty(), "free local path emits no receipts");
+    assert!(
+        outcome.receipts.is_empty(),
+        "free local path emits no receipts"
+    );
     assert_eq!(outcome.quorum, 0);
 
     // Result equals the same deterministic engine computed independently.
     let expected = MockEngine::deterministic()
-        .execute(sql, ExecLease { memory_bytes: 1 << 20, threads: 1 })
+        .execute(
+            sql,
+            ExecLease {
+                memory_bytes: 1 << 20,
+                threads: 1,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(outcome.result, expected);
@@ -52,7 +61,10 @@ async fn auto_loads_built_in_defaults_with_no_env_or_file() {
     // and no P2P_* env set (the test process), it resolves to the defaults and
     // still "just works" local-first.
     let node = Node::auto(engine()).unwrap();
-    let outcome = node.query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = node
+        .query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.executed_locally);
 }
 
@@ -112,7 +124,10 @@ async fn auto_with_unreachable_grid_falls_back_to_local() {
     cfg.discovery.bootstrap = vec!["quic://127.0.0.1:1".to_string()];
     let node = Node::with_config(cfg, engine()).unwrap();
 
-    let outcome = node.query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = node
+        .query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.executed_locally, "auto should fall back to local");
 }
 
@@ -237,6 +252,9 @@ async fn config_file_then_env_overrides_apply() {
 
     let node = Node::with_config(cfg, engine()).unwrap();
     // No per-call override → inherits the resolved config (local) → runs local.
-    let outcome = node.query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = node
+        .query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.executed_locally);
 }

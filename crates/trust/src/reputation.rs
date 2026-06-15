@@ -76,7 +76,13 @@ pub trait TrustStore: Send + Sync {
     ) -> Option<f64> {
         let ratio = self.reputation(worker, now)?;
         let obs = self.observation_count(worker);
-        Some(confidence_reputation(ratio, obs, prior_alpha, prior_beta, z))
+        Some(confidence_reputation(
+            ratio,
+            obs,
+            prior_alpha,
+            prior_beta,
+            z,
+        ))
     }
     /// Add voucher trust to a worker (Phase 3 web-of-trust).
     fn add_vouch(&self, worker: &NodeId, weight: f64);
@@ -423,7 +429,10 @@ pub fn confidence_reputation(
     let z2 = z * z;
     let denom = 1.0 + z2 / trials;
     let centre = p + z2 / (2.0 * trials);
-    let margin = z * ((p * (1.0 - p) / trials) + z2 / (4.0 * trials * trials)).max(0.0).sqrt();
+    let margin = z
+        * ((p * (1.0 - p) / trials) + z2 / (4.0 * trials * trials))
+            .max(0.0)
+            .sqrt();
     ((centre - margin) / denom).clamp(0.0, 1.0)
 }
 
@@ -542,7 +551,10 @@ mod tests {
         // A "perfect" newcomer (few obs) must score well below a long-correct node.
         let newbie = confidence_reputation(1.0, 3, 1.0, 2.0, 1.96);
         let veteran = confidence_reputation(1.0, 500, 1.0, 2.0, 1.96);
-        assert!(newbie < veteran, "newbie {newbie} should be < veteran {veteran}");
+        assert!(
+            newbie < veteran,
+            "newbie {newbie} should be < veteran {veteran}"
+        );
         assert!(newbie < 1.0, "a thinly-observed node is not fully trusted");
         assert!(veteran > 0.9, "a long correct history approaches 1.0");
     }
@@ -553,7 +565,10 @@ mod tests {
         let a = confidence_reputation(0.9, 5, priors.0, priors.1, priors.2);
         let b = confidence_reputation(0.9, 50, priors.0, priors.1, priors.2);
         let c = confidence_reputation(0.9, 5000, priors.0, priors.1, priors.2);
-        assert!(a < b && b < c, "more observations at the same ratio ⇒ higher confidence");
+        assert!(
+            a < b && b < c,
+            "more observations at the same ratio ⇒ higher confidence"
+        );
         // Converges to the raw ratio with overwhelming evidence.
         assert!((c - 0.9).abs() < 0.02);
     }
@@ -593,14 +608,19 @@ mod tests {
         // Confidence-aware view shrinks the 3-for-3 newcomer below 1.0.
         let c = s.confident_reputation(&w, 100, 1.0, 2.0, 1.96).unwrap();
         assert!(c < 1.0 && c > 0.0, "got {c}");
-        assert!(s.confident_reputation(&NodeId("b3:none".into()), 100, 1.0, 2.0, 1.96).is_none());
+        assert!(s
+            .confident_reputation(&NodeId("b3:none".into()), 100, 1.0, 2.0, 1.96)
+            .is_none());
     }
 
     #[test]
     fn attestation_gate_enforces_minimum() {
         assert!(attestation_gate(AttestationLevel::L2, AttestationLevel::L1));
         assert!(attestation_gate(AttestationLevel::L1, AttestationLevel::L1));
-        assert!(!attestation_gate(AttestationLevel::L0, AttestationLevel::L1));
+        assert!(!attestation_gate(
+            AttestationLevel::L0,
+            AttestationLevel::L1
+        ));
     }
 
     #[test]

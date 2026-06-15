@@ -57,8 +57,13 @@ impl CurlTonRpc {
         if rpc.trim().is_empty() {
             return None;
         }
-        let api_key = std::env::var("TON_TESTNET_API_KEY").ok().filter(|k| !k.is_empty());
-        Some(Self { rpc: rpc.trim_end_matches('/').to_string(), api_key })
+        let api_key = std::env::var("TON_TESTNET_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty());
+        Some(Self {
+            rpc: rpc.trim_end_matches('/').to_string(),
+            api_key,
+        })
     }
 
     /// POST a Toncenter v2 `runGetMethod` and return the raw JSON body.
@@ -79,7 +84,10 @@ impl CurlTonRpc {
             .output()
             .map_err(|e| SettleError::Backend(format!("curl spawn failed: {e}")))?;
         if !out.status.success() {
-            return Err(SettleError::Backend(format!("curl exited {:?}", out.status.code())));
+            return Err(SettleError::Backend(format!(
+                "curl exited {:?}",
+                out.status.code()
+            )));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
@@ -96,7 +104,8 @@ impl TonRpc for CurlTonRpc {
         // assembly, which lives in the Acton harness (scripts/testnet_e2e.sh).
         // This live RPC seam intentionally only performs reads.
         Err(SettleError::Backend(
-            "send_internal is not broadcast from Rust; use scripts/testnet_e2e.sh (Acton) to send".into(),
+            "send_internal is not broadcast from Rust; use scripts/testnet_e2e.sh (Acton) to send"
+                .into(),
         ))
     }
 
@@ -124,7 +133,9 @@ fn parse_first_stack_int(raw: &str) -> Result<i128, SettleError> {
         .and_then(|s| s.get(0))
         .and_then(|e| e.get(1))
         .ok_or_else(|| SettleError::Backend(format!("no stack[0] in response: {raw}")))?;
-    let s = first.as_str().ok_or_else(|| SettleError::Backend("stack value not a string".into()))?;
+    let s = first
+        .as_str()
+        .ok_or_else(|| SettleError::Backend("stack value not a string".into()))?;
     let s = s.trim();
     let parsed = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
         i128::from_str_radix(hex, 16)
@@ -156,9 +167,11 @@ fn message_abi_matches_onchain_opcodes() {
     assert_eq!(slash.bytes.len(), 4 + 8 + 16 + 1 + 36);
 
     let winner = WalletAddress::new(0, [2u8; 32]);
-    let settle = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[]);
+    // B1: candidates must include the winner (the contract membership-checks it);
+    // both the participants and candidates dicts are omitted from the flat ABI.
+    let settle = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[], &[winner]);
     assert_eq!(settle.opcode, OP_ESCROW_SETTLE);
-    // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16) (dict omitted from flat ABI)
+    // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16) (dicts omitted from flat ABI)
     assert_eq!(settle.bytes.len(), 4 + 8 + 32 + 36 + 16 + 16);
 
     let anchor = build_anchor_submit(1, 7, &[1u8; 32], &[0u8; 32], 1_000);
@@ -186,7 +199,10 @@ fn live_vault_reflects_stake_deposit() {
     let Some(rpc) = CurlTonRpc::from_env() else {
         return skip("TON_TESTNET_RPC not set");
     };
-    let Some(addr) = std::env::var("TON_TESTNET_VAULT_ADDR").ok().filter(|s| !s.is_empty()) else {
+    let Some(addr) = std::env::var("TON_TESTNET_VAULT_ADDR")
+        .ok()
+        .filter(|s| !s.is_empty())
+    else {
         return skip("TON_TESTNET_VAULT_ADDR not set");
     };
     let vault = WalletAddress::from_raw_str(&addr)
@@ -209,7 +225,10 @@ fn live_anchor_state_is_readable() {
     let Some(rpc) = CurlTonRpc::from_env() else {
         return skip("TON_TESTNET_RPC not set");
     };
-    let Some(addr) = std::env::var("TON_TESTNET_ANCHOR_ADDR").ok().filter(|s| !s.is_empty()) else {
+    let Some(addr) = std::env::var("TON_TESTNET_ANCHOR_ADDR")
+        .ok()
+        .filter(|s| !s.is_empty())
+    else {
         return skip("TON_TESTNET_ANCHOR_ADDR not set");
     };
     let anchor = WalletAddress::from_raw_str(&addr)
@@ -230,15 +249,23 @@ fn live_anchor_state_is_readable() {
 #[test]
 fn send_internal_is_read_only_seam() {
     // The live seam refuses to broadcast from Rust (documented boundary).
-    let rpc = CurlTonRpc { rpc: "https://example.invalid".into(), api_key: None };
+    let rpc = CurlTonRpc {
+        rpc: "https://example.invalid".into(),
+        api_key: None,
+    };
     let body = build_stake_deposit(0, 0);
-    let err = rpc.send_internal(&WalletAddress::new(0, [0u8; 32]), 0, &body).unwrap_err();
+    let err = rpc
+        .send_internal(&WalletAddress::new(0, [0u8; 32]), 0, &body)
+        .unwrap_err();
     assert!(matches!(err, SettleError::Backend(_)));
 }
 
 /// Resolve a user-friendly (`EQ.../kQ...`) address to raw via Toncenter's
 /// `detectAddress`, so env vars written by the harness (friendly form) work.
-fn friendly_to_wallet(rpc: &CurlTonRpc, friendly: &str) -> Result<WalletAddress, p2p_settlement::types::BindingError> {
+fn friendly_to_wallet(
+    rpc: &CurlTonRpc,
+    friendly: &str,
+) -> Result<WalletAddress, p2p_settlement::types::BindingError> {
     let url = format!("{}/detectAddress?address={}", rpc.rpc, friendly);
     let mut cmd = Command::new("curl");
     cmd.arg("-s").arg("--max-time").arg("30");
@@ -246,7 +273,9 @@ fn friendly_to_wallet(rpc: &CurlTonRpc, friendly: &str) -> Result<WalletAddress,
         cmd.arg("-H").arg(format!("X-API-Key: {k}"));
     }
     cmd.arg(url);
-    let out = cmd.output().map_err(|_| p2p_settlement::types::BindingError::BadAddress)?;
+    let out = cmd
+        .output()
+        .map_err(|_| p2p_settlement::types::BindingError::BadAddress)?;
     let raw = String::from_utf8_lossy(&out.stdout);
     let v: serde_json::Value =
         serde_json::from_str(&raw).map_err(|_| p2p_settlement::types::BindingError::BadAddress)?;

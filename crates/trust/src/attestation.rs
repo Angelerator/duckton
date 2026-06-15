@@ -93,7 +93,11 @@ pub struct MockAttestor {
 }
 
 impl MockAttestor {
-    pub fn new(authority: SigningKey, measurement: impl Into<String>, level: AttestationLevel) -> Self {
+    pub fn new(
+        authority: SigningKey,
+        measurement: impl Into<String>,
+        level: AttestationLevel,
+    ) -> Self {
         Self {
             authority,
             measurement: measurement.into(),
@@ -182,7 +186,8 @@ impl AttestationVerifier for AllowlistVerifier {
             return Err(AttestError::BoundKeyMismatch);
         }
 
-        let authority_pub = decode32(&evidence.authority_pub_hex).ok_or(AttestError::BadEvidence)?;
+        let authority_pub =
+            decode32(&evidence.authority_pub_hex).ok_or(AttestError::BadEvidence)?;
         if authority_pub != self.trusted_authority {
             return Err(AttestError::UntrustedAuthority);
         }
@@ -234,7 +239,8 @@ mod tests {
     fn unlisted_measurement_rejected() {
         let (attestor, authority) = setup();
         let att = attestor.produce(&[1u8; 16], &[2u8; 32]);
-        let v = AllowlistVerifier::new(authority, ["other-image".to_string()], AttestationLevel::L2);
+        let v =
+            AllowlistVerifier::new(authority, ["other-image".to_string()], AttestationLevel::L2);
         assert_eq!(
             v.verify(&att, &[1u8; 16], &[2u8; 32]),
             Err(AttestError::MeasurementNotAllowed)
@@ -262,7 +268,11 @@ mod tests {
         let (attestor, _authority) = setup();
         let att = attestor.produce(&[1u8; 16], &[2u8; 32]);
         let other = SigningKey::generate(&mut OsRng).verifying_key().to_bytes();
-        let v = AllowlistVerifier::new(other, ["duckdb-enclave-v1".to_string()], AttestationLevel::L2);
+        let v = AllowlistVerifier::new(
+            other,
+            ["duckdb-enclave-v1".to_string()],
+            AttestationLevel::L2,
+        );
         assert_eq!(
             v.verify(&att, &[1u8; 16], &[2u8; 32]),
             Err(AttestError::UntrustedAuthority)

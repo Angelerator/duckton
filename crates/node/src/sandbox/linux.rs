@@ -62,7 +62,9 @@ impl CgroupV2Policy {
         let mut out = Vec::new();
         out.push((
             "memory.max",
-            self.memory_max.map(|v| v.to_string()).unwrap_or_else(|| "max".into()),
+            self.memory_max
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "max".into()),
         ));
         if let Some(s) = self.memory_swap_max {
             out.push(("memory.swap.max", s.to_string()));
@@ -76,7 +78,9 @@ impl CgroupV2Policy {
         ));
         out.push((
             "pids.max",
-            self.pids_max.map(|v| v.to_string()).unwrap_or_else(|| "max".into()),
+            self.pids_max
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "max".into()),
         ));
         out
     }
@@ -107,27 +111,82 @@ pub struct SeccompPolicy {
 /// Syscalls a CPU/RAM-bound analytical query needs regardless of network.
 const BASELINE_SYSCALLS: &[&str] = &[
     // memory
-    "mmap", "munmap", "mremap", "mprotect", "brk", "madvise",
+    "mmap",
+    "munmap",
+    "mremap",
+    "mprotect",
+    "brk",
+    "madvise",
     // file io (reads of allowed paths + scratch writes)
-    "read", "write", "pread64", "pwrite64", "readv", "writev", "lseek",
-    "openat", "open", "close", "fstat", "stat", "lstat", "newfstatat",
-    "fsync", "fdatasync", "ftruncate", "unlink", "unlinkat", "getdents64",
+    "read",
+    "write",
+    "pread64",
+    "pwrite64",
+    "readv",
+    "writev",
+    "lseek",
+    "openat",
+    "open",
+    "close",
+    "fstat",
+    "stat",
+    "lstat",
+    "newfstatat",
+    "fsync",
+    "fdatasync",
+    "ftruncate",
+    "unlink",
+    "unlinkat",
+    "getdents64",
     // threads / futexes (DuckDB is multi-threaded)
-    "clone", "clone3", "futex", "set_robust_list", "get_robust_list",
-    "rseq", "sched_yield", "sched_getaffinity", "gettid",
+    "clone",
+    "clone3",
+    "futex",
+    "set_robust_list",
+    "get_robust_list",
+    "rseq",
+    "sched_yield",
+    "sched_getaffinity",
+    "gettid",
     // time / misc
-    "clock_gettime", "clock_nanosleep", "nanosleep", "getrandom", "getpid",
-    "exit", "exit_group", "rt_sigaction", "rt_sigprocmask", "rt_sigreturn",
-    "prlimit64", "uname", "sysinfo", "epoll_create1", "epoll_ctl", "epoll_wait",
-    "eventfd2", "pipe2",
+    "clock_gettime",
+    "clock_nanosleep",
+    "nanosleep",
+    "getrandom",
+    "getpid",
+    "exit",
+    "exit_group",
+    "rt_sigaction",
+    "rt_sigprocmask",
+    "rt_sigreturn",
+    "prlimit64",
+    "uname",
+    "sysinfo",
+    "epoll_create1",
+    "epoll_ctl",
+    "epoll_wait",
+    "eventfd2",
+    "pipe2",
 ];
 
 /// Network syscalls additionally allowed when egress is permitted (the *host*
 /// scoping is enforced by nftables + scoped credentials, not seccomp).
 const NETWORK_SYSCALLS: &[&str] = &[
-    "socket", "connect", "sendto", "recvfrom", "sendmsg", "recvmsg",
-    "setsockopt", "getsockopt", "getsockname", "getpeername", "shutdown",
-    "bind", "poll", "ppoll", "select",
+    "socket",
+    "connect",
+    "sendto",
+    "recvfrom",
+    "sendmsg",
+    "recvmsg",
+    "setsockopt",
+    "getsockopt",
+    "getsockname",
+    "getpeername",
+    "shutdown",
+    "bind",
+    "poll",
+    "ppoll",
+    "select",
 ];
 
 impl SeccompPolicy {
@@ -147,7 +206,7 @@ impl SeccompPolicy {
     }
 
     pub fn allows(&self, syscall: &str) -> bool {
-        self.allowed_syscalls.iter().any(|s| *s == syscall)
+        self.allowed_syscalls.contains(&syscall)
     }
 }
 
@@ -226,7 +285,12 @@ mod tests {
     use super::*;
     use crate::sandbox::{EgressAllowList, EgressEndpoint, ResourceLimits, SandboxSpec};
 
-    fn spec(mem: Option<u64>, procs: Option<u64>, allow_network: bool, ports: &[u16]) -> SandboxSpec {
+    fn spec(
+        mem: Option<u64>,
+        procs: Option<u64>,
+        allow_network: bool,
+        ports: &[u16],
+    ) -> SandboxSpec {
         SandboxSpec {
             limits: ResourceLimits {
                 memory_bytes: mem,

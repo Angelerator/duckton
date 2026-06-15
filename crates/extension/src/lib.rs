@@ -54,7 +54,10 @@ impl VTab for InfoVTab {
         bind.add_result_column("key", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         bind.add_result_column("value", LogicalTypeHandle::from(LogicalTypeId::Varchar));
         let rows = vec![
-            ("protocol_name".to_string(), p2p_proto::PROTOCOL_NAME.to_string()),
+            (
+                "protocol_name".to_string(),
+                p2p_proto::PROTOCOL_NAME.to_string(),
+            ),
             (
                 "protocol_version".to_string(),
                 p2p_proto::PROTOCOL_VERSION.to_string(),
@@ -85,7 +88,10 @@ impl VTab for InfoVTab {
         })
     }
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         let init = func.get_init_data();
         let bind = func.get_bind_data();
         if init.done.swap(true, Ordering::Relaxed) {
@@ -117,7 +123,10 @@ impl VTab for PeersVTab {
         let rows = match p2p_config::GridConfig::load(None) {
             Ok(cfg) => {
                 let mut rows = vec![
-                    ("discovery_mode".to_string(), format!("{:?}", cfg.discovery.mode)),
+                    (
+                        "discovery_mode".to_string(),
+                        format!("{:?}", cfg.discovery.mode),
+                    ),
                     (
                         "candidate_sample_size".to_string(),
                         cfg.discovery.candidate_sample_size.to_string(),
@@ -139,7 +148,10 @@ impl VTab for PeersVTab {
         })
     }
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         let init = func.get_init_data();
         let bind = func.get_bind_data();
         if init.done.swap(true, Ordering::Relaxed) {
@@ -156,7 +168,10 @@ impl VTab for PeersVTab {
 }
 
 /// Emit `rows` as two VARCHAR columns into a single output chunk.
-fn emit_two_columns(output: &mut DataChunkHandle, rows: &[(String, String)]) -> Result<(), Box<dyn Error>> {
+fn emit_two_columns(
+    output: &mut DataChunkHandle,
+    rows: &[(String, String)],
+) -> Result<(), Box<dyn Error>> {
     {
         let col0 = output.flat_vector(0);
         for (i, (k, _)) in rows.iter().enumerate() {
@@ -205,7 +220,10 @@ fn add_three_columns(bind: &BindInfo, c0: &str, c1: &str, c2: &str) {
     bind.add_result_column(c2, LogicalTypeHandle::from(LogicalTypeId::Varchar));
 }
 
-fn emit_three_columns(output: &mut DataChunkHandle, rows: &[[String; 3]]) -> Result<(), Box<dyn Error>> {
+fn emit_three_columns(
+    output: &mut DataChunkHandle,
+    rows: &[[String; 3]],
+) -> Result<(), Box<dyn Error>> {
     for col in 0..3 {
         let vector = output.flat_vector(col);
         for (i, r) in rows.iter().enumerate() {
@@ -218,7 +236,10 @@ fn emit_three_columns(output: &mut DataChunkHandle, rows: &[[String; 3]]) -> Res
 
 /// Shared `func` body for every (group, key, value) table function: emit the
 /// bind-time rows exactly once.
-fn emit_rows3<T>(func: &TableFunctionInfo<T>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>>
+fn emit_rows3<T>(
+    func: &TableFunctionInfo<T>,
+    output: &mut DataChunkHandle,
+) -> Result<(), Box<dyn Error>>
 where
     T: VTab<InitData = OnceInit, BindData = Rows3>,
 {
@@ -284,62 +305,95 @@ macro_rules! group_setter {
     };
 }
 
-group_setter!(EconomicsVTab, "economics", [
-    ("enabled", Boolean),
-    ("settlement", Varchar),
-    ("network", Varchar),
-    ("confirm", Boolean),
-    ("fee_recipient", Varchar),
-    ("default_payment", Varchar),
-]);
-group_setter!(PricingVTab, "pricing", [
-    ("unit_price", Bigint),
-    ("max_bid", Bigint),
-]);
-group_setter!(BiddingVTab, "bidding", [
-    ("w_quality", Double),
-    ("w_stake", Double),
-    ("w_price", Double),
-]);
-group_setter!(SelectionVTab, "selection", [
-    ("replicas", Bigint),
-    ("quorum", Bigint),
-    ("checksum_min", Bigint),
-    ("n_public", Bigint),
-    ("n_default", Bigint),
-    ("n_max", Bigint),
-]);
-group_setter!(FeesVTab, "fees", [
-    ("platform_fee_pct", Double),
-    ("participation_commission_frac", Double),
-    ("verification_surcharge_pct", Double),
-    ("bonus_aggressiveness", Double),
-]);
-group_setter!(TrustVTab, "trust", [
-    ("min_trust", Double),
-    ("min_attest", Varchar),
-    ("min_attestation", Varchar),
-]);
-group_setter!(PlannerVTab, "planner", [
-    ("prefer", Varchar),
-    ("local_execution", Boolean),
-    ("local_execution_enabled", Boolean),
-    ("enabled", Boolean),
-]);
-group_setter!(ContractsVTab, "contracts", [
-    ("stake_vault", Varchar),
-    ("job_escrow", Varchar),
-    ("record_anchor", Varchar),
-    ("global_params", Varchar),
-]);
-group_setter!(WalletVTab, "wallet", [
-    ("rpc", Varchar),
-    ("address", Varchar),
-    ("mnemonic_file", Varchar),
-    ("api_key_file", Varchar),
-    ("mnemonic", Varchar),
-    ("api_key", Varchar),
-]);
+group_setter!(
+    EconomicsVTab,
+    "economics",
+    [
+        ("enabled", Boolean),
+        ("settlement", Varchar),
+        ("network", Varchar),
+        ("confirm", Boolean),
+        ("fee_recipient", Varchar),
+        ("default_payment", Varchar),
+    ]
+);
+group_setter!(
+    PricingVTab,
+    "pricing",
+    [("unit_price", Bigint), ("max_bid", Bigint),]
+);
+group_setter!(
+    BiddingVTab,
+    "bidding",
+    [
+        ("w_quality", Double),
+        ("w_stake", Double),
+        ("w_price", Double),
+    ]
+);
+group_setter!(
+    SelectionVTab,
+    "selection",
+    [
+        ("replicas", Bigint),
+        ("quorum", Bigint),
+        ("checksum_min", Bigint),
+        ("n_public", Bigint),
+        ("n_default", Bigint),
+        ("n_max", Bigint),
+    ]
+);
+group_setter!(
+    FeesVTab,
+    "fees",
+    [
+        ("platform_fee_pct", Double),
+        ("participation_commission_frac", Double),
+        ("verification_surcharge_pct", Double),
+        ("bonus_aggressiveness", Double),
+    ]
+);
+group_setter!(
+    TrustVTab,
+    "trust",
+    [
+        ("min_trust", Double),
+        ("min_attest", Varchar),
+        ("min_attestation", Varchar),
+    ]
+);
+group_setter!(
+    PlannerVTab,
+    "planner",
+    [
+        ("prefer", Varchar),
+        ("local_execution", Boolean),
+        ("local_execution_enabled", Boolean),
+        ("enabled", Boolean),
+    ]
+);
+group_setter!(
+    ContractsVTab,
+    "contracts",
+    [
+        ("stake_vault", Varchar),
+        ("job_escrow", Varchar),
+        ("record_anchor", Varchar),
+        ("global_params", Varchar),
+    ]
+);
+group_setter!(
+    WalletVTab,
+    "wallet",
+    [
+        ("rpc", Varchar),
+        ("address", Varchar),
+        ("mnemonic_file", Varchar),
+        ("api_key_file", Varchar),
+        ("mnemonic", Varchar),
+        ("api_key", Varchar),
+    ]
+);
 
 /// `SELECT * FROM p2p_config()` / `p2p_settings()` — effective settings, grouped
 /// and human-readable, with secrets redacted.
@@ -350,13 +404,21 @@ impl VTab for ConfigInspectVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "group", "key", "value");
-        let rows = ConfigStore::open().settings().map_err(boxed)?.into_iter().map(row3).collect();
+        let rows = ConfigStore::open()
+            .settings()
+            .map_err(boxed)?
+            .into_iter()
+            .map(row3)
+            .collect();
         Ok(Rows3 { rows })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -372,13 +434,21 @@ impl VTab for StatusVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "group", "key", "value");
-        let rows = ConfigStore::open().status().map_err(boxed)?.into_iter().map(row3).collect();
+        let rows = ConfigStore::open()
+            .status()
+            .map_err(boxed)?
+            .into_iter()
+            .map(row3)
+            .collect();
         Ok(Rows3 { rows })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -397,13 +467,19 @@ impl VTab for SetVTab {
         let key = bind.get_parameter(0).to_string();
         let value = bind.get_parameter(1).to_string();
         let cfg = ConfigStore::open().set_kv(&key, &value).map_err(boxed)?;
-        let rows = p2p_config::status_rows(&cfg).into_iter().map(row3).collect();
+        let rows = p2p_config::status_rows(&cfg)
+            .into_iter()
+            .map(row3)
+            .collect();
         Ok(Rows3 { rows })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -425,15 +501,21 @@ impl VTab for ResetVTab {
         let store = ConfigStore::open();
         store.reset().map_err(boxed)?;
         let cfg = store.effective().map_err(boxed)?;
-        let mut rows: Vec<[String; 3]> =
-            vec![["result".into(), "reset".into(), "restored built-in defaults".into()]];
+        let mut rows: Vec<[String; 3]> = vec![[
+            "result".into(),
+            "reset".into(),
+            "restored built-in defaults".into(),
+        ]];
         rows.extend(p2p_config::status_rows(&cfg).into_iter().map(row3));
         Ok(Rows3 { rows })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -449,9 +531,16 @@ fn stake_action_rows(action: &str, amount: i64) -> Result<Vec<[String; 3]>, Box<
     let e = &cfg.economics;
 
     if amount <= 0 {
-        return Err(boxed(format!("{action}: amount must be a positive whole-TON value")));
+        return Err(boxed(format!(
+            "{action}: amount must be a positive whole-TON value"
+        )));
     }
-    if !e.enabled || !matches!(e.settlement, SettlementRail::Onchain | SettlementRail::Channel) {
+    if !e.enabled
+        || !matches!(
+            e.settlement,
+            SettlementRail::Onchain | SettlementRail::Channel
+        )
+    {
         return Err(boxed(format!(
             "{action} requires on-chain settlement. Run \
              `CALL p2p_economics(enabled => true, settlement => 'ton')` first \
@@ -497,7 +586,12 @@ fn stake_action_rows(action: &str, amount: i64) -> Result<Vec<[String; 3]>, Box<
 /// `--features ton-live`, this self-broadcasts a wallet-v5r1 signed
 /// `StakeDeposit`/`StakeRequestUnbond` and reports the toncenter result; without
 /// the feature it stays "prepared" (no network).
-fn stake_submit_status(_e: &p2p_config::EconomicsConfig, _vault: &str, _action: &str, _amount: i64) -> String {
+fn stake_submit_status(
+    _e: &p2p_config::EconomicsConfig,
+    _vault: &str,
+    _action: &str,
+    _amount: i64,
+) -> String {
     #[cfg(feature = "ton-live")]
     {
         return match broadcast_stake(_e, _vault, _action, _amount) {
@@ -543,11 +637,19 @@ fn broadcast_stake(
     let qid = now_secs();
     let hash = match action {
         "unstake" => rpc
-            .send_internal(&vault_addr, 0, &p2p_settlement::build_stake_unbond(qid, amt))
+            .send_internal(
+                &vault_addr,
+                0,
+                &p2p_settlement::build_stake_unbond(qid, amt),
+            )
             .map_err(boxed)?,
         // stake deposit attaches the bonded value to the vault.
         _ => rpc
-            .send_internal(&vault_addr, amt, &p2p_settlement::build_stake_deposit(qid, amt))
+            .send_internal(
+                &vault_addr,
+                amt,
+                &p2p_settlement::build_stake_deposit(qid, amt),
+            )
             .map_err(boxed)?,
     };
     Ok(hash)
@@ -563,7 +665,12 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
     let cfg = ConfigStore::open().effective().map_err(boxed)?;
     let e = &cfg.economics;
 
-    if !e.enabled || !matches!(e.settlement, SettlementRail::Onchain | SettlementRail::Channel) {
+    if !e.enabled
+        || !matches!(
+            e.settlement,
+            SettlementRail::Onchain | SettlementRail::Channel
+        )
+    {
         return Err(boxed(
             "p2p_admin_params requires on-chain settlement. Run \
              `CALL p2p_economics(enabled => true, settlement => 'ton')` first.",
@@ -586,7 +693,11 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
         }
     };
     let admin = match (&settings.wallet.address, &settings.wallet.mnemonic_file) {
-        (_, Some(_)) => settings.wallet.address.clone().unwrap_or_else(|| "<from mnemonic>".into()),
+        (_, Some(_)) => settings
+            .wallet
+            .address
+            .clone()
+            .unwrap_or_else(|| "<from mnemonic>".into()),
         _ => {
             return Err(boxed(format!(
                 "p2p_admin_params: no admin wallet configured for {}. Run \
@@ -602,26 +713,58 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
     let sch = &cfg.scheduler;
     let status = admin_params_submit_status(e, sch, &gp);
     Ok(vec![
-        ["admin_params".into(), "action".into(), "update_params".into()],
-        ["admin_params".into(), "network".into(), e.network.as_str().into()],
+        [
+            "admin_params".into(),
+            "action".into(),
+            "update_params".into(),
+        ],
+        [
+            "admin_params".into(),
+            "network".into(),
+            e.network.as_str().into(),
+        ],
         ["admin_params".into(), "global_params".into(), gp],
         ["admin_params".into(), "admin_wallet".into(), admin],
-        ["admin_params".into(), "rpc_endpoint".into(), e.resolved_rpc()],
-        ["admin_params".into(), "platform_fee_bps".into(), bps(e.fees.platform_fee_pct)],
+        [
+            "admin_params".into(),
+            "rpc_endpoint".into(),
+            e.resolved_rpc(),
+        ],
+        [
+            "admin_params".into(),
+            "platform_fee_bps".into(),
+            bps(e.fees.platform_fee_pct),
+        ],
         [
             "admin_params".into(),
             "participation_commission_bps".into(),
             bps(e.fees.participation_commission_frac),
         ],
-        ["admin_params".into(), "slash_challenger_bps".into(), bps(s.slash_to_challenger)],
+        [
+            "admin_params".into(),
+            "slash_challenger_bps".into(),
+            bps(s.slash_to_challenger),
+        ],
         [
             "admin_params".into(),
             "slash_failed_commitment_bps".into(),
             bps(s.slash_failed_commitment_pct),
         ],
-        ["admin_params".into(), "min_stake_ton".into(), e.stake.min_stake.to_string()],
-        ["admin_params".into(), "stake_cap_ton".into(), e.stake.stake_cap.to_string()],
-        ["admin_params".into(), "unbonding_secs".into(), e.stake.unbonding_secs.to_string()],
+        [
+            "admin_params".into(),
+            "min_stake_ton".into(),
+            e.stake.min_stake.to_string(),
+        ],
+        [
+            "admin_params".into(),
+            "stake_cap_ton".into(),
+            e.stake.stake_cap.to_string(),
+        ],
+        [
+            "admin_params".into(),
+            "unbonding_secs".into(),
+            e.stake.unbonding_secs.to_string(),
+        ],
         [
             "admin_params".into(),
             "challenge_window_secs".into(),
@@ -629,8 +772,16 @@ fn admin_params_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
         ],
         // Resilience / fairness gating now promoted on-chain (sourced from
         // [scheduler]) so disputes reference one agreed value.
-        ["admin_params".into(), "attempt_deadline_ms".into(), sch.attempt_deadline_ms.to_string()],
-        ["admin_params".into(), "progress_interval_ms".into(), sch.progress_interval_ms.to_string()],
+        [
+            "admin_params".into(),
+            "attempt_deadline_ms".into(),
+            sch.attempt_deadline_ms.to_string(),
+        ],
+        [
+            "admin_params".into(),
+            "progress_interval_ms".into(),
+            sch.progress_interval_ms.to_string(),
+        ],
         [
             "admin_params".into(),
             "progress_stall_mult".into(),
@@ -715,12 +866,17 @@ impl VTab for AdminParamsVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "group", "key", "value");
-        Ok(Rows3 { rows: admin_params_rows()? })
+        Ok(Rows3 {
+            rows: admin_params_rows()?,
+        })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -736,7 +892,10 @@ impl VTab for StakeVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "group", "key", "value");
-        let amount = bind.get_named_parameter("amount").map(|v| v.to_int64()).unwrap_or(0);
+        let amount = bind
+            .get_named_parameter("amount")
+            .map(|v| v.to_int64())
+            .unwrap_or(0);
         Ok(Rows3 {
             rows: stake_action_rows("stake", amount)?,
         })
@@ -744,11 +903,17 @@ impl VTab for StakeVTab {
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![("amount".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint))])
+        Some(vec![(
+            "amount".to_string(),
+            LogicalTypeHandle::from(LogicalTypeId::Bigint),
+        )])
     }
 }
 
@@ -760,7 +925,10 @@ impl VTab for UnstakeVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "group", "key", "value");
-        let amount = bind.get_named_parameter("amount").map(|v| v.to_int64()).unwrap_or(0);
+        let amount = bind
+            .get_named_parameter("amount")
+            .map(|v| v.to_int64())
+            .unwrap_or(0);
         Ok(Rows3 {
             rows: stake_action_rows("unstake", amount)?,
         })
@@ -768,11 +936,17 @@ impl VTab for UnstakeVTab {
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![("amount".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint))])
+        Some(vec![(
+            "amount".to_string(),
+            LogicalTypeHandle::from(LogicalTypeId::Bigint),
+        )])
     }
 }
 
@@ -808,7 +982,11 @@ fn blocklist_rows() -> Result<Vec<[String; 3]>, Box<dyn Error>> {
     let store = BlocklistStore::open();
     let entries = store.list().map_err(boxed)?;
     if entries.is_empty() {
-        return Ok(vec![["blocklist".into(), "empty".into(), "no blocked actors".into()]]);
+        return Ok(vec![[
+            "blocklist".into(),
+            "empty".into(),
+            "no blocked actors".into(),
+        ]]);
     }
     Ok(entries
         .into_iter()
@@ -847,22 +1025,33 @@ impl VTab for BlockVTab {
         BlocklistStore::open()
             .block(&id, kind, &reason, "manual", now_secs())
             .map_err(boxed)?;
-        let mut rows: Vec<[String; 3]> =
-            vec![["result".into(), "blocked".into(), id.clone()]];
+        let mut rows: Vec<[String; 3]> = vec![["result".into(), "blocked".into(), id.clone()]];
         rows.extend(blocklist_rows()?);
         Ok(Rows3 { rows })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         Some(vec![
-            ("id".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-            ("reason".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-            ("kind".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
+            (
+                "id".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "reason".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "kind".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
         ])
     }
 }
@@ -886,7 +1075,11 @@ impl VTab for UnblockVTab {
         let removed = BlocklistStore::open().unblock(&id).map_err(boxed)?;
         let mut rows: Vec<[String; 3]> = vec![[
             "result".into(),
-            if removed { "unblocked".into() } else { "not_found".into() },
+            if removed {
+                "unblocked".into()
+            } else {
+                "not_found".into()
+            },
             id.clone(),
         ]];
         rows.extend(blocklist_rows()?);
@@ -895,11 +1088,17 @@ impl VTab for UnblockVTab {
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        Some(vec![("id".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar))])
+        Some(vec![(
+            "id".to_string(),
+            LogicalTypeHandle::from(LogicalTypeId::Varchar),
+        )])
     }
 }
 
@@ -911,12 +1110,17 @@ impl VTab for BlocklistVTab {
 
     fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
         add_three_columns(bind, "id", "kind", "detail");
-        Ok(Rows3 { rows: blocklist_rows()? })
+        Ok(Rows3 {
+            rows: blocklist_rows()?,
+        })
     }
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
         once_init(info)
     }
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
     fn parameters() -> Option<Vec<LogicalTypeHandle>> {
@@ -983,7 +1187,10 @@ fn build_node() -> std::result::Result<Arc<Node>, String> {
     // unconfirmed mainnet, missing mnemonic) degrades to the free grid rather than
     // failing node construction, so queries still run locally/free.
     let stack = p2p_settlement::resolve_settlement_stack(&cfg.economics).ok();
-    let wire_sync = stack.as_ref().map(|s| s.params_source.is_some()).unwrap_or(false);
+    let wire_sync = stack
+        .as_ref()
+        .map(|s| s.params_source.is_some())
+        .unwrap_or(false);
 
     let node = runtime()
         .block_on(async move {
@@ -1050,7 +1257,8 @@ impl HostEngine {
     }
 
     fn run(sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
-        let conn = Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
+        let conn =
+            Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
         // Budget + the SAME lockdown the node's strict local engine applies
         // (`crate::duckdb_engine` in p2p-node): no auto-install/-load of
@@ -1073,15 +1281,24 @@ impl HostEngine {
         ))
         .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
 
-        let mut stmt = conn.prepare(sql).map_err(|e| EngineError::Exec(format!("prepare: {e}")))?;
-        let mut rows = stmt.query([]).map_err(|e| EngineError::Exec(format!("query: {e}")))?;
+        let mut stmt = conn
+            .prepare(sql)
+            .map_err(|e| EngineError::Exec(format!("prepare: {e}")))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| EngineError::Exec(format!("query: {e}")))?;
         let columns: Vec<String> = rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
         let ncols = columns.len();
         let mut out: Vec<Vec<PValue>> = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| EngineError::Exec(format!("fetch: {e}")))? {
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| EngineError::Exec(format!("fetch: {e}")))?
+        {
             let mut r = Vec::with_capacity(ncols);
             for i in 0..ncols {
-                let v = row.get_ref(i).map_err(|e| EngineError::Exec(format!("get col {i}: {e}")))?;
+                let v = row
+                    .get_ref(i)
+                    .map_err(|e| EngineError::Exec(format!("get col {i}: {e}")))?;
                 r.push(value_from_ref(v));
             }
             out.push(r);
@@ -1092,7 +1309,11 @@ impl HostEngine {
 
 #[async_trait::async_trait]
 impl QueryEngine for HostEngine {
-    async fn execute(&self, sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
+    async fn execute(
+        &self,
+        sql: &str,
+        lease: ExecLease,
+    ) -> std::result::Result<ResultSet, EngineError> {
         let sql = sql.to_string();
         tokio::task::spawn_blocking(move || HostEngine::run(&sql, lease))
             .await
@@ -1113,11 +1334,15 @@ fn value_from_ref(v: ValueRef<'_>) -> PValue {
         ValueRef::SmallInt(i) => PValue::Int(i as i64),
         ValueRef::Int(i) => PValue::Int(i as i64),
         ValueRef::BigInt(i) => PValue::Int(i),
-        ValueRef::HugeInt(i) => i64::try_from(i).map(PValue::Int).unwrap_or_else(|_| PValue::Text(i.to_string())),
+        ValueRef::HugeInt(i) => i64::try_from(i)
+            .map(PValue::Int)
+            .unwrap_or_else(|_| PValue::Text(i.to_string())),
         ValueRef::UTinyInt(i) => PValue::Int(i as i64),
         ValueRef::USmallInt(i) => PValue::Int(i as i64),
         ValueRef::UInt(i) => PValue::Int(i as i64),
-        ValueRef::UBigInt(i) => i64::try_from(i).map(PValue::Int).unwrap_or_else(|_| PValue::Text(i.to_string())),
+        ValueRef::UBigInt(i) => i64::try_from(i)
+            .map(PValue::Int)
+            .unwrap_or_else(|_| PValue::Text(i.to_string())),
         ValueRef::Float(f) => PValue::Float(f as f64),
         ValueRef::Double(f) => PValue::Float(f),
         ValueRef::Text(bytes) => PValue::Text(String::from_utf8_lossy(bytes).to_string()),
@@ -1142,16 +1367,20 @@ fn value_to_string(v: &PValue) -> Option<String> {
 /// Parse a human memory size (`'4GB'`, `'512MB'`, `'1048576'`) into bytes.
 fn parse_memory(s: &str) -> Option<u64> {
     let s = s.trim().to_ascii_lowercase();
-    let (num, mult): (&str, u64) = if let Some(n) = s.strip_suffix("gb").or_else(|| s.strip_suffix('g')) {
-        (n, 1 << 30)
-    } else if let Some(n) = s.strip_suffix("mb").or_else(|| s.strip_suffix('m')) {
-        (n, 1 << 20)
-    } else if let Some(n) = s.strip_suffix("kb").or_else(|| s.strip_suffix('k')) {
-        (n, 1 << 10)
-    } else {
-        (s.as_str(), 1)
-    };
-    num.trim().parse::<f64>().ok().map(|x| (x * mult as f64) as u64)
+    let (num, mult): (&str, u64) =
+        if let Some(n) = s.strip_suffix("gb").or_else(|| s.strip_suffix('g')) {
+            (n, 1 << 30)
+        } else if let Some(n) = s.strip_suffix("mb").or_else(|| s.strip_suffix('m')) {
+            (n, 1 << 20)
+        } else if let Some(n) = s.strip_suffix("kb").or_else(|| s.strip_suffix('k')) {
+            (n, 1 << 10)
+        } else {
+            (s.as_str(), 1)
+        };
+    num.trim()
+        .parse::<f64>()
+        .ok()
+        .map(|x| (x * mult as f64) as u64)
 }
 
 /// Collect the per-call `p2p_query` overrides from the supplied named args.
@@ -1236,7 +1465,10 @@ impl VTab for QueryVTab {
         for c in &columns {
             bind.add_result_column(c, LogicalTypeHandle::from(LogicalTypeId::Varchar));
         }
-        Ok(QueryBind { columns, rows: rs.rows })
+        Ok(QueryBind {
+            columns,
+            rows: rs.rows,
+        })
     }
 
     fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
@@ -1245,7 +1477,10 @@ impl VTab for QueryVTab {
         })
     }
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         let init = func.get_init_data();
         let bind = func.get_bind_data();
         let start = init.cursor.load(Ordering::Relaxed);
@@ -1323,18 +1558,30 @@ impl VTab for ShareVTab {
             let raw = v.to_string();
             let bytes = parse_memory(&raw)
                 .ok_or_else(|| boxed(format!("p2p_share: could not parse memory '{raw}'")))?;
-            pairs.push(("budget.memory_bytes".into(), toml::Value::Integer(bytes as i64)));
+            pairs.push((
+                "budget.memory_bytes".into(),
+                toml::Value::Integer(bytes as i64),
+            ));
         }
         if let Some(v) = bind.get_named_parameter("threads") {
-            pairs.push(("budget.threads".into(), toml::Value::Integer(v.to_int64().max(1))));
+            pairs.push((
+                "budget.threads".into(),
+                toml::Value::Integer(v.to_int64().max(1)),
+            ));
         }
         if let Some(v) = bind.get_named_parameter("max_jobs") {
-            pairs.push(("budget.max_jobs".into(), toml::Value::Integer(v.to_int64().max(1))));
+            pairs.push((
+                "budget.max_jobs".into(),
+                toml::Value::Integer(v.to_int64().max(1)),
+            ));
         }
         if let Some(classes) = list_param(bind, "data_classes") {
             // Validate against the known data classes before persisting.
             for c in &classes {
-                if !matches!(c.to_ascii_lowercase().as_str(), "public" | "internal" | "sensitive") {
+                if !matches!(
+                    c.to_ascii_lowercase().as_str(),
+                    "public" | "internal" | "sensitive"
+                ) {
                     return Err(boxed(format!(
                         "p2p_share: unknown data class '{c}' (public|internal|sensitive)"
                     )));
@@ -1369,11 +1616,27 @@ impl VTab for ShareVTab {
             .unwrap_or_else(|_| "<unbound>".into());
         let rows = vec![
             ["share".into(), "status".into(), "hosting".into()],
-            ["share".into(), "node_id".into(), node.node_id().as_str().to_string()],
+            [
+                "share".into(),
+                "node_id".into(),
+                node.node_id().as_str().to_string(),
+            ],
             ["share".into(), "listen_addr".into(), addr],
-            ["share".into(), "memory_bytes".into(), cfg.budget.memory_bytes.to_string()],
-            ["share".into(), "threads".into(), cfg.budget.threads.to_string()],
-            ["share".into(), "max_jobs".into(), cfg.budget.max_jobs.to_string()],
+            [
+                "share".into(),
+                "memory_bytes".into(),
+                cfg.budget.memory_bytes.to_string(),
+            ],
+            [
+                "share".into(),
+                "threads".into(),
+                cfg.budget.threads.to_string(),
+            ],
+            [
+                "share".into(),
+                "max_jobs".into(),
+                cfg.budget.max_jobs.to_string(),
+            ],
             [
                 "share".into(),
                 "data_classes".into(),
@@ -1392,16 +1655,29 @@ impl VTab for ShareVTab {
         once_init(info)
     }
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        let list_varchar = LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        let list_varchar =
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
         Some(vec![
-            ("memory".to_string(), LogicalTypeHandle::from(LogicalTypeId::Varchar)),
-            ("threads".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint)),
-            ("max_jobs".to_string(), LogicalTypeHandle::from(LogicalTypeId::Bigint)),
+            (
+                "memory".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
+            (
+                "threads".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Bigint),
+            ),
+            (
+                "max_jobs".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Bigint),
+            ),
             ("data_classes".to_string(), list_varchar),
         ])
     }
@@ -1434,7 +1710,11 @@ impl VTab for JoinVTab {
         let cfg = node.config();
         let mut rows = vec![
             ["join".into(), "status".into(), "joined".into()],
-            ["join".into(), "node_id".into(), node.node_id().as_str().to_string()],
+            [
+                "join".into(),
+                "node_id".into(),
+                node.node_id().as_str().to_string(),
+            ],
             [
                 "join".into(),
                 "candidate_sample_size".into(),
@@ -1451,12 +1731,16 @@ impl VTab for JoinVTab {
         once_init(info)
     }
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn Error>> {
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
         emit_rows3(func, output)
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        let list_varchar = LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        let list_varchar =
+            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
         Some(vec![("bootstrap".to_string(), list_varchar)])
     }
 }

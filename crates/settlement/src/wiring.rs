@@ -91,7 +91,7 @@ fn resolve_onchain_stack(_econ: &EconomicsConfig) -> Result<SettlementStack, Set
 #[cfg(feature = "ton-live")]
 fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, SettleError> {
     use crate::ton::{
-        build_escrow_terms, GlobalParamsClient, ToncenterRpc, TonRecordAnchor, TonSettlement,
+        build_escrow_terms, GlobalParamsClient, TonRecordAnchor, TonSettlement, ToncenterRpc,
     };
 
     let wiring = resolve_ton_wiring(econ)?;
@@ -107,7 +107,9 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
             )
         })?;
     let mnemonic = std::fs::read_to_string(&mnemonic_path)
-        .map_err(|e| SettleError::Backend(format!("cannot read mnemonic_file {mnemonic_path}: {e}")))?
+        .map_err(|e| {
+            SettleError::Backend(format!("cannot read mnemonic_file {mnemonic_path}: {e}"))
+        })?
         .trim()
         .to_string();
 
@@ -115,7 +117,12 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
     // a fresh ToncenterRpc per consumer (each derives the same wallet) since the
     // RPC owns its signer by value.
     let mk_rpc = || {
-        ToncenterRpc::new(&wiring.rpc_endpoint, wiring.api_key.clone(), &wiring.network, &mnemonic)
+        ToncenterRpc::new(
+            &wiring.rpc_endpoint,
+            wiring.api_key.clone(),
+            &wiring.network,
+            &mnemonic,
+        )
     };
     let wallet = mk_rpc()?.wallet_address();
     let treasury = econ
@@ -130,7 +137,11 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
     let mut settlement = TonSettlement::with_escrow_code(
         mk_rpc()?,
         escrow_code,
-        build_escrow_terms(&treasury, &[0u8; 32], 0),
+        // Placeholder shared terms cell (a fresh per-job `EscrowTerms` is rebuilt
+        // inside `open_escrow_with_terms`): unbound expected-hash + candidates-hash,
+        // params version 0. The candidates_hash is the new B1 field (between
+        // expectedHash and paramsVersion).
+        build_escrow_terms(&treasury, &[0u8; 32], &[0u8; 32], 0),
         wallet,
     )
     .with_requester(wallet)
@@ -215,7 +226,8 @@ fn read_optional_secret(path: Option<&str>) -> Result<Option<String>, SettleErro
 /// form the explorer / faucet / Acton print, normalizing the latter offline
 /// (CRC16-checked) so the deployed addresses resolve without a network hop.
 fn parse_addr(s: &Option<String>) -> Option<WalletAddress> {
-    s.as_deref().and_then(|v| WalletAddress::from_any_str(v).ok())
+    s.as_deref()
+        .and_then(|v| WalletAddress::from_any_str(v).ok())
 }
 
 /// Resolve the live TON client wiring from `[economics]`, guarding mainnet.
@@ -309,8 +321,10 @@ mod tests {
     #[test]
     fn resolves_testnet_endpoint_and_addresses() {
         let mut e = EconomicsConfig::default();
-        e.testnet.contracts.stake_vault = Some("0:1111111111111111111111111111111111111111111111111111111111111111".into());
-        e.testnet.contracts.global_params = Some("0:2222222222222222222222222222222222222222222222222222222222222222".into());
+        e.testnet.contracts.stake_vault =
+            Some("0:1111111111111111111111111111111111111111111111111111111111111111".into());
+        e.testnet.contracts.global_params =
+            Some("0:2222222222222222222222222222222222222222222222222222222222222222".into());
         let w = resolve_ton_wiring(&e).unwrap();
         assert_eq!(w.network, "testnet");
         assert_eq!(w.rpc_endpoint, "https://testnet.toncenter.com/api/v2/");
@@ -345,7 +359,8 @@ mod tests {
         // Confirmed → resolves to the mainnet endpoint + addresses.
         e.mainnet_confirmed = true;
         e.mainnet.rpc = Some("https://my.mainnet.rpc/".into());
-        e.mainnet.contracts.stake_vault = Some("0:3333333333333333333333333333333333333333333333333333333333333333".into());
+        e.mainnet.contracts.stake_vault =
+            Some("0:3333333333333333333333333333333333333333333333333333333333333333".into());
         let w = resolve_ton_wiring(&e).unwrap();
         assert_eq!(w.network, "mainnet");
         assert_eq!(w.rpc_endpoint, "https://my.mainnet.rpc/");
@@ -374,7 +389,8 @@ mod tests {
         e.fee_recipient = Some("0:00".into());
         e.validate().unwrap();
         let p = GlobalParams::from_economics(&e);
-        p.validate().expect("derived params must satisfy the on-chain bounds");
+        p.validate()
+            .expect("derived params must satisfy the on-chain bounds");
         assert_eq!(p.platform_fee_bps, 200); // 0.02 -> 200 bps
         assert_eq!(p.split_challenger_bps, 4000);
         assert_eq!(p.min_stake_internal, 100 * NANOTON_PER_TON);
@@ -437,7 +453,10 @@ mod tests {
         e.validate().unwrap();
         // Default (non-ton-live) build can never broadcast: degrade to no-op.
         let s = resolve_settlement_stack(&e).unwrap();
-        assert!(!s.onchain, "on-chain rail degrades to no-op without ton-live");
+        assert!(
+            !s.onchain,
+            "on-chain rail degrades to no-op without ton-live"
+        );
         assert!(s.params_source.is_none());
     }
 

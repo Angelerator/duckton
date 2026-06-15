@@ -101,7 +101,10 @@ mod tests {
 
     #[test]
     fn level_parses_case_insensitively() {
-        assert_eq!(AttestationLevel::from_str("l2").unwrap(), AttestationLevel::L2);
+        assert_eq!(
+            AttestationLevel::from_str("l2").unwrap(),
+            AttestationLevel::L2
+        );
         assert!(AttestationLevel::from_str("L9").is_err());
     }
 

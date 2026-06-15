@@ -135,10 +135,7 @@ fn rlimit_fd_and_cpu_caps_are_applied_to_child() {
     let out = RlimitSandbox
         .command(
             &OsString::from("/bin/sh"),
-            &[
-                OsString::from("-c"),
-                OsString::from("ulimit -n; ulimit -t"),
-            ],
+            &[OsString::from("-c"), OsString::from("ulimit -n; ulimit -t")],
             &spec,
         )
         .unwrap()

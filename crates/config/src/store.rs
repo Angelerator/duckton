@@ -177,7 +177,10 @@ impl ConfigStore {
         match std::fs::remove_file(&self.runtime_path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(StoreError::Io(self.runtime_path.display().to_string(), e.to_string())),
+            Err(e) => Err(StoreError::Io(
+                self.runtime_path.display().to_string(),
+                e.to_string(),
+            )),
         }
     }
 
@@ -242,7 +245,9 @@ impl ConfigStore {
                     out.push(("economics.fee_recipient".into(), Value::String(v.into())));
                 }
                 // Network switch (with the mainnet safety guard).
-                let confirm = get("confirm").map(|v| parse_bool_raw(v, "confirm")).transpose()?;
+                let confirm = get("confirm")
+                    .map(|v| parse_bool_raw(v, "confirm"))
+                    .transpose()?;
                 if let Some(net) = get("network") {
                     out.extend(network_change_pairs(net, confirm.unwrap_or(false))?);
                 } else if let Some(c) = confirm {
@@ -320,9 +325,17 @@ impl ConfigStore {
             }
             "contracts" => {
                 let net = self.effective()?.economics.network.as_str().to_string();
-                for k in ["stake_vault", "job_escrow", "record_anchor", "global_params"] {
+                for k in [
+                    "stake_vault",
+                    "job_escrow",
+                    "record_anchor",
+                    "global_params",
+                ] {
                     if let Some(v) = get(k) {
-                        out.push((format!("economics.{net}.contracts.{k}"), Value::String(v.into())));
+                        out.push((
+                            format!("economics.{net}.contracts.{k}"),
+                            Value::String(v.into()),
+                        ));
                     }
                 }
             }
@@ -332,11 +345,17 @@ impl ConfigStore {
                     out.push((format!("economics.{net}.rpc"), Value::String(v.into())));
                 }
                 if let Some(v) = get("address") {
-                    out.push((format!("economics.{net}.wallet.address"), Value::String(v.into())));
+                    out.push((
+                        format!("economics.{net}.wallet.address"),
+                        Value::String(v.into()),
+                    ));
                 }
                 // Prefer file references; never persist a raw secret in the file.
                 if let Some(v) = get("mnemonic_file") {
-                    out.push((format!("economics.{net}.wallet.mnemonic_file"), Value::String(v.into())));
+                    out.push((
+                        format!("economics.{net}.wallet.mnemonic_file"),
+                        Value::String(v.into()),
+                    ));
                 } else if let Some(secret) = get("mnemonic") {
                     let path = self.store_secret(&format!("{net}.mnemonic"), secret)?;
                     out.push((
@@ -345,7 +364,10 @@ impl ConfigStore {
                     ));
                 }
                 if let Some(v) = get("api_key_file") {
-                    out.push((format!("economics.{net}.api_key_file"), Value::String(v.into())));
+                    out.push((
+                        format!("economics.{net}.api_key_file"),
+                        Value::String(v.into()),
+                    ));
                 } else if let Some(secret) = get("api_key") {
                     let path = self.store_secret(&format!("{net}.api_key"), secret)?;
                     out.push((
@@ -374,7 +396,13 @@ impl ConfigStore {
         restrict_permissions(&self.secrets_dir);
         let safe: String = name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         let path = self.secrets_dir.join(safe);
         std::fs::write(&path, secret)
@@ -421,8 +449,16 @@ pub fn status_rows(cfg: &GridConfig) -> Vec<SettingRow> {
             SettingRow::new("status", "rpc_endpoint", e.resolved_rpc()),
             SettingRow::new("status", "explorer", e.resolved_explorer()),
             SettingRow::new("status", "economics_enabled", e.enabled.to_string()),
-            SettingRow::new("status", "settlement", format!("{:?}", e.settlement).to_lowercase()),
-            SettingRow::new("status", "default_payment", format!("{:?}", e.default_payment).to_lowercase()),
+            SettingRow::new(
+                "status",
+                "settlement",
+                format!("{:?}", e.settlement).to_lowercase(),
+            ),
+            SettingRow::new(
+                "status",
+                "default_payment",
+                format!("{:?}", e.default_payment).to_lowercase(),
+            ),
             SettingRow::new(
                 "status",
                 "public_jobs",
@@ -438,7 +474,11 @@ pub fn status_rows(cfg: &GridConfig) -> Vec<SettingRow> {
                 "fee_recipient_set",
                 e.fee_recipient.is_some().to_string(),
             ),
-            SettingRow::new("status", "planner_prefer", format!("{:?}", cfg.planner.prefer).to_lowercase()),
+            SettingRow::new(
+                "status",
+                "planner_prefer",
+                format!("{:?}", cfg.planner.prefer).to_lowercase(),
+            ),
             SettingRow::new(
                 "status",
                 "execution_mode",
@@ -530,7 +570,9 @@ fn parse_bool_raw(v: &str, name: &str) -> Result<bool, StoreError> {
     match v.trim().to_ascii_lowercase().as_str() {
         "true" | "1" | "yes" | "on" => Ok(true),
         "false" | "0" | "no" | "off" => Ok(false),
-        other => Err(StoreError::BadParam(format!("{name} must be true/false, got '{other}'"))),
+        other => Err(StoreError::BadParam(format!(
+            "{name} must be true/false, got '{other}'"
+        ))),
     }
 }
 
@@ -613,7 +655,8 @@ fn deep_merge(base: &mut Value, overlay: &Value) {
     match (base, overlay) {
         (Value::Table(b), Value::Table(o)) => {
             for (k, ov) in o.iter() {
-                let merge_into_child = b.get(k).map(Value::is_table).unwrap_or(false) && ov.is_table();
+                let merge_into_child =
+                    b.get(k).map(Value::is_table).unwrap_or(false) && ov.is_table();
                 if merge_into_child {
                     deep_merge(b.get_mut(k).unwrap(), ov);
                 } else {
@@ -640,7 +683,11 @@ fn walk(prefix: &str, v: &Value, rows: &mut Vec<SettingRow>) {
     match v {
         Value::Table(t) => {
             for (k, child) in t.iter() {
-                let p = if prefix.is_empty() { k.clone() } else { format!("{prefix}.{k}") };
+                let p = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{prefix}.{k}")
+                };
                 walk(&p, child, rows);
             }
         }
@@ -677,7 +724,14 @@ fn is_secret_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
     matches!(
         k.as_str(),
-        "mnemonic" | "api_key" | "apikey" | "secret" | "private_key" | "privatekey" | "seed" | "passphrase"
+        "mnemonic"
+            | "api_key"
+            | "apikey"
+            | "secret"
+            | "private_key"
+            | "privatekey"
+            | "seed"
+            | "passphrase"
     )
 }
 
@@ -756,8 +810,14 @@ mod tests {
         let err = store
             .set(&[("scheduler.quorum".into(), Value::Integer(99))])
             .unwrap_err();
-        assert!(format!("{err}").to_lowercase().contains("quorum"), "got {err}");
-        assert!(store.runtime_text().is_none(), "must not persist on failure");
+        assert!(
+            format!("{err}").to_lowercase().contains("quorum"),
+            "got {err}"
+        );
+        assert!(
+            store.runtime_text().is_none(),
+            "must not persist on failure"
+        );
     }
 
     #[test]
@@ -801,7 +861,10 @@ mod tests {
     fn storage_url_style_validation_rejects_typo() {
         let mut cfg = GridConfig::default();
         cfg.storage.url_style = Some("pathh".to_string());
-        assert!(cfg.validate().is_err(), "invalid url_style must fail closed");
+        assert!(
+            cfg.validate().is_err(),
+            "invalid url_style must fail closed"
+        );
         cfg.storage.url_style = Some("vhost".to_string());
         assert!(cfg.validate().is_ok());
     }
@@ -816,7 +879,10 @@ mod tests {
     #[test]
     fn default_network_is_testnet() {
         let (store, _d) = temp_store();
-        assert_eq!(store.effective().unwrap().economics.network, TonNetwork::Testnet);
+        assert_eq!(
+            store.effective().unwrap().economics.network,
+            TonNetwork::Testnet
+        );
     }
 
     #[test]
@@ -856,8 +922,14 @@ mod tests {
         let mut p = BTreeMap::new();
         p.insert("prefer".to_string(), "elsewhere".to_string());
         let err = store.apply_group("planner", &p).unwrap_err();
-        assert!(format!("{err}").to_lowercase().contains("prefer"), "got {err}");
-        assert!(store.runtime_text().is_none(), "must not persist on failure");
+        assert!(
+            format!("{err}").to_lowercase().contains("prefer"),
+            "got {err}"
+        );
+        assert!(
+            store.runtime_text().is_none(),
+            "must not persist on failure"
+        );
     }
 
     #[test]
@@ -866,7 +938,10 @@ mod tests {
         let mut p = BTreeMap::new();
         p.insert("network".to_string(), "mainnet".to_string());
         let err = store.apply_group("economics", &p).unwrap_err();
-        assert!(format!("{err}").to_lowercase().contains("real ton"), "got {err}");
+        assert!(
+            format!("{err}").to_lowercase().contains("real ton"),
+            "got {err}"
+        );
         // Nothing persisted.
         assert!(store.runtime_text().is_none());
 
@@ -895,17 +970,33 @@ mod tests {
         let cfg = store.apply_group("contracts", &c2).unwrap();
 
         // Active (mainnet) resolves to the mainnet address + endpoints.
-        assert_eq!(cfg.economics.active_settings().contracts.stake_vault.as_deref(), Some("kQmainVault"));
-        assert_eq!(cfg.economics.resolved_rpc(), "https://toncenter.com/api/v2/");
+        assert_eq!(
+            cfg.economics
+                .active_settings()
+                .contracts
+                .stake_vault
+                .as_deref(),
+            Some("kQmainVault")
+        );
+        assert_eq!(
+            cfg.economics.resolved_rpc(),
+            "https://toncenter.com/api/v2/"
+        );
         // Testnet address is retained simultaneously.
-        assert_eq!(cfg.economics.testnet.contracts.stake_vault.as_deref(), Some("kQtestVault"));
+        assert_eq!(
+            cfg.economics.testnet.contracts.stake_vault.as_deref(),
+            Some("kQtestVault")
+        );
     }
 
     #[test]
     fn wallet_secret_never_in_config_or_file() {
         let (store, _d) = temp_store();
         let mut w = BTreeMap::new();
-        w.insert("mnemonic".to_string(), "abandon abandon secret words".to_string());
+        w.insert(
+            "mnemonic".to_string(),
+            "abandon abandon secret words".to_string(),
+        );
         let cfg = store.apply_group("wallet", &w).unwrap();
         // Config stores only a file reference.
         let mref = cfg.economics.testnet.wallet.mnemonic_file.clone().unwrap();
@@ -923,7 +1014,9 @@ mod tests {
         let rows = store.status().unwrap();
         let net = rows.iter().find(|r| r.key == "network").unwrap();
         assert_eq!(net.value, "testnet");
-        assert!(rows.iter().any(|r| r.key == "rpc_endpoint" && r.value.contains("testnet.toncenter.com")));
+        assert!(rows
+            .iter()
+            .any(|r| r.key == "rpc_endpoint" && r.value.contains("testnet.toncenter.com")));
     }
 
     #[test]

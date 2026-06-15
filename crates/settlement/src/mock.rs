@@ -61,7 +61,12 @@ pub struct InMemoryStakeRegistry {
 }
 
 impl InMemoryStakeRegistry {
-    pub fn new(min_public: Amount, min_internal: Amount, min_sensitive: Amount, stake_cap: Amount) -> Self {
+    pub fn new(
+        min_public: Amount,
+        min_internal: Amount,
+        min_sensitive: Amount,
+        stake_cap: Amount,
+    ) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
             min_public,
@@ -99,7 +104,12 @@ impl InMemoryStakeRegistry {
 
 impl StakeRegistry for InMemoryStakeRegistry {
     fn stake_of(&self, node: &NodeId) -> Amount {
-        self.inner.lock().unwrap().get(node).map(|e| e.staked).unwrap_or(0)
+        self.inner
+            .lock()
+            .unwrap()
+            .get(node)
+            .map(|e| e.staked)
+            .unwrap_or(0)
     }
 
     fn is_eligible(&self, node: &NodeId, class: DataClassCfg) -> bool {
@@ -112,7 +122,9 @@ impl StakeRegistry for InMemoryStakeRegistry {
 
     fn slash(&self, node: &NodeId, _reason: SlashReason, amount: Amount) -> Result<(), SlashError> {
         let mut g = self.inner.lock().unwrap();
-        let e = g.get_mut(node).ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
+        let e = g
+            .get_mut(node)
+            .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
         let slashable = e.staked + e.unbonding;
         if amount > slashable {
             return Err(SlashError::ExceedsStake { amount, slashable });
@@ -125,9 +137,14 @@ impl StakeRegistry for InMemoryStakeRegistry {
 
     fn request_unbond(&self, node: &NodeId, amount: Amount) -> Result<(), SlashError> {
         let mut g = self.inner.lock().unwrap();
-        let e = g.get_mut(node).ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
+        let e = g
+            .get_mut(node)
+            .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
         if amount > e.staked {
-            return Err(SlashError::ExceedsStake { amount, slashable: e.staked });
+            return Err(SlashError::ExceedsStake {
+                amount,
+                slashable: e.staked,
+            });
         }
         e.staked -= amount;
         e.unbonding += amount;
@@ -155,7 +172,9 @@ pub struct MockSettlement {
 
 impl Default for MockSettlement {
     fn default() -> Self {
-        Self { events: Mutex::new(Vec::new()) }
+        Self {
+            events: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -177,22 +196,29 @@ fn escrow_address_for(job: &JobId) -> WalletAddress {
 
 impl Settlement for MockSettlement {
     fn open_escrow(&self, job: &JobId, max_bid: Amount) -> Result<EscrowHandle, SettleError> {
-        self.events
-            .lock()
-            .unwrap()
-            .push(SettlementEvent::Opened { job: job.clone(), max_bid });
-        Ok(EscrowHandle { job: job.clone(), address: escrow_address_for(job), max_bid })
+        self.events.lock().unwrap().push(SettlementEvent::Opened {
+            job: job.clone(),
+            max_bid,
+        });
+        Ok(EscrowHandle {
+            job: job.clone(),
+            address: escrow_address_for(job),
+            max_bid,
+        })
     }
 
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
         let total = outcome.total();
         if total > h.max_bid {
-            return Err(SettleError::PayoutExceedsEscrow { payout: total, escrow: h.max_bid });
+            return Err(SettleError::PayoutExceedsEscrow {
+                payout: total,
+                escrow: h.max_bid,
+            });
         }
-        self.events
-            .lock()
-            .unwrap()
-            .push(SettlementEvent::Settled { job: h.job.clone(), total });
+        self.events.lock().unwrap().push(SettlementEvent::Settled {
+            job: h.job.clone(),
+            total,
+        });
         Ok(())
     }
 
@@ -220,7 +246,9 @@ pub struct InMemoryRecordAnchor {
 
 impl Default for InMemoryRecordAnchor {
     fn default() -> Self {
-        Self { inner: Mutex::new(Vec::new()) }
+        Self {
+            inner: Mutex::new(Vec::new()),
+        }
     }
 }
 
@@ -284,7 +312,10 @@ mod tests {
         let h = s.open_escrow(&job, 100 * TON).unwrap();
         let outcome = SettlementOutcome {
             result_hash: [1u8; 32],
-            winner: crate::types::Payout { to: WalletAddress::new(0, [2u8; 32]), amount: 60 * TON },
+            winner: crate::types::Payout {
+                to: WalletAddress::new(0, [2u8; 32]),
+                amount: 60 * TON,
+            },
             participants: vec![],
             platform_fee: 2 * TON,
         };
@@ -294,7 +325,10 @@ mod tests {
         // Over-budget settle is rejected.
         let too_big = SettlementOutcome {
             result_hash: [1u8; 32],
-            winner: crate::types::Payout { to: WalletAddress::new(0, [2u8; 32]), amount: 200 * TON },
+            winner: crate::types::Payout {
+                to: WalletAddress::new(0, [2u8; 32]),
+                amount: 200 * TON,
+            },
             participants: vec![],
             platform_fee: 0,
         };

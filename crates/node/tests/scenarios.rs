@@ -18,12 +18,12 @@ use p2p_config::{
     BudgetConfig, DataClassCfg, GridConfig, IdentityConfig, PaymentPref, PinningMode,
     QueryOverrides, SettlementRail,
 };
-use p2p_settlement::InMemoryStakeRegistry;
-use p2p_proto::{Attestation, AttestationLevel, NodeId, ResultSet, Value, Verdict, Version};
 use p2p_node::{
     AdmissionController, CanaryAuditor, Candidate, Coordinator, Discovery, MembershipTable,
     MockEngine, QueryEngine, StaticDiscovery, Worker, WorkerParams,
 };
+use p2p_proto::{Attestation, AttestationLevel, NodeId, ResultSet, Value, Verdict, Version};
+use p2p_settlement::InMemoryStakeRegistry;
 use p2p_transport::{NodeIdentity, QuicTransport, Transport, VersionInfo};
 use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
@@ -50,7 +50,10 @@ fn idcfg() -> IdentityConfig {
     }
 }
 
-async fn spawn_worker_with_budget(engine: Arc<dyn QueryEngine>, budget: BudgetConfig) -> WorkerHandle {
+async fn spawn_worker_with_budget(
+    engine: Arc<dyn QueryEngine>,
+    budget: BudgetConfig,
+) -> WorkerHandle {
     let net = GridConfig::default().network;
     let transport =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
@@ -60,7 +63,13 @@ async fn spawn_worker_with_budget(engine: Arc<dyn QueryEngine>, budget: BudgetCo
     let params = WorkerParams::from_config(&cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -93,7 +102,11 @@ fn store() -> Arc<InMemoryTrustStore> {
     ))
 }
 
-async fn coordinator(workers: &[&WorkerHandle], cfg: GridConfig, st: Arc<dyn TrustStore>) -> Coordinator {
+async fn coordinator(
+    workers: &[&WorkerHandle],
+    cfg: GridConfig,
+    st: Arc<dyn TrustStore>,
+) -> Coordinator {
     let net = GridConfig::default().network;
     let req =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
@@ -101,7 +114,10 @@ async fn coordinator(workers: &[&WorkerHandle], cfg: GridConfig, st: Arc<dyn Tru
         .iter()
         .map(|w| Candidate::new(Some(w.node_id.clone()), w.addr))
         .collect();
-    let disc = Arc::new(StaticDiscovery::new(candidates, cfg.discovery.candidate_sample_size));
+    let disc = Arc::new(StaticDiscovery::new(
+        candidates,
+        cfg.discovery.candidate_sample_size,
+    ));
     Coordinator::new(req, disc, st, Arc::new(cfg), "mock-1")
 }
 
@@ -115,15 +131,27 @@ async fn scenario_two_node_result_matches_locally_computed() {
     let coord = coordinator(&[&w], cfg(1, 1), store()).await;
     let sql = "SELECT region, count(*) FROM 's3://bucket/events/*.parquet' GROUP BY region";
 
-    let outcome = coord.run_query(sql, QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query(sql, QueryOverrides::default())
+        .await
+        .unwrap();
 
     // Locally compute the expected result with the same deterministic engine.
     let expected = MockEngine::deterministic()
-        .execute(sql, p2p_node::ExecLease { memory_bytes: 1 << 20, threads: 1 })
+        .execute(
+            sql,
+            p2p_node::ExecLease {
+                memory_bytes: 1 << 20,
+                threads: 1,
+            },
+        )
         .await
         .unwrap();
     assert_eq!(outcome.result, expected);
-    assert_eq!(outcome.agreed_hash.as_deref(), Some(canonical_hash(&expected).as_str()));
+    assert_eq!(
+        outcome.agreed_hash.as_deref(),
+        Some(canonical_hash(&expected).as_str())
+    );
 }
 
 #[tokio::test]
@@ -131,7 +159,9 @@ async fn scenario_large_result_streaming_with_backpressure() {
     // ~200k rows forces many QUIC chunks; the streaming path must not error and
     // must reassemble exactly. QUIC flow control provides backpressure.
     const N: i64 = 200_000;
-    let rows: Vec<Vec<Value>> = (0..N).map(|i| vec![Value::Int(i), Value::Int(i * 2)]).collect();
+    let rows: Vec<Vec<Value>> = (0..N)
+        .map(|i| vec![Value::Int(i), Value::Int(i * 2)])
+        .collect();
     let rs = ResultSet::new(vec!["i".into(), "double".into()], rows);
     let mut fixtures = HashMap::new();
     fixtures.insert("SELECT big".to_string(), rs.clone());
@@ -139,7 +169,10 @@ async fn scenario_large_result_streaming_with_backpressure() {
     let w = spawn_worker(Arc::new(MockEngine::with_fixtures(fixtures))).await;
     let coord = coordinator(&[&w], cfg(1, 1), store()).await;
 
-    let outcome = coord.run_query("SELECT big", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT big", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_eq!(outcome.result.row_count(), N as usize);
     assert_eq!(outcome.result, rs);
 }
@@ -168,7 +201,10 @@ async fn scenario_large_result_parallel_streams_and_compression() {
     c.validate().unwrap();
     let coord = coordinator(&[&w], c, store()).await;
 
-    let outcome = coord.run_query("SELECT wide", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT wide", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_eq!(outcome.result.row_count(), N as usize);
     assert_eq!(outcome.result, rs);
 }
@@ -177,7 +213,9 @@ async fn scenario_large_result_parallel_streams_and_compression() {
 async fn scenario_result_parallelism_overridable_per_call() {
     // Per-call override drives the fan-out without touching base config.
     const N: i64 = 80_000;
-    let rows: Vec<Vec<Value>> = (0..N).map(|i| vec![Value::Int(i), Value::Int(i * 3)]).collect();
+    let rows: Vec<Vec<Value>> = (0..N)
+        .map(|i| vec![Value::Int(i), Value::Int(i * 3)])
+        .collect();
     let rs = ResultSet::new(vec!["a".into(), "b".into()], rows);
     let mut fixtures = HashMap::new();
     fixtures.insert("SELECT par".to_string(), rs.clone());
@@ -206,8 +244,10 @@ async fn scenario_many_concurrent_jobs_across_workers() {
         per_job_threads: 1,
         data_classes: vec![DataClassCfg::Public],
     };
-    let w1 = spawn_worker_with_budget(Arc::new(MockEngine::deterministic()), big_budget.clone()).await;
-    let w2 = spawn_worker_with_budget(Arc::new(MockEngine::deterministic()), big_budget.clone()).await;
+    let w1 =
+        spawn_worker_with_budget(Arc::new(MockEngine::deterministic()), big_budget.clone()).await;
+    let w2 =
+        spawn_worker_with_budget(Arc::new(MockEngine::deterministic()), big_budget.clone()).await;
     let w3 = spawn_worker_with_budget(Arc::new(MockEngine::deterministic()), big_budget).await;
     // Generous timeouts: per-connection version handshakes are currently
     // accepted serially per endpoint, so a burst of fresh connections needs
@@ -221,7 +261,8 @@ async fn scenario_many_concurrent_jobs_across_workers() {
     for i in 0..10 {
         let c = Arc::clone(&coord);
         handles.push(tokio::spawn(async move {
-            c.run_query(&format!("SELECT {i}"), QueryOverrides::default()).await
+            c.run_query(&format!("SELECT {i}"), QueryOverrides::default())
+                .await
         }));
     }
     for h in handles {
@@ -244,7 +285,10 @@ async fn scenario_hedged_race_fastest_wins_losers_reset() {
     .await;
     let coord = coordinator(&[&fast, &fast2, &slow], cfg(3, 2), store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_ne!(outcome.winner.as_ref(), Some(&slow.node_id));
     assert!(outcome.verified);
 }
@@ -256,7 +300,10 @@ async fn scenario_quorum_accepts_matching_hashes() {
     let c = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let coord = coordinator(&[&a, &b, &c], cfg(3, 3), store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_eq!(outcome.agreement, 3);
     assert!(outcome.verified);
 }
@@ -267,12 +314,27 @@ async fn scenario_malicious_worker_detected_and_penalized() {
     let h2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let bad = spawn_worker(Arc::new(MockEngine::deterministic().cheating())).await;
     let st = store();
-    let coord = coordinator(&[&h1, &h2, &bad], cfg(3, 2), st.clone() as Arc<dyn TrustStore>).await;
+    let coord = coordinator(
+        &[&h1, &h2, &bad],
+        cfg(3, 2),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
-    let bad_receipt = outcome.receipts.iter().find(|r| r.worker_id == bad.node_id).unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    let bad_receipt = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == bad.node_id)
+        .unwrap();
     assert_eq!(bad_receipt.verdict, Verdict::Incorrect);
-    assert!(p2p_trust::verify_receipt(bad_receipt), "receipt must be validly signed");
+    assert!(
+        p2p_trust::verify_receipt(bad_receipt),
+        "receipt must be validly signed"
+    );
     assert!(st.penalty(&bad.node_id) > 0.0);
 }
 
@@ -287,21 +349,38 @@ async fn scenario_canary_audit_slashes_failing_worker() {
     // Known-good answer = the honest deterministic result.
     let sql = "SELECT canary";
     let expected = MockEngine::deterministic()
-        .execute(sql, p2p_node::ExecLease { memory_bytes: 1 << 20, threads: 1 })
+        .execute(
+            sql,
+            p2p_node::ExecLease {
+                memory_bytes: 1 << 20,
+                threads: 1,
+            },
+        )
         .await
         .unwrap();
     let qh = p2p_proto::QueryHash::compute(sql, "mock-1");
     auditor.register(qh, canonical_hash(&expected));
 
-    let coord = coordinator(&[&honest, &cheater], cfg(2, 1), st.clone() as Arc<dyn TrustStore>)
-        .await
-        .with_canary(auditor);
+    let coord = coordinator(
+        &[&honest, &cheater],
+        cfg(2, 1),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await
+    .with_canary(auditor);
 
-    let outcome = coord.run_query(sql, QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query(sql, QueryOverrides::default())
+        .await
+        .unwrap();
     // Honest worker matches the canary answer and wins.
     assert_eq!(outcome.winner.as_ref(), Some(&honest.node_id));
     // Cheater is judged Incorrect against the known answer and penalized.
-    let bad = outcome.receipts.iter().find(|r| r.worker_id == cheater.node_id).unwrap();
+    let bad = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == cheater.node_id)
+        .unwrap();
     assert_eq!(bad.verdict, Verdict::Incorrect);
     assert!(st.penalty(&cheater.node_id) > 0.0);
 }
@@ -334,7 +413,10 @@ async fn scenario_reputation_evolves_with_recency() {
         st.record(&mk(Verdict::Correct, t));
     }
     let recovered = st.reputation(&w, t).unwrap();
-    assert!(recovered > 0.9, "reputation should recover, got {recovered}");
+    assert!(
+        recovered > 0.9,
+        "reputation should recover, got {recovered}"
+    );
 }
 
 // --------------------------------------------------------------------------
@@ -354,7 +436,10 @@ async fn scenario_worker_rejects_then_requester_routes_elsewhere() {
 
     // replicas=1, quorum=1: only B can serve the Public query.
     let coord = coordinator(&[&a, &b], cfg(1, 1), store()).await;
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_eq!(outcome.winner.as_ref(), Some(&b.node_id));
 }
 
@@ -377,13 +462,19 @@ async fn scenario_versioning_compatible_and_incompatible() {
     let net = GridConfig::default().network;
     // Compatible: server v1.3 negotiates down to client v1.1.
     let server = QuicTransport::bind_with_version(
-        &net, &idcfg(), NodeIdentity::generate().unwrap(),
+        &net,
+        &idcfg(),
+        NodeIdentity::generate().unwrap(),
         vinfo(Version::new(1, 3, 0), Version::new(1, 0, 0)),
-    ).unwrap();
+    )
+    .unwrap();
     let client = QuicTransport::bind_with_version(
-        &net, &idcfg(), NodeIdentity::generate().unwrap(),
+        &net,
+        &idcfg(),
+        NodeIdentity::generate().unwrap(),
         vinfo(Version::new(1, 1, 0), Version::new(1, 0, 0)),
-    ).unwrap();
+    )
+    .unwrap();
     let sid = server.local_node_id().clone();
     let addr = server.local_addr().unwrap();
     let sc = server.clone();
@@ -398,19 +489,30 @@ async fn scenario_versioning_compatible_and_incompatible() {
 
     // Incompatible: client below server's min_supported → typed rejection.
     let strict = QuicTransport::bind_with_version(
-        &net, &idcfg(), NodeIdentity::generate().unwrap(),
+        &net,
+        &idcfg(),
+        NodeIdentity::generate().unwrap(),
         vinfo(Version::new(1, 5, 0), Version::new(1, 5, 0)),
-    ).unwrap();
+    )
+    .unwrap();
     let old = QuicTransport::bind_with_version(
-        &net, &idcfg(), NodeIdentity::generate().unwrap(),
+        &net,
+        &idcfg(),
+        NodeIdentity::generate().unwrap(),
         vinfo(Version::new(1, 2, 0), Version::new(1, 0, 0)),
-    ).unwrap();
+    )
+    .unwrap();
     let strict_id = strict.local_node_id().clone();
     let strict_addr = strict.local_addr().unwrap();
     let strict_clone = strict.clone();
-    tokio::spawn(async move { let _ = strict_clone.accept().await; });
+    tokio::spawn(async move {
+        let _ = strict_clone.accept().await;
+    });
     let result = old.connect(strict_addr, Some(strict_id)).await;
-    assert!(matches!(result, Err(p2p_transport::TransportError::IncompatibleVersion(_))));
+    assert!(matches!(
+        result,
+        Err(p2p_transport::TransportError::IncompatibleVersion(_))
+    ));
 }
 
 // --------------------------------------------------------------------------
@@ -435,9 +537,12 @@ fn scenario_config_precedence_defaults_file_env_percall() {
     assert_eq!(cfg.scheduler.replicas, 5);
 
     // per-call overrides env
-    let eff = QueryOverrides { replicas: Some(7), ..Default::default() }
-        .apply(&cfg)
-        .unwrap();
+    let eff = QueryOverrides {
+        replicas: Some(7),
+        ..Default::default()
+    }
+    .apply(&cfg)
+    .unwrap();
     assert_eq!(eff.scheduler.replicas, 7);
 
     // invalid config rejected by validation
@@ -463,7 +568,10 @@ async fn scenario_worker_timeout_masked_by_redundancy() {
     c.scheduler.dispatch_timeout_ms = 800; // short, so the hung worker times out
     let coord = coordinator(&[&h1, &h2, &hung], c, store()).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     // The two healthy workers still reach quorum despite the hung one.
     assert!(outcome.verified);
     assert_ne!(outcome.winner.as_ref(), Some(&hung.node_id));
@@ -480,7 +588,11 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
         let id = NodeIdentity::generate().unwrap();
         let pk = id.public_key_bytes();
         // half are stale (joined/left long ago)
-        let ts = if p % 2 == 0 { now } else { now.saturating_sub(10_000) };
+        let ts = if p % 2 == 0 {
+            now
+        } else {
+            now.saturating_sub(10_000)
+        };
         let draft = CapabilityDraft {
             addr: format!("127.0.0.1:{}", 20_000 + p),
             free_mem_bytes: 1 << 30,
@@ -508,7 +620,10 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
     assert!(!candidates.is_empty());
     // healthy only: every returned candidate is a fresh one
     for c in &candidates {
-        assert!(fresh_ids.contains(c.node_id.as_ref().unwrap()), "stale candidate returned");
+        assert!(
+            fresh_ids.contains(c.node_id.as_ref().unwrap()),
+            "stale candidate returned"
+        );
     }
 }
 
@@ -525,15 +640,24 @@ async fn scenario_free_job_is_scored_without_chain() {
     let st = store();
     // Default config => economics.enabled = false => every job is free.
     let c = cfg(1, 1);
-    assert!(!c.economics.enabled, "default must be the free, no-chain grid");
+    assert!(
+        !c.economics.enabled,
+        "default must be the free, no-chain grid"
+    );
     let coord = coordinator(&[&w], c, st.clone() as Arc<dyn TrustStore>).await;
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
 
     // Grid path (not local), verified, with a signed receipt emitted...
     assert!(!outcome.executed_locally);
     assert!(outcome.verified);
-    assert!(!outcome.receipts.is_empty(), "a free job must still emit receipts");
+    assert!(
+        !outcome.receipts.is_empty(),
+        "a free job must still emit receipts"
+    );
     let winner = outcome.winner.clone().unwrap();
     // ...and reputation/scoring was updated for the worker from FREE work.
     assert!(
@@ -566,7 +690,10 @@ async fn scenario_paid_job_uses_stake_seam_and_still_scores() {
         .await
         .with_stake_registry(reg);
 
-    let outcome = coord.run_query("SELECT 1", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     assert!(!outcome.receipts.is_empty());
     // Scoring still runs on the paid path.
@@ -590,9 +717,14 @@ async fn scenario_per_call_free_override_bypasses_chain_but_scores() {
     let coord = coordinator(&[&w], c, st.clone() as Arc<dyn TrustStore>).await;
 
     // payment => 'free' per call: no chain, still scored.
-    let overrides = QueryOverrides { payment: Some(PaymentPref::Free), ..Default::default() };
+    let overrides = QueryOverrides {
+        payment: Some(PaymentPref::Free),
+        ..Default::default()
+    };
     let outcome = coord.run_query("SELECT 1", overrides).await.unwrap();
     assert!(outcome.verified);
     assert!(!outcome.receipts.is_empty());
-    assert!(st.reputation(&outcome.winner.clone().unwrap(), now_ts()).is_some());
+    assert!(st
+        .reputation(&outcome.winner.clone().unwrap(), now_ts())
+        .is_some());
 }

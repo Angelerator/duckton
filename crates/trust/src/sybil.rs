@@ -167,7 +167,10 @@ mod tests {
         let pubkey = [9u8; 32];
         let stamp = mint_pow(&pubkey, 7, 12, 1_000_000).unwrap();
         assert!(verify_pow(&pubkey, 7, &stamp, 12));
-        assert!(!verify_pow(&pubkey, 8, &stamp, 12), "stamp must not cross epochs");
+        assert!(
+            !verify_pow(&pubkey, 8, &stamp, 12),
+            "stamp must not cross epochs"
+        );
     }
 
     #[test]

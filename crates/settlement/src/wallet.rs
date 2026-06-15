@@ -132,7 +132,12 @@ pub struct WalletV5R1 {
 impl WalletV5R1 {
     /// A basechain v5r1 wallet for the given key on the given network.
     pub fn new(public_key: [u8; 32], network_global_id: i32) -> Self {
-        Self { public_key, network_global_id, workchain: BASECHAIN as i8, subwallet: 0 }
+        Self {
+            public_key,
+            network_global_id,
+            workchain: BASECHAIN as i8,
+            subwallet: 0,
+        }
     }
 
     pub fn testnet(public_key: [u8; 32]) -> Self {
@@ -145,9 +150,8 @@ impl WalletV5R1 {
     /// The 32-bit `wallet_id = global_id XOR context_id`, where the client context
     /// is `b1 ‖ wc:int8 ‖ version:uint8(0) ‖ subwallet:uint15` (TON v5r1).
     pub fn wallet_id(&self) -> u32 {
-        let context: u32 = (1u32 << 31)
-            | (((self.workchain as u8) as u32) << 23)
-            | (0u32 << 15) // wallet version = 0
+        let context: u32 = ((1u32 << 31)
+            | (((self.workchain as u8) as u32) << 23)) // wallet version = 0
             | ((self.subwallet as u32) & 0x7fff);
         (self.network_global_id as u32) ^ context
     }
@@ -192,7 +196,13 @@ impl InternalMessage {
     /// Common case: send to an existing contract, `value` nanoton, bounceable,
     /// `mode = 3` (pay fees separately + ignore errors). No deploy.
     pub fn to_contract(dest: WalletAddress, value: Amount, body: Cell) -> Self {
-        Self { dest, value, body, state_init: None, mode: 3 }
+        Self {
+            dest,
+            value,
+            body,
+            state_init: None,
+            mode: 3,
+        }
     }
 
     /// Build the `MessageRelaxed` cell (`int_msg_info$0 …`) for this message.
@@ -245,10 +255,14 @@ pub fn build_signed_external_v5r1(
     messages: &[InternalMessage],
 ) -> Result<Vec<u8>, SettleError> {
     if key.public_key() != wallet.public_key {
-        return Err(SettleError::Backend("wallet key does not match the wallet public key".into()));
+        return Err(SettleError::Backend(
+            "wallet key does not match the wallet public key".into(),
+        ));
     }
     if messages.len() > 255 {
-        return Err(SettleError::Backend("at most 255 actions per v5r1 message".into()));
+        return Err(SettleError::Backend(
+            "at most 255 actions per v5r1 message".into(),
+        ));
     }
 
     // c5 out-action list: nest each action under the previous (out_list_empty$_ is
@@ -310,8 +324,16 @@ pub fn base64_encode(data: &[u8]) -> String {
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
         out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
-        out.push(if chunk.len() > 1 { ALPHABET[((n >> 6) & 0x3f) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { ALPHABET[(n & 0x3f) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 0x3f) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -417,7 +439,10 @@ mod tests {
             CellBuilder::new().store_uint(0xdead_beef, 32).build(),
         )
         .to_out_action(CellBuilder::new().build());
-        let inner = CellBuilder::new().store_maybe_ref(Some(out_list)).store_uint(0, 1).build();
+        let inner = CellBuilder::new()
+            .store_maybe_ref(Some(out_list))
+            .store_uint(0, 1)
+            .build();
         let signing = CellBuilder::new()
             .store_uint(OP_AUTH_SIGNED_EXTERNAL as u128, 32)
             .store_uint(wallet.wallet_id() as u128, 32)

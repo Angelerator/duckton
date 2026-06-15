@@ -26,11 +26,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use p2p_config::{CompressionAlgo, GridConfig, IdentityConfig, PinningMode, QueryOverrides};
-use p2p_proto::{Attestation, NodeId, ResultSet, Value};
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
     WorkerParams,
 };
+use p2p_proto::{Attestation, NodeId, ResultSet, Value};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
 use p2p_trust::{InMemoryTrustStore, TrustStore};
 
@@ -50,7 +50,10 @@ fn idcfg() -> IdentityConfig {
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
-    std::env::var(key).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_compression() -> CompressionAlgo {
@@ -85,9 +88,20 @@ async fn spawn_worker(cfg: &GridConfig, engine: Arc<dyn QueryEngine>) -> WorkerH
     let params = WorkerParams::from_config(cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
-    WorkerHandle { node_id, addr, _transport: transport, _task: task }
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
 }
 
 async fn make_coordinator(cfg: GridConfig, w: &WorkerHandle) -> Coordinator {
@@ -162,11 +176,17 @@ async fn bench_throughput_and_latency_loopback() {
     let coord = make_coordinator(cfg.clone(), &worker).await;
 
     // Warm up one transfer (connection setup, code paths) before timing.
-    let warm = coord.run_query("BENCH_BIG", QueryOverrides::default()).await.unwrap();
+    let warm = coord
+        .run_query("BENCH_BIG", QueryOverrides::default())
+        .await
+        .unwrap();
     assert_eq!(warm.result.row_count(), rows);
 
     let start = Instant::now();
-    let outcome = coord.run_query("BENCH_BIG", QueryOverrides::default()).await.unwrap();
+    let outcome = coord
+        .run_query("BENCH_BIG", QueryOverrides::default())
+        .await
+        .unwrap();
     let elapsed = start.elapsed();
     assert_eq!(outcome.result, big, "large result must reassemble exactly");
 
@@ -182,12 +202,18 @@ async fn bench_throughput_and_latency_loopback() {
     let lat_worker = spawn_worker(&cfg, Arc::new(MockEngine::with_fixtures(sfix))).await;
     let lat_coord = make_coordinator(cfg.clone(), &lat_worker).await;
     // warm
-    let _ = lat_coord.run_query("BENCH_SMALL", QueryOverrides::default()).await.unwrap();
+    let _ = lat_coord
+        .run_query("BENCH_SMALL", QueryOverrides::default())
+        .await
+        .unwrap();
 
     let mut samples = Vec::with_capacity(lat_iters);
     for _ in 0..lat_iters {
         let t = Instant::now();
-        let o = lat_coord.run_query("BENCH_SMALL", QueryOverrides::default()).await.unwrap();
+        let o = lat_coord
+            .run_query("BENCH_SMALL", QueryOverrides::default())
+            .await
+            .unwrap();
         assert_eq!(o.result.row_count(), 1);
         samples.push(t.elapsed().as_secs_f64() * 1000.0);
     }
@@ -204,12 +230,21 @@ async fn bench_throughput_and_latency_loopback() {
         cfg.transport.quic.congestion, cfg.transport.quic.gso
     );
     println!("(a) THROUGHPUT (one large result):");
-    println!("    serialized result : {:.2} MB ({} bytes)", mb, serialized_bytes);
-    println!("    transfer time     : {:.3} ms", elapsed.as_secs_f64() * 1000.0);
+    println!(
+        "    serialized result : {:.2} MB ({} bytes)",
+        mb, serialized_bytes
+    );
+    println!(
+        "    transfer time     : {:.3} ms",
+        elapsed.as_secs_f64() * 1000.0
+    );
     println!("    rows/sec          : {:.0}", rows_per_sec);
     println!("    MB/sec            : {:.1}", mb_per_sec);
     println!("(b) LATENCY (small query, {lat_iters} iters):");
-    println!("    min / p50 / avg / max ms : {:.3} / {:.3} / {:.3} / {:.3}", min, p50, avg, max);
+    println!(
+        "    min / p50 / avg / max ms : {:.3} / {:.3} / {:.3} / {:.3}",
+        min, p50, avg, max
+    );
     println!("=========================================================================\n");
 
     // Correctness-only assertions keep CI deterministic.

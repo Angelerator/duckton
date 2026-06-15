@@ -36,9 +36,7 @@ enum ExecOutcome {
 use crate::compression::algo_to_wire;
 use crate::engine::{ExecLease, QueryEngine};
 use crate::result_stream::SendOpts;
-use crate::sandbox::{
-    self, EgressAllowList, JobBudget, ResourceLimits, Sandbox, SandboxSpec,
-};
+use crate::sandbox::{self, EgressAllowList, JobBudget, ResourceLimits, Sandbox, SandboxSpec};
 use p2p_config::SandboxConfig;
 
 /// Configuration values the worker needs (subset of `GridConfig`), passed in so
@@ -302,7 +300,9 @@ impl Worker {
         Bid {
             job_id: offer.job_id.clone(),
             worker_id: self.transport.local_node_id().clone(),
-            decision: BidDecision::Reject { reason: reason.into() },
+            decision: BidDecision::Reject {
+                reason: reason.into(),
+            },
             eta_ms: 0,
             price: 0,
             attestation: self.attestation.clone(),
@@ -391,7 +391,9 @@ impl Worker {
         }
 
         let need_mem = self.params.per_job_memory_bytes;
-        let admit = free.free_jobs > 0 && free.memory_bytes >= need_mem && free.threads >= self.params.per_job_threads;
+        let admit = free.free_jobs > 0
+            && free.memory_bytes >= need_mem
+            && free.threads >= self.params.per_job_threads;
 
         let decision = if admit {
             BidDecision::Accept
@@ -590,7 +592,11 @@ impl Worker {
         // its own private 0700 temp dir under here per execution and removes it at
         // job end (see `duckdb_engine::run_locked`).
         let temp_dir = std::env::temp_dir()
-            .join(format!("duckdb-p2p-{}-{}", std::process::id(), dispatch.job_id))
+            .join(format!(
+                "duckdb-p2p-{}-{}",
+                std::process::id(),
+                dispatch.job_id
+            ))
             .display()
             .to_string();
         let sandbox_spec = SandboxSpec {
@@ -608,10 +614,7 @@ impl Worker {
         };
         let _sandbox_guard = match self.sandbox.sandbox.enter_job(&sandbox_spec) {
             Ok(g) => {
-                debug!(
-                    backend = self.sandbox.sandbox.name(),
-                    "job sandbox engaged"
-                );
+                debug!(backend = self.sandbox.sandbox.name(), "job sandbox engaged");
                 g
             }
             Err(e) => {
