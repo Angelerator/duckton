@@ -1649,17 +1649,18 @@ impl GridConfig {
                     }
                 }
                 "P2P_SANDBOX_LIMITS_MODE" => {
-                    self.sandbox.limits.mode =
-                        match v.trim().to_ascii_lowercase().as_str() {
-                            "inherit_budget" | "inherit" => SandboxLimitsMode::InheritBudget,
-                            "explicit" => SandboxLimitsMode::Explicit,
-                            other => return Err(ConfigError::Env(
+                    self.sandbox.limits.mode = match v.trim().to_ascii_lowercase().as_str() {
+                        "inherit_budget" | "inherit" => SandboxLimitsMode::InheritBudget,
+                        "explicit" => SandboxLimitsMode::Explicit,
+                        other => {
+                            return Err(ConfigError::Env(
                                 k.clone(),
                                 format!(
                                     "unknown sandbox limits mode {other} (inherit_budget|explicit)"
                                 ),
-                            )),
+                            ))
                         }
+                    }
                 }
                 "P2P_SANDBOX_MEMORY_BYTES" => self.sandbox.limits.memory_bytes = parse(k, v)?,
                 "P2P_SANDBOX_CPU_SECONDS" => self.sandbox.limits.cpu_seconds = parse(k, v)?,
@@ -1672,12 +1673,14 @@ impl GridConfig {
                     self.sandbox.egress_mode = match v.trim().to_ascii_lowercase().as_str() {
                         "inherit_storage" | "inherit" => SandboxEgressMode::InheritStorage,
                         "explicit" => SandboxEgressMode::Explicit,
-                        other => return Err(ConfigError::Env(
-                            k.clone(),
-                            format!(
+                        other => {
+                            return Err(ConfigError::Env(
+                                k.clone(),
+                                format!(
                                 "unknown sandbox egress mode {other} (inherit_storage|explicit)"
                             ),
-                        )),
+                            ))
+                        }
                     }
                 }
                 "P2P_SANDBOX_EGRESS_ALLOWLIST" => {
@@ -1687,21 +1690,21 @@ impl GridConfig {
                         .map(String::from)
                         .collect()
                 }
-                "P2P_SANDBOX_TEMP_DIR_POLICY" => self.sandbox.temp_dir_policy = match v
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "ephemeral" => SandboxTempDirPolicy::Ephemeral,
-                    "inherit" => SandboxTempDirPolicy::Inherit,
-                    "custom" => SandboxTempDirPolicy::Custom,
-                    other => return Err(ConfigError::Env(
-                        k.clone(),
-                        format!(
+                "P2P_SANDBOX_TEMP_DIR_POLICY" => {
+                    self.sandbox.temp_dir_policy = match v.trim().to_ascii_lowercase().as_str() {
+                        "ephemeral" => SandboxTempDirPolicy::Ephemeral,
+                        "inherit" => SandboxTempDirPolicy::Inherit,
+                        "custom" => SandboxTempDirPolicy::Custom,
+                        other => {
+                            return Err(ConfigError::Env(
+                                k.clone(),
+                                format!(
                             "unknown sandbox temp dir policy {other} (ephemeral|inherit|custom)"
                         ),
-                    )),
-                },
+                            ))
+                        }
+                    }
+                }
                 "P2P_SANDBOX_TEMP_DIR" => self.sandbox.temp_dir = Some(v.clone()),
                 // ---- economics / settlement layer (env layer) ----
                 "P2P_ECONOMICS_ENABLED" => self.economics.enabled = parse(k, v)?,

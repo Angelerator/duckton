@@ -24,14 +24,17 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
-use p2p_config::{GridConfig, IdentityConfig, PinningMode, QueryOverrides};
+use p2p_config::{
+    GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, VerifyModeCfg,
+};
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
     WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
+use p2p_settlement::traits::{RecordAnchor, Settlement};
 use p2p_settlement::types::Amount;
-use p2p_settlement::{InMemoryStakeRegistry, StakeRegistry};
+use p2p_settlement::{InMemoryRecordAnchor, InMemoryStakeRegistry, MockSettlement, StakeRegistry};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
 use p2p_trust::{
     age_factor, exploration_bonus, now_ts, soft_trust_score, InMemoryTrustStore, TrustInputs,
@@ -163,6 +166,27 @@ fn value_to_string(v: &Value) -> String {
     }
 }
 
+/// Data-class selection policy (architecture §7.5): (min attestation tier, min trust).
+/// The attestation tier is a HARD gate — Internal needs L1, Sensitive needs L2 — so
+/// free/anonymous L0 nodes are refused those classes regardless of speed.
+fn class_policy(data_class: &str) -> (&'static str, f64) {
+    match data_class {
+        "Internal" => ("L1", 0.85),
+        "Sensitive" => ("L2", 0.80),
+        _ => ("L0", 0.70),
+    }
+}
+
+/// Free vs paid per data class (§8.2.1): the public tier runs off-chain for free;
+/// Internal/Sensitive are paid, so a worker's stake counts toward its trust score
+/// (the coordinator only credits stake on paid jobs).
+fn class_payment(data_class: &str) -> PaymentPref {
+    match data_class {
+        "Internal" | "Sensitive" => PaymentPref::Paid,
+        _ => PaymentPref::Free,
+    }
+}
+
 // --------------------------------------------------------------------------
 // Rolling accumulator + live JSON
 // --------------------------------------------------------------------------
@@ -200,17 +224,36 @@ impl Grid {
     }
 
     /// Run one real job and fold it into the accumulator. Returns the job record.
+    /// When `gated`, the data-class selection policy (architecture §7.5) is applied:
+    /// a minimum attestation tier + trust floor, so e.g. Internal data is refused by
+    /// free/anonymous L0 nodes. Warmup jobs run ungated to build reputation.
+    #[allow(clippy::too_many_arguments)]
     async fn run(
         &mut self,
         sql: &str,
         replicas: usize,
         quorum: usize,
         data_class: &str,
+        verify: VerifyModeCfg,
+        gated: bool,
         requester: &str,
     ) -> J {
+        let (min_att, min_trust) = class_policy(data_class);
         let mut ov = QueryOverrides::default();
         ov.replicas = Some(replicas);
         ov.quorum = Some(quorum);
+        ov.verify = Some(verify);
+        let paid = gated && matches!(class_payment(data_class), PaymentPref::Paid);
+        if gated {
+            ov.min_attestation = Some(min_att.to_string());
+            ov.min_trust = Some(min_trust);
+            ov.payment = Some(class_payment(data_class));
+        }
+        let verify_label = match verify {
+            VerifyModeCfg::Fast => "Fast",
+            _ => "Quorum",
+        };
+        let policy_json = json!({ "minAttestation": min_att, "minTrust": min_trust });
         let t0 = Instant::now();
         let created = unix_ms();
         let outcome = self.coord.run_query(sql, ov).await;
@@ -322,12 +365,12 @@ impl Grid {
 
                 json!({
                     "id": o.job_id.0, "sql": sql, "fn": "p2p_query",
-                    "dataClass": data_class, "verifyMode": "Quorum",
+                    "dataClass": data_class, "verifyMode": verify_label, "policy": policy_json.clone(),
                     "quorum": o.quorum, "k": o.receipts.len(),
                     "status": if o.verified { "verified" } else { "failed" },
-                    "paid": false, "requester": requester, "createdAtMs": created,
+                    "paid": paid, "requester": requester, "createdAtMs": created,
                     "rowCount": o.result.row_count(), "resultHash": o.agreed_hash,
-                    "latencyMs": lat, "escrowTon": 0,
+                    "latencyMs": lat, "escrowTon": if paid { 100 } else { 0 },
                     "winner": winner.as_ref().map(|w| self.alias_of(w)),
                     "winnerId": winner.as_ref().map(|w| w.0.clone()),
                     "source": "live in-process grid (loopback)",
@@ -337,14 +380,20 @@ impl Grid {
             }
             Err(e) => {
                 self.acc.failed += 1;
+                let no_workers = format!("{e:?}").contains("InsufficientWorkers");
                 json!({
                     "id": format!("job_err_{}", created), "sql": sql, "fn": "p2p_query",
-                    "dataClass": data_class, "verifyMode": "Quorum", "quorum": quorum, "k": 0,
-                    "status": "failed", "paid": false, "requester": requester, "createdAtMs": created,
-                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat, "escrowTon": 0,
+                    "dataClass": data_class, "verifyMode": verify_label, "policy": policy_json,
+                    "quorum": quorum, "k": 0,
+                    "status": "failed", "paid": paid, "requester": requester, "createdAtMs": created,
+                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat, "escrowTon": if paid { 100 } else { 0 },
                     "winner": J::Null, "winnerId": J::Null, "source": "live in-process grid",
                     "candidates": [], "timeline": [], "result": {"columns": [], "rows": []},
-                    "error": format!("{e:?}"),
+                    "error": if no_workers {
+                        format!("No hosts meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust})")
+                    } else {
+                        format!("{e:?}")
+                    },
                 })
             }
         };
@@ -578,6 +627,8 @@ struct QueryReq {
     replicas: usize,
     quorum: usize,
     data_class: String,
+    verify: VerifyModeCfg,
+    gated: bool,
     requester: String,
     resp: Option<oneshot::Sender<J>>,
 }
@@ -588,6 +639,8 @@ struct QueryBody {
     sql: Option<String>,
     #[serde(default, rename = "dataClass")]
     data_class: Option<String>,
+    #[serde(default, rename = "verifyMode")]
+    verify_mode: Option<String>,
     #[serde(default)]
     quorum: Option<usize>,
     #[serde(default)]
@@ -615,12 +668,18 @@ async fn query_handler(State(s): State<AppState>, Json(body): Json<QueryBody>) -
         .unwrap_or_else(|| "SELECT region, count(*) FROM orders GROUP BY region".into());
     let k = body.k.unwrap_or(6).clamp(1, 8);
     let quorum = body.quorum.unwrap_or(3).clamp(1, k);
+    let verify = match body.verify_mode.as_deref() {
+        Some("Fast") => VerifyModeCfg::Fast,
+        _ => VerifyModeCfg::Quorum,
+    };
     let (tx, rx) = oneshot::channel();
     let req = QueryReq {
         sql,
         replicas: k,
         quorum,
         data_class: body.data_class.unwrap_or_else(|| "Public".into()),
+        verify,
+        gated: true,
         requester: "you".into(),
         resp: Some(tx),
     };
@@ -666,7 +725,7 @@ async fn main() {
         },
         Spec {
             alias: "tidal-fox",
-            level: AttestationLevel::L1,
+            level: AttestationLevel::L2,
             mem_gb: 32,
             threads: 16,
             max_jobs: 6,
@@ -684,7 +743,7 @@ async fn main() {
         },
         Spec {
             alias: "pine-marten",
-            level: AttestationLevel::L0,
+            level: AttestationLevel::L1,
             mem_gb: 16,
             threads: 8,
             max_jobs: 4,
@@ -727,18 +786,31 @@ async fn main() {
         &GridConfig::default().trust,
         &GridConfig::default().limits,
     ));
-    store.add_vouch(&workers[0].node_id, 0.6);
-    store.add_vouch(&workers[1].node_id, 0.4);
-    store.add_vouch(&workers[2].node_id, 0.2);
+    let vouchers: BTreeMap<&str, f64> = [
+        ("frost-owl", 0.8),
+        ("harbor-vole", 0.8),
+        ("tidal-fox", 0.8),
+        ("amber-mole", 0.7),
+        ("pine-marten", 0.7),
+    ]
+    .into_iter()
+    .collect();
+    for w in &workers {
+        if let Some(v) = vouchers.get(w.alias.as_str()) {
+            store.add_vouch(&w.node_id, *v);
+        }
+    }
 
     let eco = GridConfig::default().economics;
     let reg = Arc::new(InMemoryStakeRegistry::from_config(&eco.stake));
+    // Honest nodes are staked so their effective trust clears the per-class floor
+    // after warmup; cheat/fail nodes earn no stake and sink below every floor.
     let stakes: BTreeMap<&'static str, u64> = [
         ("frost-owl", 4200),
-        ("harbor-vole", 2600),
-        ("tidal-fox", 1500),
-        ("amber-mole", 800),
-        ("pine-marten", 300),
+        ("harbor-vole", 3000),
+        ("tidal-fox", 2600),
+        ("amber-mole", 1500),
+        ("pine-marten", 1200),
         ("slate-heron", 120),
     ]
     .into_iter()
@@ -756,8 +828,12 @@ async fn main() {
     c.scheduler.offer_timeout_ms = 2_000;
     c.scheduler.dispatch_timeout_ms = 6_000;
     c.scheduler.attempt_deadline_ms = 12_000;
-    c.trust.min_trust = 0.0;
+    c.trust.min_trust = 0.0; // base gate; per-query overrides apply the class policy
     c.discovery.candidate_sample_size = 32;
+    // Enable the economic layer so paid (Internal/Sensitive) jobs credit stake toward
+    // trust; the per-query `payment` override decides free vs paid.
+    c.economics.enabled = true;
+    c.economics.pricing.max_bid = 100;
     let cfg = Arc::new(c);
     let net = GridConfig::default().network;
     let req =
@@ -770,7 +846,10 @@ async fn main() {
         candidates,
         cfg.discovery.candidate_sample_size,
     ));
-    let coord = Coordinator::new(req, disc, store.clone(), cfg, "mock-1");
+    let coord = Coordinator::new(req, disc, store.clone(), cfg, "mock-1")
+        .with_stake_registry(reg.clone())
+        .with_settlement(Arc::new(MockSettlement::new()))
+        .with_record_anchor(Arc::new(InMemoryRecordAnchor::new()));
 
     let mut grid = Grid {
         workers,
@@ -780,6 +859,26 @@ async fn main() {
         stakes,
         acc: Acc::default(),
     };
+
+    // Warm up: run ungated jobs so honest nodes accrue reputation (and the cheat/
+    // fail nodes sink) before the data-class trust floors take effect — otherwise a
+    // cold grid would have nobody meeting the Internal/Sensitive floor.
+    // quorum 6 (= honest-node count) forces every honest node to commit each job,
+    // so they all accrue reputation — otherwise only the ~3 fastest would, and the
+    // slower honest nodes couldn't clear the Internal trust floor.
+    println!("warming up grid (building reputation)…");
+    for i in 0..60usize {
+        grid.run(
+            AMBIENT_SQL[i % AMBIENT_SQL.len()],
+            8,
+            6,
+            "Public",
+            VerifyModeCfg::Quorum,
+            false,
+            "warmup",
+        )
+        .await;
+    }
 
     let (q_tx, mut q_rx) = mpsc::channel::<QueryReq>(64);
     let (bcast, _) = broadcast::channel::<String>(64);
@@ -797,6 +896,8 @@ async fn main() {
                         reqq.replicas,
                         reqq.quorum,
                         &reqq.data_class,
+                        reqq.verify,
+                        reqq.gated,
                         &reqq.requester,
                     )
                     .await;
@@ -826,6 +927,8 @@ async fn main() {
                         replicas: 6,
                         quorum: 3,
                         data_class: "Public".into(),
+                        verify: VerifyModeCfg::Quorum,
+                        gated: true,
                         requester: "ambient".into(),
                         resp: None,
                     })

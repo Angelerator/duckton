@@ -301,6 +301,15 @@ pub enum SettleError {
     Backend(String),
     #[error("settlement is disabled (free job): {0}")]
     Disabled(String),
+    /// The message reached the chain but the destination contract's transaction
+    /// FAILED (compute or action phase): non-zero exit/result code or aborted.
+    #[error("on-chain transaction failed (compute/action exit code {exit_code})")]
+    TxFailed { exit_code: i32 },
+    /// No successful destination transaction was observed within the deadline —
+    /// the external message may have been dropped (bad sig / replay / expired /
+    /// under-funded) or is still in flight. The caller must NOT assume it landed.
+    #[error("on-chain transaction not confirmed within the deadline")]
+    TxUnconfirmed,
 }
 
 /// Errors from the stake registry.

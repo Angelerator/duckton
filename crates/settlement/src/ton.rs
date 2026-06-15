@@ -989,7 +989,44 @@ pub trait TonRpc: Send + Sync {
     ) -> Result<Option<(u32, Hash32)>, SettleError> {
         Ok(None)
     }
+
+    /// The logical time (`lt`) of the most recent transaction recorded on
+    /// `account`, or `0` if it has none. Captured *before* a send so that
+    /// [`TonRpc::await_confirmation`] can tell "the transaction we just caused"
+    /// apart from older ones. Offline/null default: `0` (no chain to read).
+    fn last_tx_lt(&self, _account: &WalletAddress) -> Result<u64, SettleError> {
+        Ok(0)
+    }
+
+    /// Block (polling, up to `deadline_secs`) until a transaction newer than
+    /// `after_lt` lands on `account` and assert it executed **successfully**
+    /// (compute + action phases, not aborted).
+    ///
+    /// This is what upgrades a fire-and-forget `send_internal`/`deploy` — which
+    /// only confirms the message reached the *mempool* — into a real guarantee
+    /// that the destination contract actually *processed* it. Returns:
+    ///  * `Ok(())` — a newer transaction landed and succeeded;
+    ///  * `Err(SettleError::TxFailed { exit_code })` — it ran but failed/aborted;
+    ///  * `Err(SettleError::TxUnconfirmed)` — nothing landed in time (dropped /
+    ///    in-flight).
+    ///
+    /// Offline/null default: `Ok(())` — the mock/no-op rails never touch a chain,
+    /// so there is nothing to confirm. The live toncenter client overrides it.
+    fn await_confirmation(
+        &self,
+        _account: &WalletAddress,
+        _after_lt: u64,
+        _deadline_secs: u64,
+    ) -> Result<(), SettleError> {
+        Ok(())
+    }
 }
+
+/// How long to wait for an on-chain transaction to be confirmed before giving up
+/// (`SettleError::TxUnconfirmed`). Matched to the external-message `valid_until`
+/// window (90s): past it the signed message can no longer be included, so it will
+/// never confirm.
+pub const CONFIRM_TIMEOUT_SECS: u64 = 90;
 
 /// Default transport that performs NO network I/O. Used when `ton-live` is off.
 #[derive(Default)]
@@ -1209,8 +1246,13 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // Fund the deploy with B + the gas buffer so the escrow can pay its own
         // settle-time fees; `escrowAmount` (stored) and the handle stay exactly B.
         let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
+        // Confirm the funded deploy actually lands + succeeds before returning a
+        // handle the caller will settle against (a fresh escrow has no prior txs).
+        let before = self.rpc.last_tx_lt(&address)?;
         self.rpc
             .deploy(&address, deploy_value, &state_init, &body)?;
+        self.rpc
+            .await_confirmation(&address, before, CONFIRM_TIMEOUT_SECS)?;
         Ok(EscrowHandle {
             job: job.clone(),
             address,
@@ -1256,8 +1298,14 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // Fund the deploy with B + the gas buffer (see `open_escrow`); the locked
         // `escrowAmount` and the returned handle remain exactly B.
         let deploy_value = max_bid.saturating_add(self.deploy_gas_buffer);
+        // Confirm the funded deploy actually lands + succeeds on-chain BEFORE
+        // returning the handle, so the coordinator never settles against an
+        // escrow that was never funded/deployed (no fire-and-forget).
+        let before = self.rpc.last_tx_lt(&address)?;
         self.rpc
             .deploy(&address, deploy_value, &state_init, &body)?;
+        self.rpc
+            .await_confirmation(&address, before, CONFIRM_TIMEOUT_SECS)?;
         Ok(EscrowHandle {
             job: job.clone(),
             address,
@@ -1299,16 +1347,21 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // Attach `settle_gas` so the escrow's compute phase can run (a 0-value
         // internal message aborts before compute). The bounded `B` split is paid
         // from the escrow's own balance, not from this gas.
+        let before = self.rpc.last_tx_lt(&h.address)?;
+        self.rpc.send_internal(&h.address, self.settle_gas, &body)?;
+        // Confirm the escrow actually released — settle did not throw on the
+        // candidate-commitment / result-hash check and was not aborted — before
+        // reporting the job paid.
         self.rpc
-            .send_internal(&h.address, self.settle_gas, &body)
-            .map(|_| ())
+            .await_confirmation(&h.address, before, CONFIRM_TIMEOUT_SECS)
     }
 
     fn refund(&self, h: &EscrowHandle) -> Result<(), SettleError> {
         let body = build_escrow_refund(self.qid.next());
+        let before = self.rpc.last_tx_lt(&h.address)?;
+        self.rpc.send_internal(&h.address, self.settle_gas, &body)?;
         self.rpc
-            .send_internal(&h.address, self.settle_gas, &body)
-            .map(|_| ())
+            .await_confirmation(&h.address, before, CONFIRM_TIMEOUT_SECS)
     }
 
     fn is_onchain(&self) -> bool {
@@ -1390,9 +1443,16 @@ impl<R: TonRpc> StakeRegistry for TonStakeRegistry<R> {
             .vault_of(node)
             .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
         let body = build_stake_slash(self.qid.next(), amount, reason, &vault);
+        let before = self
+            .rpc
+            .last_tx_lt(&vault)
+            .map_err(|e| SlashError::Backend(e.to_string()))?;
         self.rpc
             .send_internal(&vault, 0, &body)
-            .map(|_| ())
+            .map_err(|e| SlashError::Backend(e.to_string()))?;
+        // Confirm the vault processed the slash before reporting success.
+        self.rpc
+            .await_confirmation(&vault, before, CONFIRM_TIMEOUT_SECS)
             .map_err(|e| SlashError::Backend(e.to_string()))
     }
     fn request_unbond(&self, node: &NodeId, amount: Amount) -> Result<(), SlashError> {
@@ -1400,9 +1460,16 @@ impl<R: TonRpc> StakeRegistry for TonStakeRegistry<R> {
             .vault_of(node)
             .ok_or_else(|| SlashError::UnknownNode(node.0.clone()))?;
         let body = build_stake_unbond(self.qid.next(), amount);
+        let before = self
+            .rpc
+            .last_tx_lt(&vault)
+            .map_err(|e| SlashError::Backend(e.to_string()))?;
         self.rpc
             .send_internal(&vault, 0, &body)
-            .map(|_| ())
+            .map_err(|e| SlashError::Backend(e.to_string()))?;
+        // Confirm the vault processed the unbond request before reporting success.
+        self.rpc
+            .await_confirmation(&vault, before, CONFIRM_TIMEOUT_SECS)
             .map_err(|e| SlashError::Backend(e.to_string()))
     }
 }
@@ -1486,7 +1553,13 @@ impl<R: TonRpc> TonRecordAnchor<R> {
             None => local_prev,
         };
         let body = build_anchor_submit(self.qid.next(), epoch, &root, &prev, stake_weight);
+        let before = self.rpc.last_tx_lt(&self.anchor)?;
         let res = self.rpc.send_internal(&self.anchor, 0, &body)?;
+        // Confirm the anchor accepted the root (keeper auth, stake-weight,
+        // prev-root/epoch checks passed, not aborted) BEFORE advancing the locally
+        // tracked prev-root — an unconfirmed submit must not desync local state.
+        self.rpc
+            .await_confirmation(&self.anchor, before, CONFIRM_TIMEOUT_SECS)?;
         self.inner.lock().unwrap().1 = root;
         Ok(res)
     }
@@ -1631,6 +1704,71 @@ impl ToncenterRpc {
             Err(SettleError::Backend(format!("sendBoc rejected: {raw}")))
         }
     }
+
+    /// Most recent transaction on `account`: its `lt`, and — *if* the endpoint
+    /// exposes the transaction description (toncenter v3 / TON API; v2 omits it) —
+    /// a `Some(exit_code)` when that transaction FAILED (compute/action phase or
+    /// aborted). `Ok(None)` when the account has no transactions yet (e.g. a
+    /// not-yet-deployed escrow). Used by the confirmation poll.
+    fn fetch_latest_tx(
+        &self,
+        account: &WalletAddress,
+    ) -> Result<Option<(u64, Option<i32>)>, SettleError> {
+        let json = format!(r#"{{"address":"{}","limit":1}}"#, account.to_raw_string());
+        let raw = self.curl_post("getTransactions", &json)?;
+        let v: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| SettleError::Backend(format!("bad getTransactions JSON: {e}")))?;
+        // An uninitialized account yields ok:false / an empty list — no txs yet.
+        if v.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+            return Ok(None);
+        }
+        let arr = match v.get("result").and_then(|r| r.as_array()) {
+            Some(a) if !a.is_empty() => a,
+            _ => return Ok(None),
+        };
+        let tx = &arr[0];
+        let lt_s = tx
+            .get("transaction_id")
+            .and_then(|t| t.get("lt"))
+            .and_then(|l| l.as_str())
+            .ok_or_else(|| SettleError::Backend(format!("no tx lt: {raw}")))?;
+        let lt = lt_s
+            .parse::<u64>()
+            .map_err(|e| SettleError::Backend(format!("parse lt '{lt_s}': {e}")))?;
+        Ok(Some((lt, tx_failure_exit_code(tx))))
+    }
+}
+
+/// Extract a FAILURE exit code from a transaction's `description`, if the endpoint
+/// exposes one. Returns `Some(code)` only when the transaction failed — a non-zero
+/// compute-phase `exit_code`, a non-zero action-phase `result_code`, or `aborted`
+/// — and `None` when it succeeded *or* the description is absent (toncenter v2
+/// omits it, in which case a landed transaction is treated as confirmation).
+#[cfg(feature = "ton-live")]
+fn tx_failure_exit_code(tx: &serde_json::Value) -> Option<i32> {
+    let desc = tx.get("description")?;
+    let compute = desc
+        .get("compute_ph")
+        .and_then(|c| c.get("exit_code"))
+        .and_then(|x| x.as_i64());
+    if let Some(c) = compute {
+        if c != 0 {
+            return Some(c as i32);
+        }
+    }
+    let action = desc
+        .get("action")
+        .and_then(|a| a.get("result_code"))
+        .and_then(|x| x.as_i64());
+    if let Some(rc) = action {
+        if rc != 0 {
+            return Some(rc as i32);
+        }
+    }
+    if desc.get("aborted").and_then(|a| a.as_bool()) == Some(true) {
+        return Some(compute.unwrap_or(-1) as i32);
+    }
+    None
 }
 
 #[cfg(feature = "ton-live")]
@@ -1728,6 +1866,42 @@ impl TonRpc for ToncenterRpc {
         }
         root.copy_from_slice(&bytes);
         Ok(Some((epoch, root)))
+    }
+
+    fn last_tx_lt(&self, account: &WalletAddress) -> Result<u64, SettleError> {
+        Ok(self
+            .fetch_latest_tx(account)?
+            .map(|(lt, _)| lt)
+            .unwrap_or(0))
+    }
+
+    fn await_confirmation(
+        &self,
+        account: &WalletAddress,
+        after_lt: u64,
+        deadline_secs: u64,
+    ) -> Result<(), SettleError> {
+        let deadline = now_secs_u32() as u64 + deadline_secs;
+        loop {
+            if let Some((lt, failure)) = self.fetch_latest_tx(account)? {
+                if lt > after_lt {
+                    // A newer transaction landed on the destination. If the
+                    // endpoint reported a phase failure, surface it; otherwise the
+                    // landed transaction is the confirmation.
+                    return match failure {
+                        Some(exit_code) => Err(SettleError::TxFailed { exit_code }),
+                        None => Ok(()),
+                    };
+                }
+            }
+            if now_secs_u32() as u64 >= deadline {
+                // Nothing newer than `after_lt` landed in time: the external
+                // message was likely dropped (bad sig / replay / expired /
+                // under-funded) or is still in flight. Do NOT assume success.
+                return Err(SettleError::TxUnconfirmed);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3));
+        }
     }
 }
 
@@ -2290,6 +2464,137 @@ mod tests {
             platform_fee: 2,
         };
         assert!(s.settle(&h, &outcome).is_ok());
+    }
+
+    /// Transport whose `await_confirmation` returns a configurable outcome, so we
+    /// can prove the on-chain confirmation is wired into each send path and that a
+    /// failed / unconfirmed transaction surfaces as a typed error instead of being
+    /// silently treated as success (the fire-and-forget bug this fixes).
+    #[derive(Clone, Copy)]
+    enum Confirm {
+        Ok,
+        Failed(i32),
+        Unconfirmed,
+    }
+    struct ConfirmingRpc {
+        confirm: Confirm,
+        sends: Mutex<u32>,
+    }
+    impl ConfirmingRpc {
+        fn new(confirm: Confirm) -> Self {
+            Self {
+                confirm,
+                sends: Mutex::new(0),
+            }
+        }
+    }
+    impl TonRpc for ConfirmingRpc {
+        fn send_internal(
+            &self,
+            _to: &WalletAddress,
+            _amount: Amount,
+            _body: &MessageBody,
+        ) -> Result<String, SettleError> {
+            *self.sends.lock().unwrap() += 1;
+            Ok("tx".into())
+        }
+        fn run_get_int(&self, _addr: &WalletAddress, _method: &str) -> Result<i128, SettleError> {
+            Ok(0)
+        }
+        fn await_confirmation(
+            &self,
+            _account: &WalletAddress,
+            _after_lt: u64,
+            _deadline_secs: u64,
+        ) -> Result<(), SettleError> {
+            match self.confirm {
+                Confirm::Ok => Ok(()),
+                Confirm::Failed(c) => Err(SettleError::TxFailed { exit_code: c }),
+                Confirm::Unconfirmed => Err(SettleError::TxUnconfirmed),
+            }
+        }
+    }
+
+    fn sample_settle() -> (EscrowHandle, SettlementOutcome) {
+        (
+            EscrowHandle {
+                job: JobId("j".into()),
+                address: WalletAddress::new(0, [1u8; 32]),
+                max_bid: 100,
+            },
+            SettlementOutcome {
+                result_hash: [4u8; 32],
+                winner: crate::types::Payout {
+                    to: WalletAddress::new(0, [2u8; 32]),
+                    amount: 60,
+                },
+                participants: vec![],
+                platform_fee: 2,
+            },
+        )
+    }
+
+    #[test]
+    fn settle_ok_when_confirmed() {
+        let s = TonSettlement::new(ConfirmingRpc::new(Confirm::Ok));
+        let (h, o) = sample_settle();
+        assert!(s.settle(&h, &o).is_ok());
+    }
+
+    #[test]
+    fn settle_surfaces_onchain_failure_instead_of_silent_success() {
+        let s = TonSettlement::new(ConfirmingRpc::new(Confirm::Failed(47)));
+        let (h, o) = sample_settle();
+        assert!(
+            matches!(
+                s.settle(&h, &o),
+                Err(SettleError::TxFailed { exit_code: 47 })
+            ),
+            "a destination tx that threw must surface as TxFailed, not Ok"
+        );
+    }
+
+    #[test]
+    fn settle_surfaces_unconfirmed() {
+        let s = TonSettlement::new(ConfirmingRpc::new(Confirm::Unconfirmed));
+        let (h, o) = sample_settle();
+        assert!(matches!(s.settle(&h, &o), Err(SettleError::TxUnconfirmed)));
+    }
+
+    #[test]
+    fn refund_requires_confirmation() {
+        let s = TonSettlement::new(ConfirmingRpc::new(Confirm::Unconfirmed));
+        let h = sample_settle().0;
+        assert!(matches!(s.refund(&h), Err(SettleError::TxUnconfirmed)));
+    }
+
+    #[test]
+    fn submit_root_does_not_advance_prev_on_unconfirmed() {
+        // A submit whose confirmation fails must NOT advance the locally tracked
+        // prev-root (else a retry would chain onto a root that never anchored).
+        let anchor = TonRecordAnchor::new(
+            ConfirmingRpc::new(Confirm::Unconfirmed),
+            WalletAddress::new(0, [9u8; 32]),
+        );
+        anchor.append(&JobRecord {
+            job_id: "job-1".into(),
+            query_hash: "q".into(),
+            requester_wallet: "0:1111111111111111111111111111111111111111111111111111111111111111"
+                .into(),
+            max_bid: 1_000,
+            result_hash: "r".into(),
+            epoch: 1,
+            prev_root: [0u8; 32],
+            params_version: 0,
+        });
+        let root_before = anchor.epoch_root();
+        assert!(matches!(
+            anchor.submit_root(1, 1_000),
+            Err(SettleError::TxUnconfirmed)
+        ));
+        // epoch_root is derived from the (unchanged) leaf set; the failed submit
+        // must not have mutated tracked state in a way that changes it.
+        assert_eq!(anchor.epoch_root(), root_before);
     }
 
     /// RPC fake that answers `run_get_int` from a fixed method→value table, so

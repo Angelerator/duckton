@@ -183,9 +183,13 @@ pub struct Coordinator {
     /// independent and always runs (see `trust_store.record` below).
     stake_registry: Option<Arc<dyn StakeRegistry>>,
     /// Optional money rail (BLOCKCHAIN_ECONOMICS §8/§10.1). Consulted ONLY for
-    /// grid jobs that resolve to PAID while `economics.enabled`: the requester's
-    /// max bid is escrowed before dispatch and released per the quorum verdict.
-    /// `None` (default) and FREE jobs never touch it — zero chain interaction.
+    /// grid jobs that resolve to PAID while `economics.enabled`. The escrow's
+    /// HTLC lock binds the agreed quorum result hash, so it is opened (funded with
+    /// the max bid) and released per the verdict *post-quorum*; both the open and
+    /// the settle are now on-chain **confirmed** (not fire-and-forget — see
+    /// `p2p_settlement`'s `await_confirmation`). True pre-dispatch bid-locking
+    /// would require decoupling the lock from the result hash in `JobEscrow` (a
+    /// contract change). `None` (default) and FREE jobs never touch it.
     settlement: Option<Arc<dyn Settlement>>,
     /// Optional tamper-proof record anchor (§7): a settled paid job's `JobRecord`
     /// is appended to the off-chain epoch tree (root anchored on-chain elsewhere).
@@ -1439,7 +1443,11 @@ impl Coordinator {
 
         // Open the per-job escrow binding the lock + params version into its terms
         // (hence its deterministic address). The mock/noop rails fall back to the
-        // termless `open_escrow`; the ton rail builds the on-chain terms cell.
+        // termless `open_escrow`; the ton rail builds the on-chain terms cell. On
+        // the live rail this call now BLOCKS until the funded deploy is on-chain
+        // confirmed (compute+action succeeded), and `settle` below likewise waits
+        // for its confirmation — so we never settle against an unfunded escrow nor
+        // report a job paid on a settle that actually failed/aborted.
         //
         // PHASE-5 LIVE-PAID FOLLOW-UP (does not affect the mock/noop or free path):
         // the hardened `JobEscrow` now binds a requester-committed candidate set
