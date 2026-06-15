@@ -528,6 +528,32 @@ export default function QueryConsolePage() {
                 </div>
               </div>
 
+              {/* Active selection policy (§7.5 + §8.2.1): the attestation tier is a
+                  HARD gate, so free/L0 hosts are refused Internal/Sensitive. */}
+              {(() => {
+                const pol =
+                  dataClass === "Sensitive"
+                    ? { att: "L2", trust: "0.80", paid: true }
+                    : dataClass === "Internal"
+                      ? { att: "L1", trust: "0.85", paid: true }
+                      : { att: "L0", trust: "0.70", paid: false };
+                return (
+                  <div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3 text-xs">
+                    <span className="text-foreground font-medium">{dataClass} selection policy</span>
+                    <Badge variant="muted" className="font-mono">≥ {pol.att} attestation</Badge>
+                    <Badge variant="muted" className="font-mono">trust ≥ {pol.trust}</Badge>
+                    <Badge variant={pol.paid ? "warn" : "ok"}>
+                      {pol.paid ? "paid · stake counts" : "free · off-chain"}
+                    </Badge>
+                    <span className="text-muted-foreground">
+                      {pol.att === "L0"
+                        ? "open to every host, including free/anonymous L0 nodes."
+                        : `free / L0 hosts are excluded — only ${pol.att}-attested hosts above the trust floor qualify.`}
+                    </span>
+                  </div>
+                );
+              })()}
+
               {dataClass === "Sensitive" ? (
                 <div className="flex items-start gap-2 rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/10 p-3 text-xs text-[var(--warn)]">
                   <AlertTriangle className="mt-px size-4 shrink-0" />
