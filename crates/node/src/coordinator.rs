@@ -15,8 +15,8 @@ use p2p_proto::{
     NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
-    Amount, JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement,
-    SettlementOutcome, SlashReason, StakeRegistry, WalletAddress,
+    ensure_escrow_covers, Amount, JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor,
+    Settlement, SettlementOutcome, SlashReason, StakeRegistry, WalletAddress, BPS_DENOM,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
@@ -198,6 +198,14 @@ pub struct Coordinator {
     /// deterministic derivation; the live wiring injects the real node↔wallet
     /// binding lookup.
     wallet_resolver: Option<Arc<dyn Fn(&NodeId) -> WalletAddress + Send + Sync>>,
+    /// FREE-NODE POLICY: resolves whether a worker has a real payout WALLET binding
+    /// (`Some(wallet)`) or is a free/walletless node (`None`). When set, it is the
+    /// authority for payout decisions: a free winner is paid `0` (the base refunds
+    /// to the requester) and only wallet-holding verifiers earn the κ commission —
+    /// while the platform still collects φ·base. When `None` (default) every node is
+    /// treated as a wallet node (via `wallet_resolver`/derivation), exactly today's
+    /// behavior, so paid jobs with all-wallet nodes are unchanged.
+    wallet_binding: Option<Arc<dyn Fn(&NodeId) -> Option<WalletAddress> + Send + Sync>>,
     /// Optional local deny-list (ARCHITECTURE "Abuse resistance"). When set,
     /// blocked candidates are excluded from selection and auto-block triggers
     /// add to it. `None` (default) ⇒ no blocking, exactly today's behavior.
@@ -316,6 +324,7 @@ impl Coordinator {
             settlement: None,
             record_anchor: None,
             wallet_resolver: None,
+            wallet_binding: None,
             blocklist: None,
             liveness: None,
             progress: Arc::new(ProgressTracker::new()),
@@ -506,6 +515,15 @@ impl Coordinator {
         self.synced_params.state.lock().unwrap().policy
     }
 
+    /// The authoritative platform-fee RECIPIENT (admin treasury) from the cached
+    /// on-chain `GlobalParams` policy, or `None` when nothing has been synced (no
+    /// params source wired). This is the value an honest paid job binds as the
+    /// escrow `treasury`; local `economics.fee_recipient` is only an optional
+    /// cross-check that must match it.
+    pub fn current_fee_recipient(&self) -> Option<WalletAddress> {
+        self.synced_policy().map(|p| p.fee_recipient)
+    }
+
     /// Read the on-chain `GlobalParams` policy ONCE through the wired source and
     /// cache it (version + policy). This is the startup sync; it is also the unit
     /// the periodic task repeats. Errors if no source is wired or the read fails
@@ -588,6 +606,20 @@ impl Coordinator {
         resolver: Arc<dyn Fn(&NodeId) -> WalletAddress + Send + Sync>,
     ) -> Self {
         self.wallet_resolver = Some(resolver);
+        self
+    }
+
+    /// FREE-NODE POLICY: wire a `NodeId → Option<payout wallet>` binding resolver
+    /// that distinguishes WALLET nodes (`Some`) from FREE/walletless nodes (`None`).
+    /// With it, a free node may fully participate in — and even WIN — a paid job: a
+    /// free winner is paid `0` and its base refunds to the requester, while the
+    /// platform still collects φ·base and wallet-holding verifiers earn κ·base.
+    /// Without it, every node is treated as a wallet node (today's behavior).
+    pub fn with_wallet_binding(
+        mut self,
+        resolver: Arc<dyn Fn(&NodeId) -> Option<WalletAddress> + Send + Sync>,
+    ) -> Self {
+        self.wallet_binding = Some(resolver);
         self
     }
 
@@ -1819,14 +1851,35 @@ impl Coordinator {
         debug!("emitted failure receipts for job {job_id}");
     }
 
-    /// Resolve a worker's payout wallet via the injected resolver, or a
-    /// deterministic derivation (BLAKE3 of the node id) used by tests / when no
-    /// binding lookup is wired.
+    /// Resolve a worker's on-chain ADDRESS (used for the committed candidate set
+    /// and the settle `winner` field). EVERY node has a stable address here —
+    /// including free nodes (their derived address) — so candidate-set membership
+    /// and the winner field are always well-formed. A free node simply never
+    /// receives funds (its winner/commission leg is 0). Resolution order: the
+    /// wallet binding's bound address (if any) → the legacy `wallet_resolver` →
+    /// the deterministic BLAKE3 derivation.
     fn wallet_of(&self, node: &NodeId) -> WalletAddress {
+        if let Some(b) = &self.wallet_binding {
+            if let Some(w) = b(node) {
+                return w;
+            }
+        }
         match &self.wallet_resolver {
             Some(r) => r(node),
             None => WalletAddress::new(0, *blake3::hash(node.as_str().as_bytes()).as_bytes()),
         }
+    }
+
+    /// FREE-NODE POLICY: the worker's PAYOUT wallet, or `None` if it is a free
+    /// (walletless) node that cannot be paid. When a `wallet_binding` is wired it is
+    /// authoritative (`None` ⇒ free node). Otherwise every node is payable (the
+    /// `wallet_resolver`/derivation), preserving today's all-wallet behavior. Used
+    /// to decide the winner payout (`base` vs `0`) and which verifiers earn κ.
+    fn payout_wallet_of(&self, node: &NodeId) -> Option<WalletAddress> {
+        if let Some(b) = &self.wallet_binding {
+            return b(node);
+        }
+        Some(self.wallet_of(node))
     }
 
     /// Open the per-job escrow, release it per the quorum verdict, and anchor the
@@ -1863,6 +1916,41 @@ impl Coordinator {
         let version = self.current_params_version();
         let max_bid = escrow_bid_nanoton(cfg);
 
+        // FEE-RECIPIENT enforcement: the platform-fee recipient (treasury) is the
+        // AUTHORITATIVE on-chain `GlobalParams.fee_recipient` for the pinned
+        // `version`, NOT local config. Honest-party rejection: if a local
+        // `economics.fee_recipient` is configured AND disagrees with the chain
+        // value, refuse to open/settle (the admin treasury must not be silently
+        // overridden). Precedence: chain wins; local must match (else reject). When
+        // the chain value is unknown (no params source synced), we proceed on the
+        // configured treasury (documented residual assumption) — paid/on-chain nodes
+        // wire a params source so the chain recipient is always known.
+        let chain_fee_recipient = self.current_fee_recipient();
+        if let Some(chain) = chain_fee_recipient {
+            if let Some(local_str) = cfg
+                .economics
+                .fee_recipient
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+            {
+                match WalletAddress::from_any_str(local_str) {
+                    Ok(local) if local != chain => {
+                        debug!(
+                            "refusing to open escrow: local economics.fee_recipient {} != on-chain GlobalParams.fee_recipient {} (params_version {version}) — admin treasury cannot be overridden",
+                            local.to_raw_string(),
+                            chain.to_raw_string(),
+                        );
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        debug!("refusing to open escrow: local economics.fee_recipient is unparseable; chain GlobalParams.fee_recipient is authoritative");
+                        return;
+                    }
+                }
+            }
+        }
+
         // Open the per-job escrow binding the lock + params version into its terms
         // (hence its deterministic address). The mock/noop rails fall back to the
         // termless `open_escrow`; the ton rail builds the on-chain terms cell. On
@@ -1891,6 +1979,9 @@ impl Coordinator {
             &result_hash,
             version,
             &candidate_wallets,
+            // Bind the chain-authoritative fee recipient (admin treasury) into the
+            // per-job terms; the `ton` rail rejects a mismatching local treasury.
+            chain_fee_recipient,
         ) {
             Ok(h) => h,
             Err(e) => {
@@ -1900,21 +1991,64 @@ impl Coordinator {
         };
 
         let b = handle.max_bid;
-        let fee = mul_frac(b, cfg.economics.fees.platform_fee_pct);
-        let commission_each = mul_frac(b, cfg.economics.fees.participation_commission_frac);
+        // φ / κ as INTEGER basis points — identical to the value bound into
+        // `EscrowTerms.platformFeeBps` and to the on-chain settle enforcement
+        // (`platformFee == winnerAmount*φ/10000`), so the produced split passes the
+        // strict on-chain fee-equality check byte-for-byte.
+        let fee_bps = to_bps(cfg.economics.fees.platform_fee_pct);
+        let comm_bps = to_bps(cfg.economics.fees.participation_commission_frac);
+        let n = agreeing_non_winners.len() as Amount;
+        // Derive the winner's settled price `base` so the FULL multi-party split
+        // (winner base + φ·base platform fee + κ·base to each of N agreeing runners)
+        // fits the locked escrow B: total = base·(1 + φ + N·κ) ≤ B. Floors only
+        // shrink the legs, so `total ≤ B` always holds; the integer remainder
+        // refunds to the requester on-chain (B3 carry-remaining). The storage
+        // reserve / gas buffer are funded on top of B and excluded from this math.
+        let denom = BPS_DENOM
+            .saturating_add(fee_bps)
+            .saturating_add(n.saturating_mul(comm_bps));
+        let base = b.saturating_mul(BPS_DENOM) / denom;
+        let fee = base.saturating_mul(fee_bps) / BPS_DENOM;
+        let commission_each = base.saturating_mul(comm_bps) / BPS_DENOM;
+        // FREE-NODE POLICY: the platform fee is φ·base on EVERY paid job regardless
+        // of the node mix. Only WALLET-holding agreeing verifiers earn the κ
+        // commission (free verifiers fully participate but earn nothing); their
+        // payout key ∈ the committed candidate set. The denominator above used the
+        // full agreeing count, so dropping free verifiers only shrinks the spend
+        // (more refunds to the requester) — the split still fits B.
         let participants: Vec<Payout> = agreeing_non_winners
             .iter()
-            .map(|n| Payout {
-                to: self.wallet_of(n),
+            .filter(|node| self.payout_wallet_of(node).is_some())
+            .map(|node| Payout {
+                to: self.wallet_of(node),
                 amount: commission_each,
             })
             .collect();
-        let total_commission = commission_each.saturating_mul(participants.len() as Amount);
-        // Winner takes base + perf bonus = whatever of B remains after fee +
-        // commissions; never exceeds the escrow (the rail also enforces this).
-        let winner_amount = b.saturating_sub(fee).saturating_sub(total_commission);
+        // The winner is paid EXACTLY its quoted price `base` when it is a WALLET
+        // node; a FREE (walletless) winner is paid `0` and the base is left in the
+        // escrow to refund to the requester (B3 carry-all). `base` remains the fee
+        // base either way, so the platform still collects φ·base.
+        let winner_has_wallet = self.payout_wallet_of(winner).is_some();
+        let winner_amount = if winner_has_wallet { base } else { 0 };
+        // Up-front coverage guard (the off-chain twin of the on-chain `total ≤ B`
+        // bound): require B to cover the worst case base + φ·base + κ·base×(paid
+        // verifiers), so the base can always be paid (wallet winner) or refunded
+        // (free winner) and every party gets their correct share. Reject rather than
+        // under-pay; the derived base fits, so this passes in steady state and
+        // catches a misconfiguration with a clear, human-readable error.
+        if let Err(e) = ensure_escrow_covers(
+            b,
+            base,
+            participants.len(),
+            fee_bps as u16,
+            comm_bps as u16,
+        ) {
+            debug!("escrow coverage preflight failed, not settling: {e}");
+            return;
+        }
         let outcome = SettlementOutcome {
             result_hash,
+            base,
             winner: Payout {
                 to: self.wallet_of(winner),
                 amount: winner_amount,
@@ -1957,6 +2091,14 @@ fn mul_frac(amount: Amount, frac: f64) -> Amount {
         return 0;
     }
     ((amount as f64) * frac).floor() as Amount
+}
+
+/// Convert a `[0,1]` fraction to integer basis points (rounded, clamped to u16
+/// range). This is the SAME conversion `GlobalParams::from_config_parts` and the
+/// settlement wiring use, so the escrow's bound `platformFeeBps`, the on-chain
+/// fee-equality enforcement, and the coordinator's split all agree exactly.
+fn to_bps(frac: f64) -> Amount {
+    (frac * 10_000.0).round().clamp(0.0, 65_535.0) as Amount
 }
 
 /// Pick a representative RAW failure detail from a consensus failure (preferring

@@ -401,7 +401,10 @@ fun runEscrow(deployer: ActonWallet) {
 
     val B = env<coins>("SCN_ESCROW_B") ?? ton("0.05");
     val winnerAmount = env<coins>("SCN_WINNER_AMT") ?? ton("0.01");
-    val platformFee = env<coins>("SCN_FEE") ?? ton("0.002");
+    // FEE ENFORCEMENT (φ): bind the admin φ-rate and derive platformFee = winnerAmount*φ
+    // so the escrow's strict on-chain fee-equality holds. Default φ = 15% (1500 bps).
+    val platformFeeBps = (env<int>("SCN_FEE_BPS") ?? 1500) as uint16;
+    val platformFee = (winnerAmount * platformFeeBps) / 10000;
     val participantAmount = env<coins>("SCN_PARTICIPANT_AMT") ?? ton("0.002");
     val resultHash = env<int>("SCN_RESULT_HASH") ?? 0xC0FFEE;
     val deadline = ((env<int>("SCN_DEADLINE") ?? 0) as uint32);
@@ -418,6 +421,7 @@ fun runEscrow(deployer: ActonWallet) {
         expectedHash: resultHash,
         candidatesHash: candHash,
         paramsVersion: 7,
+        platformFeeBps: platformFeeBps,
     };
     val storage: EscrowStorage = {
         requester: deployer.address,
@@ -446,6 +450,7 @@ fun runEscrow(deployer: ActonWallet) {
             401,
             resultHash,
             winner!,
+            winnerAmount, // quoted base (wallet winner: == winnerAmount)
             winnerAmount,
             platformFee,
             participants,

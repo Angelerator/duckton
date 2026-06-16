@@ -280,6 +280,7 @@ async fn free_job_runs_full_grid_path_with_zero_chain_calls() {
     // settlement that panics on any call is safe here.
     let dummy = SettlementOutcome {
         result_hash: [0u8; 32],
+        base: 0,
         winner: Payout {
             to: wallet(1),
             amount: 0,
@@ -355,6 +356,7 @@ async fn paid_job_settles_split_and_anchors_record() {
     let max_bid = 100 * TON;
     let settlement_outcome = SettlementOutcome {
         result_hash: blake3::hash(agreed.as_bytes()).into(),
+        base: 60 * TON,
         winner: Payout {
             to: wallet(0xA1),
             amount: 60 * TON,
@@ -452,6 +454,7 @@ async fn paid_settlement_rejects_payout_exceeding_escrow() {
     let max_bid = 50 * TON;
     let over_budget = SettlementOutcome {
         result_hash: [9u8; 32],
+        base: 60 * TON,
         winner: Payout {
             to: wallet(0xA1),
             amount: 60 * TON,
@@ -586,8 +589,11 @@ async fn paid_job_drives_coordinator_open_settle_anchor() {
         "first event must be Opened with the escrowed B, got {:?}",
         events[0],
     );
-    // Settled total is bounded by the escrowed B; with one agreeing non-winner
-    // the split is winner + 1 commission + platform fee == B exactly.
+    // Settled total is bounded by the escrowed B; the split is winner base + φ
+    // platform fee + κ commission per agreeing non-winner. Under STRICT fee
+    // enforcement the winner is paid exactly its derived `base` (not the leftover),
+    // so integer-floor rounding may leave a few nanoton that refund to the
+    // requester — total is ≤ B and within a nanoton-scale epsilon of B.
     match &events[1] {
         SettlementEvent::Settled { job, total } => {
             assert_eq!(*job, outcome.job_id);
@@ -595,9 +601,10 @@ async fn paid_job_drives_coordinator_open_settle_anchor() {
                 *total <= max_bid,
                 "settle total {total} must not exceed escrow {max_bid}"
             );
-            assert_eq!(
-                *total, max_bid,
-                "winner takes the remainder ⇒ total spends all of B"
+            assert!(
+                *total >= max_bid - 16,
+                "the derived split spends ~all of B (only an integer-floor remainder \
+                 of a few nanoton refunds); got {total} vs B {max_bid}"
             );
         }
         other => panic!("second event must be Settled, got {other:?}"),
@@ -795,12 +802,16 @@ impl ParamsSource for FixedParamsSource {
 /// the coordinator binds via the open-escrow-per-job path, plus the settle split.
 struct TermsRecordingSettlement {
     opened: std::sync::Mutex<Vec<(Amount, Hash32, u32, Vec<WalletAddress>)>>,
+    /// The chain-authoritative fee recipient passed into each open (the admin
+    /// treasury the coordinator sourced from the synced GlobalParams policy).
+    opened_fee_recipients: std::sync::Mutex<Vec<Option<WalletAddress>>>,
     settled: std::sync::Mutex<Vec<(Amount, SettlementOutcome)>>,
 }
 impl TermsRecordingSettlement {
     fn new() -> Self {
         Self {
             opened: std::sync::Mutex::new(Vec::new()),
+            opened_fee_recipients: std::sync::Mutex::new(Vec::new()),
             settled: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -826,11 +837,13 @@ impl Settlement for TermsRecordingSettlement {
         expected_hash: &Hash32,
         params_version: u32,
         candidates: &[WalletAddress],
+        fee_recipient: Option<WalletAddress>,
     ) -> Result<EscrowHandle, SettleError> {
         self.opened
             .lock()
             .unwrap()
             .push((max_bid, *expected_hash, params_version, candidates.to_vec()));
+        self.opened_fee_recipients.lock().unwrap().push(fee_recipient);
         Ok(EscrowHandle {
             job: job.clone(),
             address: wallet(0xEE),
@@ -883,7 +896,7 @@ impl RecordAnchor for CapturingAnchor {
 }
 
 /// A synced on-chain policy must (1) be overlaid onto the PAID job's live config
-/// (here a 10% platform fee, distinct from the 2% config default), (2) have its
+/// (here a 10% platform fee, distinct from the 15% config default), (2) have its
 /// version bound into the per-job escrow terms alongside the HTLC lock (the agreed
 /// quorum hash), and (3) be stamped into the anchored `JobRecord` — proving the
 /// startup sync genuinely drives fees + the params binding on the live path.
@@ -893,8 +906,9 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
     let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
     let st = store();
     let cfg = paid_cfg(2, 2);
-    // Sanity: the config default fee is 2% (so a 10% on-chain overlay is visible).
-    assert!((cfg.economics.fees.platform_fee_pct - 0.02).abs() < 1e-9);
+    // Sanity: the config default fee is the canonical 15% (so a 10% on-chain
+    // overlay is visibly DIFFERENT from the default).
+    assert!((cfg.economics.fees.platform_fee_pct - 0.15).abs() < 1e-9);
 
     let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
     reg.set_stake(&w1.node_id, 1_000 * TON);
@@ -903,9 +917,13 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
     let anchor = Arc::new(CapturingAnchor::new());
 
     // On-chain policy: version 9, 10% platform fee, 0% participation commission.
+    // The authoritative fee recipient matches the (zero) treasury in `paid_cfg`'s
+    // `economics.fee_recipient`, so the coordinator's chain-vs-local cross-check
+    // agrees and the job settles.
     let policy = OnchainPolicy {
         version: 9,
         platform_fee_bps: 1_000,
+        fee_recipient: WalletAddress::new(0, [0u8; 32]),
         participation_commission_bps: 0,
         slash_failed_commitment_bps: 1_000,
         attempt_deadline_ms: 60_000,
@@ -948,16 +966,31 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
         *blake3::hash(agreed.as_bytes()).as_bytes(),
         "HTLC lock = quorum hash"
     );
+    // The coordinator sourced the fee recipient (admin treasury) from the SYNCED
+    // on-chain GlobalParams.fee_recipient and passed it into the open — not local config.
+    let opened_fr = settlement.opened_fee_recipients.lock().unwrap().clone();
+    assert_eq!(
+        opened_fr[0],
+        Some(WalletAddress::new(0, [0u8; 32])),
+        "escrow treasury sourced from on-chain GlobalParams.fee_recipient"
+    );
 
-    // (1) The 10% on-chain fee overlaid the 2% config default in the settle split.
+    // (1) The 10% on-chain fee overlaid the 15% config default in the settle split.
+    // Under STRICT fee enforcement the platform fee is EXACTLY φ of the winner's
+    // settled price (`base`), not of the whole escrow B — so assert it equals 10%
+    // of the winner base the coordinator derived, and the whole split fits B.
     let settled = settlement.settled.lock().unwrap().clone();
     assert_eq!(settled.len(), 1);
     let (sb, split) = &settled[0];
     assert_eq!(*sb, max_bid);
     assert_eq!(
         split.platform_fee,
-        max_bid / 10,
-        "synced 10% fee overlaid the 2% default"
+        split.winner.amount / 10,
+        "synced 10% fee = exactly φ of the winner base (overlaid the 15% default)"
+    );
+    assert!(
+        split.total() <= max_bid,
+        "the full split (winner + fee + commissions) fits the locked escrow B"
     );
     assert!(
         split.participants.iter().all(|p| p.amount == 0),
@@ -971,6 +1004,114 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
         records[0].params_version, 9,
         "anchored record stamped with synced version"
     );
+}
+
+/// FEE-RECIPIENT enforcement (honest-party rejection): when the LOCAL
+/// `economics.fee_recipient` disagrees with the authoritative on-chain
+/// `GlobalParams.fee_recipient`, the coordinator REFUSES to open/settle the escrow
+/// — the admin treasury cannot be silently overridden by local config. We assert
+/// the job still runs/verifies off-chain but NO escrow is opened or settled.
+#[tokio::test]
+async fn paid_job_rejects_when_local_fee_recipient_disagrees_with_chain() {
+    let w1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    // paid_cfg sets economics.fee_recipient = "0:0000…0" (the zero address).
+    let cfg = paid_cfg(2, 2);
+
+    // On-chain GlobalParams.fee_recipient is a DIFFERENT (real) treasury.
+    let chain_treasury = WalletAddress::new(0, [0x7Eu8; 32]);
+    let policy = OnchainPolicy {
+        version: 5,
+        platform_fee_bps: 1_500,
+        fee_recipient: chain_treasury,
+        participation_commission_bps: 500,
+        slash_failed_commitment_bps: 1_000,
+        attempt_deadline_ms: 60_000,
+        progress_interval_ms: 2_000,
+        progress_stall_mult: 5,
+    };
+    let settlement = Arc::new(TermsRecordingSettlement::new());
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+
+    let coord = coordinator(&[&w1, &w2], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_settlement(settlement.clone())
+        .with_record_anchor(anchor.clone())
+        .with_params_source(Arc::new(FixedParamsSource(policy)));
+    coord.sync_params_once().expect("sync reads the policy");
+    assert_eq!(coord.current_fee_recipient(), Some(chain_treasury));
+
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    // The job still RUNS and verifies off-chain — only the on-chain settlement is
+    // refused (the platform-fee recipient would be wrong).
+    assert!(outcome.verified);
+
+    assert!(
+        settlement.opened.lock().unwrap().is_empty(),
+        "no escrow opened when the local treasury disagrees with the chain recipient"
+    );
+    assert!(
+        settlement.settled.lock().unwrap().is_empty(),
+        "nothing settled on a fee-recipient mismatch"
+    );
+    assert_eq!(anchor.len(), 0, "no record anchored when settlement is refused");
+}
+
+/// FREE-NODE POLICY: a paid job whose WINNER is a free (walletless) node settles
+/// with the winner paid 0 (the quoted `base` refunds to the requester), yet the
+/// platform STILL collects exactly φ·base. Free agreeing verifiers earn nothing.
+/// The on-chain fee formula is keyed on the quoted `base`, so it is non-zero even
+/// though the winner payout is zero.
+#[tokio::test]
+async fn paid_job_free_winner_refunds_base_but_platform_still_collects_fee() {
+    let w1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let cfg = paid_cfg(2, 2); // φ = 15%, κ = 5% (config defaults)
+    let settlement = Arc::new(TermsRecordingSettlement::new());
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+
+    // Every node is FREE (no wallet binding) — so whoever wins is a free winner and
+    // any agreeing verifier is also walletless (earns no commission).
+    let coord = coordinator(&[&w1, &w2], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_settlement(settlement.clone())
+        .with_record_anchor(anchor.clone())
+        .with_wallet_binding(Arc::new(|_: &NodeId| None));
+
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified, "free nodes can fully run a paid job");
+
+    let max_bid = 100 * TON;
+    let settled = settlement.settled.lock().unwrap().clone();
+    assert_eq!(settled.len(), 1, "settled exactly once");
+    let (b, split) = &settled[0];
+    assert_eq!(*b, max_bid);
+    // The free winner is paid NOTHING (its base will refund to the requester).
+    assert_eq!(split.winner.amount, 0, "free winner earns nothing");
+    // The fee base (quoted price) is non-zero...
+    assert!(split.base > 0, "the quoted base is still set for a free winner");
+    // ...and the platform STILL collects exactly φ·base (15% of the base), proving
+    // the fee is decoupled from the (zero) winner payout.
+    assert_eq!(
+        split.platform_fee,
+        split.base * 1500 / 10_000,
+        "platform collects exactly 15% of the quoted base even with a free winner"
+    );
+    // Free verifiers earn nothing (no wallet) — no commission legs.
+    assert!(
+        split.participants.iter().all(|p| p.amount == 0),
+        "free verifiers earn no commission"
+    );
+    // All-or-nothing: the actual outflow still fits the locked escrow B.
+    assert!(split.total() <= max_bid);
 }
 
 /// P0-2: the coordinator threads a requester-committed candidate payout set into

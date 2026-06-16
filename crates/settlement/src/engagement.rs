@@ -43,6 +43,7 @@ mod tests {
     fn sample_outcome() -> SettlementOutcome {
         SettlementOutcome {
             result_hash: [7u8; 32],
+            base: 60,
             winner: Payout {
                 to: WalletAddress::new(0, [1u8; 32]),
                 amount: 60,

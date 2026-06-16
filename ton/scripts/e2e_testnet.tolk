@@ -233,7 +233,11 @@ fun main() {
     // each agreeing non-winner; any remainder refunds to the requester.
     val winner = env<address>("SETTLE_WINNER") ?? deployer.address;
     val winnerAmount = env<coins>("SETTLE_WINNER_AMOUNT") ?? ton("0.1");
-    val platformFee = env<coins>("SETTLE_FEE") ?? ton("0.02");
+    // FEE ENFORCEMENT (φ): the escrow enforces platformFee == winnerAmount*φ to its
+    // bound feeRecipient, so derive the fee from the same φ the escrow was opened
+    // with (deploy_escrow's ESCROW_PLATFORM_FEE_BPS, default 1500 = 15%).
+    val platformFeeBps = (env<int>("SETTLE_FEE_BPS") ?? 1500) as uint16;
+    val platformFee = (winnerAmount * platformFeeBps) / 10000;
     val participant = env<address>("SETTLE_PARTICIPANT") ?? deployer.address;
     val participantAmount = env<coins>("SETTLE_PARTICIPANT_AMOUNT") ?? ton("0.02");
     val resultHash = env<int>("SETTLE_RESULT_HASH") ?? 0;
@@ -259,6 +263,7 @@ fun main() {
         2,
         resultHash,
         winner,
+        winnerAmount, // quoted base (wallet winner: == winnerAmount)
         winnerAmount,
         platformFee,
         participants,

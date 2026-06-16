@@ -66,9 +66,9 @@ fun proofForM5(): Cell<MerkleStep>? {
 
 fun validParams(): EcoParams {
     return {
-        platformFeeBps: 200,
+        platformFeeBps: 1500,
         surchargeBps: 500,
-        participationCommissionBps: 200,
+        participationCommissionBps: 500,
         slashWrongBps: 1500,
         slashCheatBps: 10000,
         slashDowntimeBps: 200,
@@ -164,6 +164,7 @@ fun deployEscrow(requester: address, arbiter: address, winner: address): JobEscr
         expectedHash: RESULT_HASH,
         candidatesHash: candidatesCommitment(candidateSet(winner)),
         paramsVersion: 1,
+        platformFeeBps: 1500, // φ = 15% bound + enforced at settle
     };
     val storage: EscrowStorage = {
         requester: requester,
@@ -287,8 +288,9 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
             2,
             RESULT_HASH,
             winner,
-            ton("60"),
-            ton("2"),
+            ton("60"), // quoted base (fee base)
+            ton("60"), // wallet winner paid the full base
+            ton("9"), // φ=15% of the 60 base, enforced on-chain
             participants,
             candidateSet(winner),
             { value: ton("1") },

@@ -82,6 +82,10 @@ enum ErrCode: int32 {
     TOO_MANY_PARTICIPANTS = 282  // participants map exceeds the on-chain payout bound (action/gas safety)
     UPGRADE_NOT_AUTHORITY = 283  // upgrade announced/applied by a non-upgrade-authority (separated from slasher)
     BAD_BOUNTY_BPS = 284         // keeperBountyBps out of [0, BPS_DENOM] (config sanity)
+    // Escrow STRICT platform-fee enforcement: the settle's platformFee is not
+    // EXACTLY `winnerAmount * terms.platformFeeBps / BPS_DENOM` (the admin's φ-cut
+    // of the winner's settled price), so the platform would be under/over-paid.
+    FEE_MISMATCH = 285
 }
 
 // ---------------------------------------------------------------------------

@@ -453,9 +453,9 @@ checksum_min            = 3                # min matching results to accept (saf
 checksum_allow_degraded = true            # if < checksum_min respond, proceed + flag
 
 [economics.fees]
-platform_fee_pct              = 0.02
+platform_fee_pct              = 0.15       # phi: platform/admin cut (15%)
 verification_surcharge_pct    = 0.05
-participation_commission_frac = 0.02       # kappa: fixed cut of winner payout per agreeing node
+participation_commission_frac = 0.05       # kappa: fixed cut of winner payout per agreeing node (5%)
 bonus_aggressiveness          = 0.5        # rho: escrow slack funding the perf bonus
 lambda_quality                = 0.5        # blend of quality vs speed in the bonus
 lambda_speed                  = 0.5

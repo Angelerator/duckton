@@ -54,8 +54,9 @@ pub use ton::{
 };
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
 pub use types::{
-    Amount, BindingError, EscrowHandle, Hash32, InclusionProof, JobRecord, NodeWalletBinding,
-    Payout, SettleError, SettlementOutcome, SlashError, SlashReason, TonProof, WalletAddress,
+    ensure_escrow_covers, required_escrow_total, Amount, BindingError, EscrowHandle, Hash32,
+    InclusionProof, JobRecord, NodeWalletBinding, Payout, SettleError, SettlementOutcome,
+    SlashError, SlashReason, TonProof, WalletAddress, BPS_DENOM,
 };
 pub use wallet::{
     base64_decode, base64_encode, build_signed_external_v5r1, InternalMessage, WalletKey,

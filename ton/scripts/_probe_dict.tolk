@@ -27,6 +27,7 @@ fun dumpSettle(label: string, participants: map<address, coins>) {
         queryId: 1,
         resultHash: RESULT_HASH,
         winner: winner,
+        base: 60,
         winnerAmount: 60,
         platformFee: 2,
         participants: participants,

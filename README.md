@@ -68,6 +68,11 @@ network-identity-bound key handshake).
 
 ## Documentation
 
+- [**docs/HOW_IT_WORKS.md**](docs/HOW_IT_WORKS.md) — how Duckton works in plain terms:
+  the free-vs-paid economic model, **real captured TON testnet proof** of the on-chain
+  split (15% treasury / 5% verifier / winner base, free-winner refunds, rejected
+  negatives, staking lifecycle), the wallet-setup walkthrough via the extension, the
+  four contracts explained, and an honest security/threat model.
 - [**docs/ARCHITECTURE.md**](docs/ARCHITECTURE.md) — full architecture, trust mechanism,
   protocol flow, security model, versioning/compatibility, config system, pluggable
   traits, roadmap, and an honest "implementation status & deviations" section.

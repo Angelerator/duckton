@@ -169,7 +169,7 @@ fn message_abi_matches_onchain_opcodes() {
     let winner = WalletAddress::new(0, [2u8; 32]);
     // B1: candidates must include the winner (the contract membership-checks it);
     // both the participants and candidates dicts are omitted from the flat ABI.
-    let settle = build_escrow_settle(1, &[3u8; 32], &winner, 60, 2, &[], &[winner]);
+    let settle = build_escrow_settle(1, &[3u8; 32], &winner, 60, 60, 2, &[], &[winner]);
     assert_eq!(settle.opcode, OP_ESCROW_SETTLE);
     // opcode(4)+queryId(8)+hash(32)+addr(36)+coins(16)+coins(16) (dicts omitted from flat ABI)
     assert_eq!(settle.bytes.len(), 4 + 8 + 32 + 36 + 16 + 16);

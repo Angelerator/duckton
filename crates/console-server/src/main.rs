@@ -263,10 +263,16 @@ struct EscrowSettlement {
     cost: f64,
     /// Escrow bound `B` actually locked (the cap).
     cap: f64,
-    /// Released to providers + treasury (`min(cost, B)`).
+    /// Released to providers + treasury (the FULL `cost` when covered, else 0).
     settled: f64,
     /// Returned to the requester (`B − settled`).
     refunded: f64,
+    /// Whether the locked escrow `B` actually covers the full multi-party cost
+    /// (winner + 15% platform fee + 5% commission × N runners). `false` ⇒ the job
+    /// is rejected up front (nothing settled); we NEVER silently under-pay.
+    covered: bool,
+    /// Human-readable up-front rejection reason when `!covered` (else empty).
+    coverage_error: String,
 }
 
 /// Compute the real escrow settlement for a paid job (§10.1 payout shape) — the
@@ -275,12 +281,17 @@ struct EscrowSettlement {
 /// * `base` — the winning host's advertised bid price (the winner base reward).
 /// * `agreeing_non_winners` — agreeing replicas other than the winner, each paid
 ///   a fixed participation commission `κ·base`.
-/// * `fee_pct` / `commission_frac` — the configured platform fee and κ.
+/// * `fee_pct` / `commission_frac` — the configured platform fee φ and κ.
 /// * `max_escrow` — the caller's `maxEscrow` cap if any; else the cost is bounded
 ///   by [`ESCROW_SAFETY_FACTOR`].
 ///
-/// Settlement releases `settled = min(cost, B)` and refunds `B − settled`, so the
-/// invariant `cap == settled + refunded` always holds.
+/// UP-FRONT COVERAGE (no silent under-pay): the cost MUST be coverable by the
+/// locked escrow `B` (= `cap`). The check reuses the shared, integer-exact
+/// `p2p_settlement::ensure_escrow_covers` (nanoton) so the demo, the off-chain
+/// coordinator preflight, and the on-chain `JobEscrow` bound all agree. When the
+/// escrow cannot cover ALL parties the job is REJECTED (`covered = false`, nothing
+/// settled, the full `B` refunded) with a human-readable reason — settlement is
+/// all-or-nothing. Otherwise `settled = cost` and `refunded = B − cost`.
 fn settle_escrow(
     base: f64,
     agreeing_non_winners: usize,
@@ -296,13 +307,30 @@ fn settle_escrow(
         Some(m) if m > 0.0 => m,
         _ => cost * ESCROW_SAFETY_FACTOR,
     });
-    let settled = round(cost.min(cap));
+    // Shared coverage check (nanoton, integer-exact) — the single source of truth.
+    const TON: f64 = 1e9;
+    let to_nano = |x: f64| (x * TON).round().max(0.0) as p2p_settlement::Amount;
+    let fee_bps = (fee_pct * 10_000.0).round().clamp(0.0, 65_535.0) as u16;
+    let comm_bps = (commission_frac * 10_000.0).round().clamp(0.0, 65_535.0) as u16;
+    let (covered, coverage_error) = match p2p_settlement::ensure_escrow_covers(
+        to_nano(cap),
+        to_nano(base),
+        agreeing_non_winners,
+        fee_bps,
+        comm_bps,
+    ) {
+        Ok(_) => (true, String::new()),
+        Err(e) => (false, e.to_string()),
+    };
+    let settled = if covered { cost } else { 0.0 };
     let refunded = round(cap - settled);
     EscrowSettlement {
         cost,
         cap,
         settled,
         refunded,
+        covered,
+        coverage_error,
     }
 }
 
@@ -578,6 +606,11 @@ impl Grid {
                     "escrowCapTon": escrow_cap_ton,
                     "refundedTon": refunded_ton,
                     "costTon": settle.as_ref().map(|s| s.cost).unwrap_or(0.0),
+                    // Up-front coverage: false ⇒ the escrow could not cover winner +
+                    // 15% platform fee + 5% commission × N runners, so the job was
+                    // rejected (nothing settled) with a human-readable reason.
+                    "escrowCovered": settle.as_ref().map(|s| s.covered).unwrap_or(true),
+                    "escrowCoverageError": settle.as_ref().map(|s| s.coverage_error.clone()).unwrap_or_default(),
                     "winner": winner.as_ref().map(|w| self.alias_of(w)),
                     "winnerId": winner.as_ref().map(|w| w.0.clone()),
                     "source": "live in-process grid (loopback)",

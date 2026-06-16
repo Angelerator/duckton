@@ -83,8 +83,35 @@ fun onInternalMessage(in: InMessage) {
                 entry = msg.participants.iterateNext(entry);
             }
 
+            // FREE-NODE POLICY: the actual winner payout can be 0 (free winner), so
+            // it can never exceed the quoted price `base`. A wallet winner is paid
+            // exactly `base`; reject any attempt to pay the winner MORE than the
+            // quoted price (defends against an arbiter inflating the winner leg).
+            assert (msg.winnerAmount <= msg.base) throw ErrCode.PAYOUT_EXCEEDS_ESCROW;
+
+            // ALL-OR-NOTHING coverage: the sum of EVERY ACTUAL payout leg (winner
+            // payout + platform fee + ALL participation commissions) must fit the
+            // locked escrow B. This is the on-chain twin of the off-chain preflight;
+            // checked BEFORE the strict fee-equality so an over-budget settle is
+            // rejected as PAYOUT_EXCEEDS_ESCROW (not masked by FEE_MISMATCH). For a
+            // free winner `winnerAmount == 0`, so the unspent `base` stays in the
+            // escrow and refunds to the requester via the trailing carry-all. The
+            // contract reserves MIN_TONS_FOR_STORAGE separately (from the deploy gas
+            // buffer, not from B), so all parties are paid in full from B.
             val total = msg.winnerAmount + msg.platformFee + participantsTotal;
             assert (total <= storage.escrowAmount) throw ErrCode.PAYOUT_EXCEEDS_ESCROW;
+
+            // STRICT platform-fee enforcement (φ), DECOUPLED from the winner payout:
+            // the fee must be EXACTLY the admin's rate applied to the QUOTED price
+            // `msg.base` — NOT to `winnerAmount` (which is 0 for a free winner). So
+            // the platform collects φ·base on EVERY paid job regardless of the node
+            // mix. `terms.platformFeeBps` is the admin's φ bound at open from the
+            // authoritative `GlobalParams`; integer floor division matches the
+            // off-chain builder byte-for-byte. The fee is paid to `terms.treasury`
+            // (= the admin's bound feeRecipient) below, so BOTH the amount AND the
+            // recipient are guaranteed — a compromised arbiter can do neither.
+            val expectedFee = (msg.base * terms.platformFeeBps) / BPS_DENOM;
+            assert (msg.platformFee == expectedFee) throw ErrCode.FEE_MISMATCH;
 
             storage.settled = true;
             storage.save();
@@ -99,7 +126,8 @@ fun onInternalMessage(in: InMessage) {
             if (msg.winnerAmount > 0) {
                 payout(msg.winner, msg.winnerAmount, msg.queryId);
             }
-            // Platform fee (treasury is from terms, never arbiter-chosen).
+            // Platform fee: EXACTLY winnerAmount*φ (asserted above) to the admin's
+            // bound feeRecipient (terms.treasury) — never arbiter-chosen.
             if (msg.platformFee > 0) {
                 payout(terms.treasury, msg.platformFee, msg.queryId);
             }
@@ -225,6 +253,21 @@ get fun get_expected_hash(): int {
 get fun get_candidates_hash(): int {
     val storage = lazy EscrowStorage.load();
     return storage.terms.load().candidatesHash;
+}
+
+// FEE ENFORCEMENT: the admin's φ-rate (bps) this escrow binds and enforces at
+// settle, so the off-chain coordinator/requester can confirm it equals the
+// authoritative `GlobalParams.get_platform_fee_bps` for the pinned paramsVersion.
+get fun get_platform_fee_bps(): int {
+    val storage = lazy EscrowStorage.load();
+    return storage.terms.load().platformFeeBps;
+}
+
+// FEE ENFORCEMENT: the bound platform-fee recipient (= admin GlobalParams.feeRecipient).
+// The fee can ONLY ever be paid here; exposed so parties can verify the binding.
+get fun get_fee_recipient(): address {
+    val storage = lazy EscrowStorage.load();
+    return storage.terms.load().treasury;
 }
 
 // B2: the queued/bounced pull-balance for a recipient (0 if none). Lets a

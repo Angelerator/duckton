@@ -46,6 +46,12 @@ fun main() {
     // GlobalParams version in force when this job was opened (pins which
     // ecosystem params govern settlement / disputes). `0` = unbound.
     val paramsVersion = (env<int>("ESCROW_PARAMS_VERSION") ?? 0) as uint32;
+    // FEE ENFORCEMENT (φ): the admin's authoritative platform-fee rate (bps) bound
+    // into the escrow at open. At settle the contract enforces
+    // `platformFee == winnerAmount * platformFeeBps / BPS_DENOM` to `treasury`.
+    // Bind it to `GlobalParams.get_platform_fee_bps` for `paramsVersion`. Default
+    // = the canonical φ = 15% (1500 bps). `0` = no fee enforced (legacy/free).
+    val platformFeeBps = (env<int>("ESCROW_PLATFORM_FEE_BPS") ?? 1500) as uint16;
 
     // B1: the requester pre-commits to the payout-eligible candidate set; settle
     // can only pay members of it. Two ways to bind it:
@@ -76,6 +82,7 @@ fun main() {
         expectedHash: expectedHash,
         candidatesHash: candidatesHash,
         paramsVersion: paramsVersion,
+        platformFeeBps: platformFeeBps,
     };
     val storage: EscrowStorage = {
         requester: requester,

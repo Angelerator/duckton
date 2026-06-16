@@ -28,7 +28,11 @@ const OP_ESCROW_CLAIM = 0x4553_4304  // pull a bounced/queued payout (B2 bounce-
 const OP_ESCROW_PAYOUT = 0x4553_4305 // outgoing payout op tag (carried so bounces are identifiable)
 
 struct EscrowTerms {
-    treasury: address     // platform-fee recipient
+    // Platform-fee recipient. This is bound to the admin's authoritative
+    // `GlobalParams.feeRecipient` AT OPEN (read via `get_fee_recipient`) and is
+    // the ONLY address the platform fee can be paid to at settle — the arbiter
+    // can never redirect the fee. See the "FEE ENFORCEMENT" trust note below.
+    treasury: address     // platform-fee recipient (= admin GlobalParams.feeRecipient)
     expectedHash: uint256 // HTLC lock: settle must present this quorum result hash
     // B1: the requester's pre-committed authorization of the payout-eligible
     // candidate set. Computed off-chain as `hash(candidates dict cell)` over the
@@ -43,6 +47,28 @@ struct EscrowTerms {
     // requester and coordinator all agree which ecosystem params governed the
     // job at settlement / dispute time. Appended last → additive layout.
     paramsVersion: uint32
+    // FEE ENFORCEMENT (φ): the admin's authoritative platform-fee rate (basis
+    // points) for `paramsVersion`, bound at open from `GlobalParams.get_platform_fee_bps`.
+    // At settle the contract REQUIRES `platformFee == winnerAmount * platformFeeBps / BPS_DENOM`
+    // (the winner's settled price `winnerAmount` is the fee `base`), paid to
+    // `treasury` — so the platform's exact φ-cut is guaranteed on-chain and cannot
+    // be shaved by the arbiter. Appended last → additive layout.
+    //
+    // TRUST MODEL (TON has no synchronous cross-contract storage read, so the
+    // escrow cannot itself fetch the live `GlobalParams`): `treasury` +
+    // `platformFeeBps` are bound into the terms (hence into the escrow's
+    // DETERMINISTIC address) at open. Every honest party independently recomputes
+    // the expected escrow address from the authoritative GlobalParams values
+    // (`get_fee_recipient` / `get_platform_fee_bps` for the pinned `paramsVersion`)
+    // and only funds/settles/anchors THAT address — exactly the established
+    // pattern that already binds `candidatesHash` + `paramsVersion`. A
+    // self-deployed escrow that points the fee at itself (or sets φ=0) has a
+    // DIFFERENT address, so the requester never funds it and the workers never
+    // accept its settle. RESIDUAL ASSUMPTION: the binder pinned the correct admin
+    // values; a fully trustless variant would route settle through GlobalParams
+    // (or carry a GlobalParams-signed (version→feeRecipient,φ) proof) so the
+    // escrow could verify the bound values on-chain.
+    platformFeeBps: uint16
 }
 
 struct EscrowStorage {
@@ -82,6 +108,15 @@ struct (0x4553_4302) EscrowSettle {
     queryId: uint64
     resultHash: uint256 // the agreed quorum hash — must equal terms.expectedHash
     winner: address
+    // FREE-NODE POLICY: `base` is the QUOTED winning price and is the fee base —
+    // the platform fee MUST equal `base * terms.platformFeeBps / BPS_DENOM`,
+    // DECOUPLED from what the winner is actually paid. `winnerAmount` is the actual
+    // payout to the winner: it is `base` when the winner is a wallet node, or `0`
+    // when the winner is a free (walletless) node — in which case the base is left
+    // in the escrow and refunded to the requester (the trailing carry-all refund).
+    // Either way the platform still collects exactly φ·base. (For a wallet winner
+    // `winnerAmount == base`.)
+    base: coins
     winnerAmount: coins
     platformFee: coins
     participants: map<address, coins>

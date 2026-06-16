@@ -142,27 +142,42 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
         )
     };
     let wallet = mk_rpc()?.wallet_address();
-    let treasury = econ
+    // FEE-RECIPIENT precedence (the admin treasury is chain-authoritative):
+    //   * The coordinator binds the per-job escrow `treasury` from the SYNCED
+    //     on-chain `GlobalParams.fee_recipient` (passed into `open_escrow_with_terms`).
+    //   * A local `economics.fee_recipient`, when configured, is ONLY an optional
+    //     cross-check: the `ton` rail rejects a settle whose chain value disagrees
+    //     with this local override (`SettleError::TreasuryMismatch`) — it can never
+    //     silently override the admin treasury.
+    //   * When NOT configured (None), no local override is set and the chain value
+    //     is used verbatim. A placeholder (the signer wallet) seeds only the unused
+    //     shared terms cell + the no-params-source fallback.
+    let local_override = econ
         .fee_recipient
         .as_deref()
-        .and_then(|s| WalletAddress::from_any_str(s).ok())
-        .unwrap_or(wallet);
+        .and_then(|s| WalletAddress::from_any_str(s).ok());
+    let placeholder_treasury = local_override.unwrap_or(wallet);
 
     // Escrow code from the compiled artifact embedded at build time, so the
     // per-job escrow address derivation matches the deployed contract.
     let escrow_code = embedded_job_escrow_code()?;
+    // FEE ENFORCEMENT (φ): the admin platform-fee rate bound into each per-job
+    // escrow at open. Sourced from `[economics].fees` (the same single source the
+    // deployed `GlobalParams` and the coordinator's split derive from), so the
+    // bound φ, the coordinator's computed fee, and the on-chain GlobalParams agree.
+    let platform_fee_bps =
+        (econ.fees.platform_fee_pct * 10_000.0).round().clamp(0.0, 65_535.0) as u16;
     let mut settlement = TonSettlement::with_escrow_code(
         mk_rpc()?,
         escrow_code,
         // Placeholder shared terms cell (a fresh per-job `EscrowTerms` is rebuilt
         // inside `open_escrow_with_terms`): unbound expected-hash + candidates-hash,
-        // params version 0. The candidates_hash is the new B1 field (between
-        // expectedHash and paramsVersion).
-        build_escrow_terms(&treasury, &[0u8; 32], &[0u8; 32], 0),
+        // params version 0, and the bound platform-fee rate φ.
+        build_escrow_terms(&placeholder_treasury, &[0u8; 32], &[0u8; 32], 0, platform_fee_bps),
         wallet,
     )
     .with_requester(wallet)
-    .with_treasury(treasury)
+    .with_platform_fee_bps(platform_fee_bps)
     // ~0.05 TON deploy headroom so the per-job escrow can pay its own settle-time
     // action (forward) fees (the locked B is unaffected). Mirrors the Acton
     // deploy script's `escrowAmount + buffer` funding.
@@ -172,6 +187,12 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
     .with_settle_gas(50_000_000);
     let window = (econ.slashing.challenge_window_secs.min(u32::MAX as u64) as u32).max(600);
     settlement = settlement.with_escrow_window(window);
+    // Only set a local treasury when `economics.fee_recipient` is explicitly
+    // configured — then it is the cross-check the `ton` rail enforces against the
+    // chain value. Unset ⇒ the chain `GlobalParams.fee_recipient` is used verbatim.
+    if let Some(local) = local_override {
+        settlement = settlement.with_treasury(local);
+    }
 
     let anchor: Arc<dyn RecordAnchor> = match wiring.record_anchor {
         Some(addr) => Arc::new(TonRecordAnchor::new(mk_rpc()?, addr)),
@@ -416,7 +437,8 @@ mod tests {
         let p = GlobalParams::from_economics(&e);
         p.validate()
             .expect("derived params must satisfy the on-chain bounds");
-        assert_eq!(p.platform_fee_bps, 200); // 0.02 -> 200 bps
+        assert_eq!(p.platform_fee_bps, 1500); // 0.15 -> 1500 bps (canonical φ)
+        assert_eq!(p.participation_commission_bps, 500); // 0.05 -> 500 bps (canonical κ)
         assert_eq!(p.split_challenger_bps, 4000);
         assert_eq!(p.min_stake_internal, 100 * NANOTON_PER_TON);
         // Resilience fields default-derived (from SchedulerConfig::default()).

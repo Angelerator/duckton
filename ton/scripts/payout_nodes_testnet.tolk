@@ -45,8 +45,18 @@ fun main() {
 
     val escrowAmount = env<coins>("ESCROW_AMOUNT") ?? ton("0.3");
     val winnerAmount = env<coins>("WINNER_AMOUNT") ?? ton("0.05");
-    val platformFee = env<coins>("PLATFORM_FEE") ?? ton("0.01");
+    // FEE ENFORCEMENT (φ): the admin φ-rate bound into the escrow; the settle's
+    // platformFee is DERIVED as exactly winnerAmount*φ so the on-chain strict
+    // fee-equality check passes. Default φ = 15% (1500 bps).
+    val platformFeeBps = (env<int>("PLATFORM_FEE_BPS") ?? 1500) as uint16;
+    val platformFee = (winnerAmount * platformFeeBps) / 10000;
     val participantAmount: coins = env<coins>("PARTICIPANT_AMOUNT") ?? ton("0.02");
+    // Operational gas/storage buffer attached on top of B at deploy, and the value
+    // attached to the settle message. The contract keeps MIN_TONS_FOR_STORAGE
+    // (0.05 TON) as a permanent reserve and refunds the rest to the requester;
+    // shrink these to keep a cost-focused demo's refund tight.
+    val deployBuffer = env<coins>("DEPLOY_BUFFER") ?? ton("0.15");
+    val settleValue = env<coins>("SETTLE_VALUE") ?? ton("0.1");
     // HTLC lock — settle must present exactly this hash (it does, below).
     val resultHash = env<int>("RESULT_HASH")
         ?? 0x790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1;
@@ -67,6 +77,7 @@ fun main() {
         expectedHash: resultHash,
         candidatesHash: candidatesHash,
         paramsVersion: 0,
+        platformFeeBps: platformFeeBps,
     };
     val storage: EscrowStorage = {
         requester: requester,
@@ -80,7 +91,7 @@ fun main() {
 
     // -- 1. Open the escrow (deploy WITH the locked B + a gas/storage buffer) --
     val escrow = JobEscrow.fromStorage(storage);
-    val deployRes = escrow.deploy(deployer.address, { value: escrowAmount + ton("0.15") });
+    val deployRes = escrow.deploy(deployer.address, { value: escrowAmount + deployBuffer });
     deployRes.waitForTrace();
     println("Deployed JobEscrow to {}", escrow.address);
     println("  escrow amount = {}", escrowAmount);
@@ -99,11 +110,12 @@ fun main() {
         1,
         resultHash,
         winner,
+        winnerAmount, // quoted base (wallet winner: == winnerAmount)
         winnerAmount,
         platformFee,
         participants,
         candidates,
-        { value: ton("0.1") },
+        { value: settleValue },
     );
     settleRes.waitForTrace();
 

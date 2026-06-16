@@ -51,6 +51,7 @@ fun JobEscrow.sendEscrowSettle(
     queryId: uint64,
     resultHash: uint256,
     winner: address,
+    base: coins,
     winnerAmount: coins,
     platformFee: coins,
     participants: map<address, coins>,
@@ -65,6 +66,7 @@ fun JobEscrow.sendEscrowSettle(
             queryId,
             resultHash,
             winner,
+            base,
             winnerAmount,
             platformFee,
             participants,
@@ -149,6 +151,14 @@ fun JobEscrow.getExpectedHash(self): int {
 
 fun JobEscrow.getCandidatesHash(self): int {
     return net.runGetMethod(self.address, "get_candidates_hash");
+}
+
+fun JobEscrow.getPlatformFeeBps(self): int {
+    return net.runGetMethod(self.address, "get_platform_fee_bps");
+}
+
+fun JobEscrow.getFeeRecipient(self): address {
+    return net.runGetMethod(self.address, "get_fee_recipient");
 }
 
 fun JobEscrow.getPending(self, recipient: address): int {

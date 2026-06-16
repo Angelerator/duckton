@@ -354,12 +354,14 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
         rpc,
         load_escrow_code(),
         // Placeholder shared terms (rebuilt per-job in open_escrow_with_terms):
-        // unbound expected-hash + candidates-hash (the new B1 field), version 0.
-        build_escrow_terms(&wallet, &[0u8; 32], &[0u8; 32], 0),
+        // unbound expected-hash + candidates-hash (the new B1 field), version 0,
+        // φ = 1500 bps (15%) bound for the on-chain fee enforcement.
+        build_escrow_terms(&wallet, &[0u8; 32], &[0u8; 32], 0, 1500),
         wallet,
     )
     .with_requester(wallet)
     .with_treasury(wallet)
+    .with_platform_fee_bps(1500)
     .with_escrow_window(3600)
     // B1: bind the payout-eligible candidate set (here just our wallet, the
     // winner) so the escrow's terms commit to it at open AND settle presents the
@@ -384,7 +386,16 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
         ESCROW_BID + DEPLOY_GAS_BUFFER
     );
     let handle = settlement
-        .open_escrow_with_terms(&job, ESCROW_BID, &result_hash, synced_version, &[wallet])
+        // Treasury == our wallet (the configured fee recipient); pass it as the
+        // chain-authoritative fee recipient so it is bound + cross-checked.
+        .open_escrow_with_terms(
+            &job,
+            ESCROW_BID,
+            &result_hash,
+            synced_version,
+            &[wallet],
+            Some(wallet),
+        )
         .expect("open_escrow_with_terms broadcasts the funded deploy");
     let escrow_raw = handle.address.to_raw_string();
     println!("  escrow address = {escrow_raw}");
@@ -423,14 +434,17 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
     );
 
     // === 3) SETTLE: release the escrow (winner == our wallet → funds return). ===
+    // The platform fee MUST equal φ·base (15% of the quoted base) for the on-chain
+    // strict fee-equality; the winner (a wallet node) is paid the full base.
     let outcome = SettlementOutcome {
         result_hash,
+        base: WINNER_AMOUNT,
         winner: Payout {
             to: wallet,
             amount: WINNER_AMOUNT,
         },
         participants: vec![],
-        platform_fee: 0,
+        platform_fee: WINNER_AMOUNT * 1500 / 10_000,
     };
     let before_settle = read_seqno(&env, &wallet_raw);
     println!(

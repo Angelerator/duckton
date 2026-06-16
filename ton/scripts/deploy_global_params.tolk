@@ -23,9 +23,10 @@ fun main() {
     val feeRecipient = env<address>("GP_FEE_RECIPIENT") ?? admin.address;
 
     val params: EcoParams = {
-        platformFeeBps: (env<int>("GP_PLATFORM_FEE_BPS") ?? 200) as uint16,
+        // Canonical platform fee φ = 15% (1500 bps), runner commission κ = 5% (500 bps).
+        platformFeeBps: (env<int>("GP_PLATFORM_FEE_BPS") ?? 1500) as uint16,
         surchargeBps: (env<int>("GP_SURCHARGE_BPS") ?? 500) as uint16,
-        participationCommissionBps: (env<int>("GP_PARTICIPATION_BPS") ?? 200) as uint16,
+        participationCommissionBps: (env<int>("GP_PARTICIPATION_BPS") ?? 500) as uint16,
         slashWrongBps: (env<int>("GP_SLASH_WRONG_BPS") ?? 1500) as uint16,
         slashCheatBps: (env<int>("GP_SLASH_CHEAT_BPS") ?? 10000) as uint16,
         slashDowntimeBps: (env<int>("GP_SLASH_DOWNTIME_BPS") ?? 200) as uint16,

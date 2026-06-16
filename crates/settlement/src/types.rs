@@ -183,21 +183,91 @@ pub struct Payout {
 pub struct SettlementOutcome {
     /// The agreed quorum result hash (the HTLC key).
     pub result_hash: Hash32,
-    /// Winner (fastest agreeing) base + perf bonus.
+    /// The QUOTED winning price — the fee base. The platform fee is φ·`base`
+    /// (enforced on-chain) REGARDLESS of what the winner is actually paid. For a
+    /// wallet winner `base == winner.amount`; for a free (walletless) winner
+    /// `base > 0` while `winner.amount == 0` (the base refunds to the requester).
+    pub base: Amount,
+    /// Winner payout: `base` for a wallet winner, `0` for a free winner.
     pub winner: Payout,
-    /// Fixed participation commission to each agreeing non-winner.
+    /// Fixed participation commission to each agreeing WALLET-holding non-winner.
     pub participants: Vec<Payout>,
-    /// Platform fee to the configured treasury / fee-recipient.
+    /// Platform fee (= φ·`base`) to the configured treasury / fee-recipient.
     pub platform_fee: Amount,
 }
 
 impl SettlementOutcome {
-    /// Total funds directed out of escrow (winner + commissions + fee).
+    /// Total funds directed OUT of escrow to payees (winner payout + commissions +
+    /// fee). NOTE: this is the actual outflow bounded by `B` — for a free winner
+    /// `winner.amount == 0`, so the quoted `base` is NOT counted here (it refunds
+    /// to the requester). The off-chain coverage preflight separately requires
+    /// `B >= base + fee + commissions` so the base can always be paid or refunded.
     pub fn total(&self) -> Amount {
         self.winner.amount
             + self.platform_fee
             + self.participants.iter().map(|p| p.amount).sum::<Amount>()
     }
+}
+
+/// Basis-points denominator (φ / κ are expressed in bps, /10000).
+pub const BPS_DENOM: Amount = 10_000;
+
+/// Worst-case settlement total the requester's escrow MUST cover BEFORE a paid job
+/// runs: the winner's settled price `base` + the platform fee
+/// (`base * platform_fee_bps / 10000`) + a participation commission
+/// (`base * participation_commission_bps / 10000`) to EACH of the
+/// `agreeing_non_winners` runners that ran the query and verified the result.
+///
+/// Integer **floor** arithmetic matches the on-chain `JobEscrow` settle math
+/// byte-for-byte (the contract enforces `platformFee == winnerAmount*φ` and
+/// `winner + fee + Σcommissions <= escrowAmount`), so this off-chain preflight and
+/// the on-chain coverage bound agree exactly. NOTE: the per-contract storage
+/// reserve (`MIN_TONS_FOR_STORAGE`) and the deploy/settle gas buffer are deliberately
+/// NOT included — they are operational headroom funded separately (on top of `B`)
+/// and are never promised to the paid parties, so the math is about the actual
+/// DISTRIBUTABLE escrow.
+pub fn required_escrow_total(
+    base: Amount,
+    agreeing_non_winners: usize,
+    platform_fee_bps: u16,
+    participation_commission_bps: u16,
+) -> Amount {
+    let fee = base.saturating_mul(platform_fee_bps as Amount) / BPS_DENOM;
+    let commission_each = base.saturating_mul(participation_commission_bps as Amount) / BPS_DENOM;
+    let commissions = commission_each.saturating_mul(agreeing_non_winners as Amount);
+    base.saturating_add(fee).saturating_add(commissions)
+}
+
+/// Up-front coverage guard: REQUIRE the requester's available escrow / wallet
+/// balance to cover the FULL multi-party settlement (winner base + φ platform fee +
+/// κ commission × N agreeing runners). Returns the required total on success; on
+/// failure a [`SettleError::InsufficientEscrow`] whose `Display` is the
+/// human-readable "insufficient escrow: need X TON to cover winner + φ% platform
+/// fee + κ% commission × N runners, have Y TON". Callers reject the job HERE rather
+/// than silently under-paying or letting settlement fail mid-flight.
+pub fn ensure_escrow_covers(
+    available: Amount,
+    base: Amount,
+    agreeing_non_winners: usize,
+    platform_fee_bps: u16,
+    participation_commission_bps: u16,
+) -> Result<Amount, SettleError> {
+    let needed = required_escrow_total(
+        base,
+        agreeing_non_winners,
+        platform_fee_bps,
+        participation_commission_bps,
+    );
+    if available < needed {
+        return Err(SettleError::InsufficientEscrow {
+            needed,
+            have: available,
+            runners: agreeing_non_winners,
+            platform_fee_bps,
+            participation_commission_bps,
+        });
+    }
+    Ok(needed)
 }
 
 /// Two-way wallet <-> node identity binding (BLOCKCHAIN_ECONOMICS §3.1).
@@ -295,8 +365,37 @@ pub enum SettleError {
     NotFunded(String),
     #[error("payout {payout} exceeds escrow {escrow}")]
     PayoutExceedsEscrow { payout: Amount, escrow: Amount },
+    /// Up-front coverage failure: the requester's escrow / wallet cannot cover the
+    /// FULL multi-party settlement (winner base + φ platform fee + κ commission per
+    /// agreeing runner). The job must be rejected before it runs (no partial pay).
+    /// Amounts are nanoton; the message renders them in TON and the rates as %.
+    #[error(
+        "insufficient escrow: need {} TON to cover winner + {}% platform fee + {}% commission × {runners} runners, have {} TON",
+        *needed as f64 / 1e9, *platform_fee_bps as f64 / 100.0, *participation_commission_bps as f64 / 100.0, *have as f64 / 1e9
+    )]
+    InsufficientEscrow {
+        needed: Amount,
+        have: Amount,
+        runners: usize,
+        platform_fee_bps: u16,
+        participation_commission_bps: u16,
+    },
     #[error("result hash does not match the escrow lock")]
     HashMismatch,
+    /// FEE-RECIPIENT enforcement: the platform-fee recipient (`treasury`) bound (or
+    /// configured) for a per-job escrow does NOT match the authoritative on-chain
+    /// `GlobalParams.fee_recipient` for the pinned `params_version`. An honest
+    /// requester/coordinator refuses to open or settle such an escrow so the admin
+    /// treasury can never be silently replaced by a local-config value. Addresses
+    /// are the raw `workchain:hex` form so the rejection is observable in logs.
+    #[error(
+        "fee recipient mismatch: escrow treasury {bound} != on-chain GlobalParams.fee_recipient {expected} (params_version {params_version})"
+    )]
+    TreasuryMismatch {
+        bound: String,
+        expected: String,
+        params_version: u32,
+    },
     #[error("settlement backend error: {0}")]
     Backend(String),
     #[error("settlement is disabled (free job): {0}")]
@@ -321,6 +420,74 @@ pub enum SlashError {
     ExceedsStake { amount: Amount, slashable: Amount },
     #[error("stake backend error: {0}")]
     Backend(String),
+}
+
+#[cfg(test)]
+mod cost_model_tests {
+    use super::{ensure_escrow_covers, required_escrow_total, SettleError};
+
+    const TON: u128 = 1_000_000_000;
+
+    #[test]
+    fn multi_party_total_at_canonical_rates_is_exact() {
+        // φ = 15% (1500 bps), κ = 5% (500 bps), winner base 80 TON, 2 agreeing
+        // runners: 80 + 80*15% + 2*(80*5%) = 80 + 12 + 8 = 100 TON.
+        let total = required_escrow_total(80 * TON, 2, 1500, 500);
+        assert_eq!(total, 100 * TON);
+        // No runners ⇒ just winner + the 15% fee.
+        assert_eq!(required_escrow_total(80 * TON, 0, 1500, 500), 92 * TON);
+    }
+
+    #[test]
+    fn coverage_accepts_when_escrow_fits_all_parties() {
+        // Escrow exactly equal to the multi-party total is accepted (boundary).
+        let needed = ensure_escrow_covers(100 * TON, 80 * TON, 2, 1500, 500).unwrap();
+        assert_eq!(needed, 100 * TON);
+        // A larger escrow is also fine.
+        assert!(ensure_escrow_covers(120 * TON, 80 * TON, 2, 1500, 500).is_ok());
+    }
+
+    #[test]
+    fn coverage_rejects_escrow_too_small_for_all_parties_up_front() {
+        // 99 TON cannot cover winner 80 + 15% (12) + 5%×2 (8) = 100 TON.
+        let err = ensure_escrow_covers(99 * TON, 80 * TON, 2, 1500, 500).unwrap_err();
+        match err {
+            SettleError::InsufficientEscrow {
+                needed,
+                have,
+                runners,
+                platform_fee_bps,
+                participation_commission_bps,
+            } => {
+                assert_eq!(needed, 100 * TON);
+                assert_eq!(have, 99 * TON);
+                assert_eq!(runners, 2);
+                assert_eq!(platform_fee_bps, 1500);
+                assert_eq!(participation_commission_bps, 500);
+            }
+            other => panic!("expected InsufficientEscrow, got {other:?}"),
+        }
+        // The Display is the human-readable up-front rejection message.
+        let msg = ensure_escrow_covers(99 * TON, 80 * TON, 2, 1500, 500)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("insufficient escrow"), "got: {msg}");
+        assert!(msg.contains("15% platform fee"), "got: {msg}");
+        assert!(msg.contains("5% commission"), "got: {msg}");
+        assert!(msg.contains("2 runners"), "got: {msg}");
+    }
+
+    #[test]
+    fn coverage_matches_floor_arithmetic_of_the_contract() {
+        // base 90 → fee floor(90*15%) = 13.5 → 13 ... but integer bps math is on
+        // nanoton, so 90 TON * 1500 / 10000 = 13.5 TON exactly (no truncation at
+        // nanoton granularity); use an odd base to exercise the floor.
+        let base = 7 * TON + 3; // 7.000000003 TON
+        let total = required_escrow_total(base, 1, 1500, 500);
+        let fee = base * 1500 / 10_000;
+        let comm = base * 500 / 10_000;
+        assert_eq!(total, base + fee + comm);
+    }
 }
 
 #[cfg(test)]

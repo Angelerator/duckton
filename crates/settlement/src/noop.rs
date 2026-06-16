@@ -110,6 +110,7 @@ mod tests {
                 &h,
                 &SettlementOutcome {
                     result_hash: [0u8; 32],
+                    base: 0,
                     winner: crate::types::Payout {
                         to: WalletAddress::new(0, [0u8; 32]),
                         amount: 0

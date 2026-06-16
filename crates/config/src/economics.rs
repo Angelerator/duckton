@@ -430,9 +430,11 @@ pub struct FeesEconomics {
 impl Default for FeesEconomics {
     fn default() -> Self {
         Self {
-            platform_fee_pct: 0.02,
+            // Canonical platform fee φ = 15% and runner participation commission
+            // κ = 5% (the admin defaults mirrored on-chain in GlobalParams).
+            platform_fee_pct: 0.15,
             verification_surcharge_pct: 0.05,
-            participation_commission_frac: 0.02,
+            participation_commission_frac: 0.05,
             bonus_aggressiveness: 0.5,
             lambda_quality: 0.5,
             lambda_speed: 0.5,

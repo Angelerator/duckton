@@ -54,29 +54,31 @@ fun main() {
     println("CANDIDATES_COMMITMENT_empty={}", candidatesCommitment(emptyCands));
 
     // (3) v2 EscrowTerms cell hash. Field order (escrow_types.tolk::EscrowTerms):
-    //     treasury, expectedHash, candidatesHash, paramsVersion.
+    //     treasury, expectedHash, candidatesHash, paramsVersion, platformFeeBps(uint16).
     val treasury = address.fromWorkchainAndHash(0, TREASURY_HASH);
     val termsData = beginCell()
         .storeAddress(treasury)
         .storeUint(EXPECTED_HASH, 256)
         .storeUint(candHash, 256)
         .storeUint(7, 32)
+        .storeUint(1500, 16)
         .endCell();
     println("ESCROW_TERMS_V2={}", termsData.hash());
 
     // (3b) EscrowTerms with candidatesHash = 0 (unbound) — the shape
-    //      `build_escrow_terms(treasury, expected, 0, 7)` produces.
+    //      `build_escrow_terms(treasury, expected, 0, 7, 1500)` produces.
     val termsUnboundData = beginCell()
         .storeAddress(treasury)
         .storeUint(EXPECTED_HASH, 256)
         .storeUint(0, 256)
         .storeUint(7, 32)
+        .storeUint(1500, 16)
         .endCell();
     println("ESCROW_TERMS_V2_UNBOUND={}", termsUnboundData.hash());
 
     // (4) v2 EscrowStorage StateInit. Field order (escrow_types.tolk::EscrowStorage):
     //     requester, arbiter, escrowAmount, deadline, settled(1 bit), terms(ref),
-    //     pending(dict). Uses the bound terms from (3); EMPTY pending.
+    //     pending(dict). Uses the bound terms from (3, now with platformFeeBps); EMPTY pending.
     val requester = address.fromWorkchainAndHash(0, KEY1);
     val arbiter = address.fromWorkchainAndHash(0, WINNER);
     val escrowData = beginCell()

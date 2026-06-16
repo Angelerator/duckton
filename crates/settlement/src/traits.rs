@@ -36,6 +36,15 @@ pub trait Settlement: Send + Sync {
     /// falls back to [`Settlement::open_escrow`] — exactly today's behavior for the
     /// `mock`/`noop` rails and any double that does not model on-chain terms; the
     /// `ton` rail overrides it to build the per-job terms cell.
+    ///
+    /// `fee_recipient` is the AUTHORITATIVE platform-fee recipient read from the
+    /// on-chain `GlobalParams.fee_recipient` for `params_version` (the admin
+    /// treasury). When `Some`, the `ton` rail binds EXACTLY this as the escrow
+    /// `treasury` (not local config), and rejects with [`SettleError::TreasuryMismatch`]
+    /// if a locally-configured treasury disagrees — so the admin treasury can never
+    /// be silently replaced. `None` ⇒ the chain value is unknown (no params source
+    /// wired); the rail falls back to its configured treasury (documented residual
+    /// assumption). The default impl (mock/noop doubles) ignores it.
     fn open_escrow_with_terms(
         &self,
         job: &JobId,
@@ -43,8 +52,9 @@ pub trait Settlement: Send + Sync {
         expected_hash: &Hash32,
         params_version: u32,
         candidates: &[WalletAddress],
+        fee_recipient: Option<WalletAddress>,
     ) -> Result<EscrowHandle, SettleError> {
-        let _ = (expected_hash, params_version, candidates);
+        let _ = (expected_hash, params_version, candidates, fee_recipient);
         self.open_escrow(job, max_bid)
     }
     /// Release escrow per the quorum verdict (HTLC-style, keyed on result hash).

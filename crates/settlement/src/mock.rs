@@ -312,6 +312,7 @@ mod tests {
         let h = s.open_escrow(&job, 100 * TON).unwrap();
         let outcome = SettlementOutcome {
             result_hash: [1u8; 32],
+            base: 60 * TON,
             winner: crate::types::Payout {
                 to: WalletAddress::new(0, [2u8; 32]),
                 amount: 60 * TON,
@@ -325,6 +326,7 @@ mod tests {
         // Over-budget settle is rejected.
         let too_big = SettlementOutcome {
             result_hash: [1u8; 32],
+            base: 200 * TON,
             winner: crate::types::Payout {
                 to: WalletAddress::new(0, [2u8; 32]),
                 amount: 200 * TON,

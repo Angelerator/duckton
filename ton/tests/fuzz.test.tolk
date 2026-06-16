@@ -80,12 +80,13 @@ fun candidateSet(a: address): map<address, uint1> {
     return c;
 }
 
-fun deployEscrow(requester: address, arbiter: address, treasury: address, winner: address, amount: coins): JobEscrow {
+fun deployEscrow(requester: address, arbiter: address, treasury: address, winner: address, amount: coins, feeBps: int): JobEscrow {
     val terms: EscrowTerms = {
         treasury: treasury,
         expectedHash: RESULT_HASH,
         candidatesHash: candidatesCommitment(candidateSet(winner)),
         paramsVersion: 1,
+        platformFeeBps: feeBps as uint16,
     };
     val storage: EscrowStorage = {
         requester: requester,
@@ -271,15 +272,20 @@ get fun `test fuzz escrow settles iff winner+fee is within the locked B`(w: int,
     val winner = testing.treasury("win");
     val treasury = randomAddress("tre");
     val B: coins = (100 * NANO) as coins;
-    val escrow = deployEscrow(requester.address, arbiter.address, treasury, winner.address, B);
+    // Fuzz the bound admin fee rate φ too (0..=10000 bps); the escrow binds it and
+    // the fee is DERIVED as exactly winnerAmount*φ, so the settle always satisfies
+    // the strict fee-equality and this test isolates the TOTAL ≤ B boundary.
+    val feeBps = fuzz.bound(f, 0, 10000);
+    val escrow = deployEscrow(requester.address, arbiter.address, treasury, winner.address, B, feeBps);
 
     val wa: coins = (fuzz.bound(w, 0, 150) * NANO) as coins;
-    val fa: coins = (fuzz.bound(f, 0, 50) * NANO) as coins;
+    val fa: coins = (wa * feeBps) / 10000;
     val total = wa + fa;
 
     val wBefore = testing.getAccountBalance(winner.address);
     var participants: map<address, coins> = createEmptyMap();
-    val res = escrow.sendEscrowSettle(arbiter.address, 1, RESULT_HASH, winner.address, wa, fa, participants, candidateSet(winner.address), { value: ton("1") });
+    // Wallet winner: base == winnerAmount == wa; fee fa = wa*φ (derived above).
+    val res = escrow.sendEscrowSettle(arbiter.address, 1, RESULT_HASH, winner.address, wa, wa, fa, participants, candidateSet(winner.address), { value: ton("1") });
 
     if (total <= B) {
         expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });

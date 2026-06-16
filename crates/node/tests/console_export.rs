@@ -1129,8 +1129,14 @@ async fn export_console_snapshot() {
                         })
                         .unwrap_or_default();
                     let candidates_hash = candidates_commitment(&candidates);
-                    let terms =
-                        build_escrow_terms(&treasury, &real_result_hash, &candidates_hash, 1);
+                    // Bind the admin φ (platform fee bps) for the on-chain fee enforcement.
+                    let terms = build_escrow_terms(
+                        &treasury,
+                        &real_result_hash,
+                        &candidates_hash,
+                        1,
+                        gp.platform_fee_bps,
+                    );
                     let terms_hash = hex::encode(terms.repr_hash());
                     let init = EscrowInit {
                         requester: WalletAddress::new(
@@ -1161,6 +1167,7 @@ async fn export_console_snapshot() {
                             1,
                             &s.result_hash,
                             &s.winner.to,
+                            s.base,
                             s.winner.amount,
                             s.platform_fee,
                             &s.participants,

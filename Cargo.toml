@@ -21,7 +21,7 @@ members = [
 default-members = ["crates/extension"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 # Duckton — a peer-to-peer DuckDB query grid with TON-settled economics. The
 # published loadable extension is `duckton`; internal crate names stay `p2p-*`.
