@@ -29,13 +29,14 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
-use p2p_config::{ConfigError, DataClassCfg, GridConfig, PreferMode, QueryOverrides};
+use p2p_config::{BlocklistStore, ConfigError, DataClassCfg, GridConfig, PreferMode, QueryOverrides};
 use p2p_proto::{Attestation, NodeId};
 use p2p_settlement::StakeRegistry;
 use p2p_transport::{NodeIdentity, QuicTransport, Transport, TransportError};
 use p2p_trust::InMemoryTrustStore;
 
 use crate::admission::AdmissionController;
+use crate::antiabuse::{Blocklist, RateLimiter};
 use crate::coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 use crate::discovery::{Candidate, StaticDiscovery};
 use crate::engine::QueryEngine;
@@ -266,6 +267,18 @@ impl Node {
     /// it donates resources and executes queries for others. The advertised
     /// budget/attestation come from the resolved [`GridConfig`].
     pub fn spawn_host(&self) -> tokio::task::JoinHandle<()> {
+        self.host_worker().spawn()
+    }
+
+    /// Assemble the configured host [`Worker`] (without spawning it). Wires the
+    /// worker-side anti-abuse runtime (deny-list / cost-gate / free-rate-limit,
+    /// honoring `[antiabuse]`) and the OS-execution sandbox policy (`[sandbox]`),
+    /// so the configured knobs actually take effect on the live host. A fresh
+    /// zero-config node is unaffected: the deny-list is empty, the cost-gate and
+    /// free-rate-limit default OFF, and the sandbox backend defaults to the noop
+    /// (in-process) policy. Exposed (crate-internal) so the wiring is testable
+    /// without standing up a QUIC accept loop.
+    pub(crate) fn host_worker(&self) -> Worker {
         let transport = self.coordinator.transport();
         let admission = AdmissionController::new(&self.config.budget);
         let params = WorkerParams::from_config(&self.config);
@@ -280,7 +293,31 @@ impl Node {
             worker = worker
                 .with_capability_store(Arc::new(crate::capability_store::CapabilityStore::open()));
         }
-        worker.spawn()
+        // Worker-side anti-abuse (ARCHITECTURE "Abuse resistance"): refuse blocked
+        // requesters, pre-flight cost-gate, and free-job rate-limit — each gated by
+        // its own `[antiabuse]` flag (mostly default-off). The deny-list is the
+        // persisted one (so an operator's `p2p_block` now refuses the requester at
+        // the host too), seeded empty on a fresh node ⇒ no behavior change.
+        if self.config.antiabuse.enabled {
+            let blocklist = Some(Arc::new(Blocklist::with_store(BlocklistStore::open())));
+            let rate_limiter = if self.config.antiabuse.free_rate_limit_active() {
+                let rl = &self.config.antiabuse.free_rate_limit;
+                Some(Arc::new(RateLimiter::new(
+                    rl.max_free_per_window,
+                    rl.window_secs,
+                    rl.max_tracked_requesters,
+                )))
+            } else {
+                None
+            };
+            worker = worker.with_antiabuse(&self.config, blocklist, rate_limiter);
+        }
+        // OS-level execution sandbox policy (architecture §9.4). Defaults to the
+        // noop backend (no OS isolation; in-process), so a zero-config host behaves
+        // identically; a configured `[sandbox]` backend + egress allow-list now
+        // actually applies on the live host.
+        worker = worker.with_sandbox(&self.config);
+        worker
     }
 
     /// The engine the host (worker) executes jobs with. Defaults to this node's
@@ -448,7 +485,42 @@ fn resolve_seeds(seeds: &[String]) -> Vec<Candidate> {
 
 #[cfg(test)]
 mod tests {
-    use super::preflight_estimate;
+    use super::{preflight_estimate, Node};
+    use crate::engine::MockEngine;
+    use p2p_config::GridConfig;
+    use p2p_proto::{BidDecision, DataClass, JobId, NodeId, Offer, QueryHash};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn host_worker_wires_cost_gate_from_config() {
+        // The cost-gate is wired into the live host worker (the bug was that
+        // `spawn_host` never called `with_antiabuse`). With it configured, an
+        // over-budget offer is refused; a within-budget one is admitted — proving
+        // the wiring, not a blanket refusal.
+        let mut cfg = GridConfig::default();
+        cfg.antiabuse.cost_gate.enabled = true;
+        cfg.antiabuse.cost_gate.max_cost_hint_rows = 10;
+        cfg.validate().unwrap();
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let worker = node.host_worker();
+
+        let mk = |rows: u64| Offer {
+            job_id: JobId::new(),
+            requester_id: NodeId("b3:req".into()),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(rows),
+            data_class: DataClass::Public,
+            nonce: 0,
+        };
+        assert!(
+            matches!(worker.bid_for(&mk(1_000)).decision, BidDecision::Reject { .. }),
+            "over-budget offer must be cost-gated"
+        );
+        assert!(
+            matches!(worker.bid_for(&mk(5)).decision, BidDecision::Accept),
+            "within-budget offer must still be admitted"
+        );
+    }
 
     #[test]
     fn preflight_estimate_only_for_pure_in_memory_queries() {

@@ -30,7 +30,8 @@ pub use antiabuse::{
     sign_abuse_signal, verify_abuse_signal,
 };
 pub use attestation::{
-    AllowlistVerifier, AttestError, AttestationVerifier, Attestor, MockAttestor,
+    attestation_bound_pub, AllowlistVerifier, AttestError, AttestationVerifier, Attestor,
+    MockAttestor,
 };
 pub use canonical::{canonical_hash, evaluate_quorum, QuorumOutcome};
 pub use capability::{

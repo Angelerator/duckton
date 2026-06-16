@@ -6,6 +6,12 @@
 > (**100/100 nodes, 152/152 PASS**), the on-chain TON testnet runs
 > (`testnet_e2e` 14/14 live, comprehensive runner 21/21 positive live, Acton
 > emulator 90/90), and the catalog specs in `docker/SCENARIOS.md` + `ton/SCENARIOS.md`.
+>
+> **Scale caveat:** the 100-node run is an **ephemeral breadth check** — each
+> catalog scenario run **once** against **mostly-idle** workers — not a
+> sustained-throughput/load benchmark. The **reproducible in-repo harness is 16
+> nodes** (`docker/REPORT.md`). Read "100-node / 152-PASS" as breadth-at-scale,
+> not a capacity result (see §3.5).
 
 ---
 

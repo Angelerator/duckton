@@ -207,6 +207,15 @@ fn decode32(hex_s: &str) -> Option<[u8; 32]> {
     hex::decode(hex_s).ok()?.try_into().ok()
 }
 
+/// Extract the bound public key an attestation's (mock) evidence vouches for, if
+/// present. A verifier-equipped requester passes this to [`AttestationVerifier::verify`]
+/// to check the key binding. Returns `None` for L0 / empty / opaque non-mock
+/// evidence (a real TEE quote carries its bound key in the vendor format).
+pub fn attestation_bound_pub(att: &Attestation) -> Option<[u8; 32]> {
+    let evidence: MockEvidence = serde_json::from_slice(&att.evidence).ok()?;
+    decode32(&evidence.bound_pub_hex)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

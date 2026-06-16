@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 
 use p2p_config::{DataClassCfg, GridConfig, QueryOverrides, VerifyModeCfg};
 use p2p_proto::{
-    Ack, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, JobId, NodeId, Offer,
-    Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
+    Ack, Attestation, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, JobId,
+    NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
     Amount, JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement,
@@ -21,9 +21,9 @@ use p2p_settlement::{
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
-    age_factor, attestation_gate, canonical, classify_failure, exploration_bonus,
-    is_nondeterministic, now_ts, requester_trust_weight, sign_receipt, soft_trust_score,
-    ReceiptDraft, TrustInputs, TrustStore,
+    age_factor, attestation_bound_pub, attestation_gate, canonical, classify_failure,
+    exploration_bonus, is_nondeterministic, now_ts, requester_trust_weight, sign_receipt,
+    soft_trust_score, AttestationVerifier, ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
 use tracing::debug;
@@ -221,6 +221,14 @@ pub struct Coordinator {
     /// ⇒ no chain reads at all (free/local nodes). When wired, the coordinator
     /// syncs it at startup + periodically via [`Coordinator::spawn_params_sync`].
     params_source: Option<Arc<dyn ParamsSource>>,
+    /// Optional attestation verifier (architecture §7.2/§9.3). When `None`
+    /// (default), a bid's self-reported attestation level is NOT trusted above L0
+    /// — any `> L0` claim is treated as L0 (fail closed), so a spoofed level can
+    /// never satisfy a `> L0` (data-class) gate. When wired, a `> L0` claim is
+    /// honored ONLY if its evidence verifies (trusted-authority signature over the
+    /// allowlisted measurement + this offer's nonce). Honest L0 hosts (all shipped
+    /// hosts) are unaffected — L0 needs no evidence.
+    attestation_verifier: Option<Arc<dyn AttestationVerifier>>,
 }
 
 /// Cached on-chain `GlobalParams` policy, shared between the periodic sync task
@@ -282,6 +290,39 @@ impl Coordinator {
             progress: Arc::new(ProgressTracker::new()),
             synced_params: Arc::new(SyncedParams::default()),
             params_source: None,
+            attestation_verifier: None,
+        }
+    }
+
+    /// Wire an attestation verifier so a bid claiming `> L0` is honored ONLY with
+    /// VERIFIED evidence (architecture §7.2/§9.3). Off by default ⇒ every `> L0`
+    /// self-report is downgraded to L0 (fail closed); honest L0 hosts unaffected.
+    pub fn with_attestation_verifier(mut self, verifier: Arc<dyn AttestationVerifier>) -> Self {
+        self.attestation_verifier = Some(verifier);
+        self
+    }
+
+    /// The **verified** attestation level to use for selection: a self-reported
+    /// level at or below L0 is taken as-is (no evidence needed), but a claim ABOVE
+    /// L0 is honored only if a verifier is wired AND the evidence validates against
+    /// this offer's `nonce` (trusted-authority signature over the allowlisted
+    /// measurement + nonce + bound key). Otherwise the host is treated as L0, so a
+    /// spoofed level cannot pass a `> L0` gate. This replaces the former
+    /// trust-the-integer compare on the self-reported level.
+    fn verified_attestation_level(&self, att: &Attestation, nonce: &[u8]) -> AttestationLevel {
+        if att.level <= AttestationLevel::L0 {
+            return att.level;
+        }
+        match &self.attestation_verifier {
+            Some(v) => {
+                let bound = attestation_bound_pub(att).unwrap_or([0u8; 32]);
+                if v.verify(att, nonce, &bound).is_ok() {
+                    att.level
+                } else {
+                    AttestationLevel::L0
+                }
+            }
+            None => AttestationLevel::L0,
         }
     }
 
@@ -768,9 +809,18 @@ impl Coordinator {
         let auto_block = ab.enabled
             && ab.blocklist.auto_block_enabled
             && ab.blocklist.auto_block_trust_floor > 0.0;
+        // Anti-spoof: gate on the VERIFIED attestation level (a `> L0` self-report
+        // is only honored with valid evidence bound to this offer's nonce), not on
+        // the bid's raw self-reported integer.
+        let offer_nonce = offer.nonce.to_le_bytes();
         let mut scored: Vec<(NodeId, f64, u64)> = accepted
             .into_iter()
-            .filter(|(_, bid)| attestation_gate(bid.attestation.level, min_level))
+            .filter(|(_, bid)| {
+                attestation_gate(
+                    self.verified_attestation_level(&bid.attestation, &offer_nonce),
+                    min_level,
+                )
+            })
             .map(|(worker, bid)| {
                 let score = self.effective_trust(&worker, cfg, now, paid);
                 if auto_block && score < ab.blocklist.auto_block_trust_floor {

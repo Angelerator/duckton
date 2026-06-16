@@ -5,6 +5,14 @@ extension) that exercises the **off-chain** scenario catalog in `docker/SCENARIO
 Every test drives the real `duckdb` CLI and asserts **exact** rows / values / error
 substrings / log lines. **No git commits were made; no TON gas was spent.**
 
+> **Scale, honestly:** the **reproducible in-repo harness is 16 nodes** (the
+> topology below, via `docker/run_all_scenarios.sh`). A separate **100-node run**
+> was an **ephemeral breadth check** — it runs each catalog scenario **once**
+> against mostly-idle workers to confirm the dispatch path holds at that node count;
+> it is **not** a sustained-throughput / load benchmark, and is not part of the
+> committed harness. Treat "100-node / 152-PASS" as breadth-at-scale, not a
+> capacity claim (see `docs/IMPROVEMENT_ROADMAP.md` §3.5).
+
 ## TL;DR
 
 | Item | Result |

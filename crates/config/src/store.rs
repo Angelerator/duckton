@@ -448,7 +448,15 @@ pub fn status_rows(cfg: &GridConfig) -> Vec<SettingRow> {
             ),
             SettingRow::new("status", "rpc_endpoint", e.resolved_rpc()),
             SettingRow::new("status", "explorer", e.resolved_explorer()),
-            SettingRow::new("status", "economics_enabled", e.enabled.to_string()),
+            SettingRow::new(
+                "status",
+                "economics_enabled",
+                if e.enabled {
+                    "true".to_string()
+                } else {
+                    "false (active: no — free / no-chain grid)".to_string()
+                },
+            ),
             SettingRow::new(
                 "status",
                 "settlement",
@@ -697,13 +705,39 @@ fn walk(prefix: &str, v: &Value, rows: &mut Vec<SettingRow>) {
                 None => (prefix.to_string(), prefix.to_string()),
             };
             let last = prefix.rsplit('.').next().unwrap_or(prefix);
-            let value = if is_secret_key(last) {
+            let mut value = if is_secret_key(last) {
                 "<redacted>".to_string()
             } else {
                 display_value(leaf)
             };
+            // Make default-off / no-op gates visible so they aren't invisible
+            // footguns (an operator can see at a glance that a knob is inert).
+            if let Some(note) = inert_note(prefix, leaf) {
+                value.push_str(note);
+            }
             rows.push(SettingRow::new(group, key, value));
         }
+    }
+}
+
+/// When a knob sits at its inert / no-op default, return a human-readable suffix
+/// for `p2p_config` output so it isn't an invisible footgun. `None` when the knob
+/// has a non-default (active) value or isn't one of the annotated gates.
+fn inert_note(key: &str, leaf: &Value) -> Option<&'static str> {
+    let is_false = matches!(leaf, Value::Boolean(false));
+    let is_zero =
+        matches!(leaf, Value::Integer(0)) || matches!(leaf, Value::Float(f) if *f == 0.0);
+    match key {
+        "economics.enabled" if is_false => Some(" (active: no — free / no-chain grid)"),
+        "scheduler.require_staked_hosts" if is_false => Some(" (active: no)"),
+        "sandbox.enabled" if is_false => {
+            Some(" (no-op: OS sandbox off — jobs run in-process under the DuckDB lockdown)")
+        }
+        "economics.ranking.capability_weight" if is_zero => Some(" (no-op at 0)"),
+        "economics.ranking.exploration_rate" if is_zero => Some(" (no-op at 0)"),
+        "liveness.phi.enabled" if is_false => Some(" (active: no)"),
+        "liveness.swim.enabled" if is_false => Some(" (active: no)"),
+        _ => None,
     }
 }
 

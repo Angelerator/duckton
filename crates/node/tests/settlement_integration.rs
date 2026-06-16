@@ -60,6 +60,12 @@ fn idcfg() -> IdentityConfig {
 }
 
 async fn spawn_worker(engine: Arc<dyn QueryEngine>) -> WorkerHandle {
+    spawn_worker_att(engine, Attestation::stub_l0()).await
+}
+
+/// Like [`spawn_worker`] but lets the test set the worker's advertised
+/// attestation (to exercise the requester-side verified-level gate).
+async fn spawn_worker_att(engine: Arc<dyn QueryEngine>, attestation: Attestation) -> WorkerHandle {
     let budget = GridConfig::default().budget;
     let net = GridConfig::default().network;
     let transport =
@@ -70,13 +76,7 @@ async fn spawn_worker(engine: Arc<dyn QueryEngine>) -> WorkerHandle {
     let params = WorkerParams::from_config(&cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(
-        transport.clone(),
-        engine,
-        admission,
-        Attestation::stub_l0(),
-        params,
-    );
+    let worker = Worker::new(transport.clone(), engine, admission, attestation, params);
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -1089,6 +1089,44 @@ async fn require_staked_hosts_without_registry_fails_closed() {
         matches!(err, p2p_node::CoordinatorError::NoCandidates),
         "staked-hosts gate with no registry must fail closed, got {err:?}",
     );
+}
+
+/// Anti-spoof: a worker that SELF-REPORTS L2 with no verifiable evidence must be
+/// treated as L0 (no `AttestationVerifier` wired ⇒ fail closed), so an L2
+/// (sensitive-tier) gate excludes it — selection no longer trusts the raw
+/// self-reported attestation integer.
+#[tokio::test]
+async fn spoofed_attestation_level_is_downgraded_and_excluded() {
+    let fake_l2 = p2p_proto::Attestation {
+        level: p2p_proto::AttestationLevel::L2,
+        evidence: Vec::new(),
+        measurement: Some("claimed-but-unproven-enclave".into()),
+    };
+    let w = spawn_worker_att(Arc::new(MockEngine::deterministic()), fake_l2).await;
+    let st = store();
+    let coord = coordinator(&[&w], base_cfg(1, 1), st as Arc<dyn TrustStore>).await;
+
+    let ov = QueryOverrides {
+        min_attestation: Some("L2".into()),
+        ..Default::default()
+    };
+    let err = coord.run_query("SELECT 1", ov).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            p2p_node::CoordinatorError::InsufficientWorkers { .. }
+                | p2p_node::CoordinatorError::NoCandidates
+        ),
+        "a spoofed L2 claim must be downgraded to L0 and excluded by the L2 gate, got {err:?}",
+    );
+
+    // Control: with NO attestation floor (default L0), the same host is admitted —
+    // proving the exclusion was the attestation gate, not a blanket refusal.
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified);
 }
 
 // --------------------------------------------------------------------------

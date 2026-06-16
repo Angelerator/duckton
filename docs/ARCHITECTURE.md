@@ -202,6 +202,13 @@ the engine connection; at rest it lives only as 0600 config/secret files
 that receives a sealed token but has no sealing key fails closed
 (`SealingKeyUnavailable`) rather than silently minting an empty secret.
 
+> **Honest status:** this sealed/scoped-credential path is implemented and
+> unit-tested (sealing, just-in-time open, prefix-scoped secret, fail-closed), but
+> the **coordinator does not yet attach a per-job credential** to a `Dispatch`
+> (`credential: None`), so the cloud object-store read path is **not exercised
+> end-to-end** in the live grid. Wiring the requester to seal + attach a credential
+> to the chosen worker is the remaining step.
+
 ---
 
 ## 5. Transport: QUIC implementation choice
@@ -245,7 +252,21 @@ With "thousands of hosts", a cheap attack is to spin up many fake identities. Mi
 - **Age**: trust accrues slowly with verified history; brand-new identities start near zero and are only used with high redundancy.
 
 ### 7.2 Attestation tiers (what the hardware can prove)
-Each worker advertises an **attestation level** in its bid; the requester verifies the evidence:
+Each worker advertises an **attestation level** in its bid. Requester selection
+does **not** trust the self-reported integer: a bid claiming **> L0** is honored
+only when its evidence verifies against a wired `AttestationVerifier`
+(trusted-authority signature over an allowlisted measurement + the offer nonce);
+absent/invalid evidence is treated as **L0**, so the `> L0` gate fails closed and a
+spoofed level can't reach sensitive data.
+
+> **Honest status (be precise):** the verifier seam is wired into the coordinator,
+> but **no production `AttestationVerifier` is installed by default and all shipped
+> hosts emit L0** (real L1/L2 needs TPM/TEE hardware not yet shipped). So today an
+> L2 (sensitive) policy admits *nobody* (fail-closed), and the verified-honor path
+> still needs two pieces: the worker producing **per-offer** evidence bound to the
+> offer nonce, and binding the attested key to the host's **network identity** (the
+> transport exposes only the node-id hash today). The `AllowlistVerifier` +
+> `MockAttestor` exercise the verification logic in tests.
 
 | Level | Evidence | What it proves | Typical hardware |
 |---|---|---|---|
@@ -361,6 +382,15 @@ Running arbitrary SQL from strangers is dangerous. The execution DuckDB is locke
 - No local-file `COPY`/read; read-only attach.
 - Disable httpfs disk caching; pin `temp_directory` to ephemeral/tmpfs and wipe on completion.
 - OS sandbox enforcing the donated budget: **cgroups v2 + seccomp** (Linux), **sandbox-exec / microVM** (macOS), so a hostile query cannot exceed RAM/CPU or reach the network/disk beyond storage.
+
+> **Honest status:** the DuckDB-flag lockdown above is the **default, always-on**
+> protection. The host now also wires the configured `[sandbox]` policy + egress
+> allow-list into the live worker, **but the default sandbox backend is `noop`**
+> (in-process; the OS caps are not applied). Real OS enforcement is **opt-in** via
+> `[sandbox].process_per_job` + the `p2p-job-exec` child binary, which runs each
+> job in a `Sandbox::command`-wrapped subprocess (rlimits / Seatbelt / cgroups /
+> Job Object, killed on drop). Until that flag is set, jobs run in-process under
+> the DuckDB lockdown only.
 
 ---
 
@@ -762,10 +792,22 @@ deviations / environment limits (do **not** assume otherwise):
   protocol/trust tests.
 - **Real DuckDB engine** builds DuckDB from source (`bundled`); on macOS it
   needs the C++ SDK on the include path: `export SDKROOT=$(xcrun --show-sdk-path)`.
-- **OS sandbox** (cgroups/seccomp/sandbox-exec) from §9.4 is **not** yet wired;
-  the implemented lockdown is DuckDB's own flags (`enable_external_access=false`,
+- **OS sandbox** from §9.4: the host now **wires the configured `[sandbox]` policy
+  into the live worker**, but the **default backend is `noop`** (no OS caps). The
+  always-on protection is DuckDB's own lockdown flags (`enable_external_access=false`,
   `lock_configuration=true`, ephemeral `temp_directory`, budgeted
-  `memory_limit`/`threads`), verified to block local file reads and `INSTALL`.
+  `memory_limit`/`threads`), verified to block local file reads and `INSTALL`. Real
+  OS enforcement (cgroups/seccomp/Seatbelt/Job Object) is **opt-in** via
+  `[sandbox].process_per_job` + the `p2p-job-exec` child binary (process-per-job).
+- **Attestation:** the requester verifies `> L0` evidence via a wired
+  `AttestationVerifier` (else treats the host as L0, fail-closed); no production
+  verifier is installed by default and all shipped hosts emit L0, so an L2 policy
+  currently admits nobody. See §7.2.
+- **Per-job sealed credentials:** the sealed/scoped-credential read path is built +
+  unit-tested but the coordinator does not yet attach a per-job credential
+  (`credential: None`), so the cloud read path is not exercised end-to-end (§4/§9.2).
+- **Liveness detector** (phi-accrual + SWIM) exists and is unit-tested but is **not
+  wired into the default host** selection path; convicted-peer exclusion is opt-in.
 
 ## 20. Abuse resistance (anti-griefing & robustness) — implemented
 
@@ -783,6 +825,12 @@ cost gating, free-mode rate limiting, auto-blocking, gossip peer scoring) defaul
 **off**. Code: `crates/trust/src/antiabuse.rs` (pure primitives),
 `crates/node/src/antiabuse.rs` (deny-list + rate limiter), and the wiring in
 `coordinator.rs` / `worker.rs` / `libp2p_discovery.rs`.
+
+> **Wiring status:** the **worker-side** mechanisms (refuse a blocklisted
+> requester, pre-flight cost-gate, free-job rate-limit) are now wired into the live
+> host via `Node::spawn_host` (they respect `[antiabuse]`, so a zero-config host is
+> unaffected — empty deny-list, cost-gate/rate-limit default off). Previously they
+> were implemented (`Worker::with_antiabuse`) but never called on the live host.
 
 ### 1. Failure fault attribution (the core fix)
 A provider is penalized **only for provable PROVIDER fault**. Verdicts now carry

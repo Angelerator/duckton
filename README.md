@@ -18,8 +18,11 @@ reason about which untrusted hosts to trust with a job.
 - **Transport:** QUIC (TLS 1.3 mandatory, mutual auth, multiplexed streams) via
   **Quinn + rustls**. Nothing is readable on the wire.
 - **Data:** lives in cloud object storage, encrypted at rest (Parquet Modular
-  Encryption). Hosts are pure compute; per-job **scoped, short-lived credentials** are
-  delivered encrypted to the chosen worker.
+  Encryption). Hosts are pure compute; the design delivers per-job **scoped,
+  short-lived credentials** encrypted to the chosen worker. *Status:* the scoped
+  cloud-read path (sealed credential → prefix-scoped DuckDB secret) is built and
+  unit-tested, but the coordinator does **not yet attach per-job credentials**
+  (`credential: None`), so the object-store read path is not exercised end-to-end.
 - **Trustworthiness:** identity (Ed25519, Sybil-resistant) + **attestation tiers**
   (anonymous / TPM measured-boot / hardware TEE) + **reputation from signed receipts**
   + **verification** (canonical result hashing, quorum agreement, canary audits).
@@ -31,8 +34,18 @@ reason about which untrusted hosts to trust with a job.
 Transport, at-rest, and integrity are protected on any machine. **Confidentiality from
 a malicious host operator's RAM is only achievable on confidential-computing hardware
 (TEEs).** Commodity laptops cannot guarantee it — so sensitive data is routed only to
-attested (L2) hosts, while laptops handle public data under quorum + reputation. See the
-architecture doc for the full reasoning.
+hosts **claiming** an attested tier (L2).
+
+*Attestation status (be precise):* requester selection no longer trusts a
+self-reported level — a bid claiming **> L0** is honored only if its evidence
+verifies against a wired `AttestationVerifier` (trusted-authority signature over an
+allowlisted measurement + the offer nonce); absent/invalid evidence is treated as
+**L0** (the `> L0` gate fails closed, so a spoofed level can't reach sensitive data).
+However, **real L1/L2 attestation needs TPM/TEE hardware that is not yet shipped** —
+**all current hosts emit L0**, and no production `AttestationVerifier` is wired by
+default, so today an L2 (sensitive) policy admits *nobody*. See the architecture doc
+for the full reasoning and what remains (per-offer evidence production + a
+network-identity-bound key handshake).
 
 ## Documentation
 
@@ -103,10 +116,12 @@ LOAD smoke test on all three. Notes:
 - Per-user secret/runtime files are restricted to the owner: `0600`/`0700` on Unix,
   and an owner-only protected DACL on Windows.
 
-> Not yet first-class: **OS-level per-job sandbox enforcement** is currently a
-> documented no-op on every platform (see ARCHITECTURE.md §9.4). Jobs run under the
-> DuckDB configuration lockdown; process-per-job OS isolation is a recommended
-> follow-up, not a shipped guarantee.
+> **OS sandbox status:** the host now wires the configured `[sandbox]` policy +
+> anti-abuse runtime into the live worker, but the **default backend is `noop`**
+> (no OS isolation — jobs run in-process under the DuckDB configuration lockdown).
+> Real OS enforcement (rlimits / Seatbelt / cgroups / Job Object) is **opt-in**
+> via `[sandbox].process_per_job` + the `p2p-job-exec` child binary (architecture
+> §9.4); the in-process path is the default and what runs unless you enable it.
 
 ## Transport performance tuning
 
