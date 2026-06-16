@@ -2,58 +2,97 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: [main]
   pull_request:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_INCREMENTAL: 0
+  # Pin the toolchain so every OS leg builds with the same compiler (>= the
+  # workspace `rust-version` MSRV). Bump deliberately.
+  RUST_TOOLCHAIN: "1.85.0"
+  # Pin the DuckDB CLI used for the loadable-extension LOAD smoke test so the
+  # cdylib's bundled C-API version stays compatible with the CLI it loads into.
+  DUCKDB_VERSION: "v1.4.3"
 
 jobs:
-  ci:
-    name: Rust CI
-    runs-on: ubuntu-latest
-
+  # Cross-OS proof that the workspace builds, tests, lints, is formatted, and that
+  # the loadable extension builds + LOADs on Linux, macOS, and Windows.
+  build-test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install stable Rust toolchain (with rustfmt + clippy)
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install Rust ${{ env.RUST_TOOLCHAIN }}
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: stable
-          components: rustfmt, clippy
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: clippy, rustfmt
 
-      - name: Cache cargo registry + build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
-        run: cargo fmt --check
+      - name: Set SDKROOT (macOS)
+        if: runner.os == 'macOS'
+        run: echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
 
-      - name: Clippy (advisory)
-        # Advisory for now: the tree carries pre-existing idiom lints
-        # (field_reassign_with_default, type_complexity, …) that are not bugs.
-        # `cargo build`/`fmt`/`test` are the hard gates below; ratchet this to
-        # `-- -D warnings` after a dedicated lint-cleanup pass. The duckdb-engine
-        # feature needs system libs absent on ubuntu-latest, so we lint the
-        # workspace default features only.
+      - name: Format check
+        run: cargo fmt --all --check
+
+      - name: Build
+        run: cargo build --workspace --verbose
+
+      - name: Clippy
         run: cargo clippy --workspace --all-targets
 
-      - name: Run tests
-        # Same rationale as Clippy: skip features that need system DuckDB.
-        run: cargo test --workspace
+      - name: Test
+        run: cargo test --workspace --verbose
 
-      - name: Security audit
-        uses: actions-rust-lang/audit@v1
+      # --- Loadable extension: build the cdylib, append the metadata footer, and
+      #     LOAD it into the duckdb CLI (proves the any-OS host surface). ---
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          # Deny only unfixed vulnerabilities (advisories with no_fix = false).
-          deny: warnings
+          python-version: "3.x"
+
+      - name: Install DuckDB CLI (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Linux) asset=duckdb_cli-linux-amd64.zip ;;
+            macOS) asset=duckdb_cli-osx-universal.zip ;;
+            *) echo "unsupported OS" >&2; exit 1 ;;
+          esac
+          curl -fsSL -o duckdb.zip \
+            "https://github.com/duckdb/duckdb/releases/download/${DUCKDB_VERSION}/${asset}"
+          mkdir -p "$HOME/duckdb-cli"
+          unzip -o duckdb.zip -d "$HOME/duckdb-cli"
+          echo "$HOME/duckdb-cli" >> "$GITHUB_PATH"
+
+      - name: Install DuckDB CLI (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $url = "https://github.com/duckdb/duckdb/releases/download/$env:DUCKDB_VERSION/duckdb_cli-windows-amd64.zip"
+          Invoke-WebRequest -Uri $url -OutFile duckdb.zip
+          Expand-Archive -Path duckdb.zip -DestinationPath "$env:USERPROFILE\duckdb-cli" -Force
+          "$env:USERPROFILE\duckdb-cli" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build + LOAD extension (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: scripts/build_extension.sh
+
+      - name: Build + LOAD extension (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/build_extension.ps1

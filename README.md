@@ -84,6 +84,30 @@ The end-to-end **scenario suite** lives in `crates/node/tests/scenarios.rs`
 `crates/node/tests/scenarios_duckdb.rs` (real-engine e2e + sandbox, feature-gated),
 and `crates/extension/tests/load.rs` (extension LOAD via the duckdb CLI).
 
+## Platform support
+
+The workspace builds and runs on **Linux, macOS, and Windows**; a CI matrix
+(`.github/workflows/ci.yml`) runs build/test/clippy/fmt plus the loadable-extension
+LOAD smoke test on all three. Notes:
+
+- **Windows** is supported as a host for the **loadable extension**. Build it with
+  `scripts/build_extension.ps1` (the PowerShell mirror of `build_extension.sh`);
+  it needs the `duckdb` CLI and a Python interpreter on `PATH`.
+- The **`duckdb-engine`** feature (the bundled, locked-down DuckDB engine, off by
+  default) compiles DuckDB from source, so it needs a working **C/C++ toolchain**
+  (MSVC Build Tools on Windows; Xup/Command-Line Tools on macOS — set
+  `SDKROOT=$(xcrun --show-sdk-path)`; a C++ compiler on Linux). The default mock
+  engine needs none of this.
+- The **`ton-live`** settlement path shells out to a **`curl`** executable at
+  runtime (present by default on modern Windows/macOS/Linux); it is off by default.
+- Per-user secret/runtime files are restricted to the owner: `0600`/`0700` on Unix,
+  and an owner-only protected DACL on Windows.
+
+> Not yet first-class: **OS-level per-job sandbox enforcement** is currently a
+> documented no-op on every platform (see ARCHITECTURE.md §9.4). Jobs run under the
+> DuckDB configuration lockdown; process-per-job OS isolation is a recommended
+> follow-up, not a shipped guarantee.
+
 ## Transport performance tuning
 
 QUIC is tuned for low latency + high throughput, with everything configurable
