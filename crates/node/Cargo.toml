@@ -8,6 +8,13 @@ license.workspace = true
 name = "p2p_node"
 path = "src/lib.rs"
 
+# Sandboxed per-job child executor (opt-in process-per-job, G1/G8). Compiles in
+# every build (a no-op stub without `duckdb-engine`); the functional executor
+# needs the bundled DuckDB engine feature.
+[[bin]]
+name = "p2p-job-exec"
+path = "src/bin/p2p_job_exec.rs"
+
 [features]
 default = ["discovery-libp2p"]
 # Real locked-down DuckDB execution engine (bundles + compiles DuckDB from

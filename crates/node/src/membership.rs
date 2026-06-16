@@ -17,8 +17,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use p2p_proto::{CapabilityAd, NodeId};
-use p2p_trust::{now_ts, verify_capability_ad};
+use p2p_proto::{CapabilityAd, CapabilityProfile, NodeId};
+use p2p_trust::{now_ts, verify_capability_ad, verify_capability_profile};
 use rand::seq::SliceRandom;
 
 use crate::discovery::{Candidate, CandidateFilter, Discovery};
@@ -33,6 +33,11 @@ pub struct MembershipTable {
 
 struct Inner {
     ads: HashMap<NodeId, CapabilityAd>,
+    /// Per-node durable self-capability profiles (the "what this node has really
+    /// pulled off" hint). Kept ONLY as a capacity/routing signal — never folded
+    /// into trust/reputation, since the maxima are self-claimed (signing proves
+    /// provenance + monotonicity, not honesty).
+    profiles: HashMap<NodeId, CapabilityProfile>,
     order: VecDeque<NodeId>,
 }
 
@@ -41,6 +46,7 @@ impl MembershipTable {
         Self {
             inner: Mutex::new(Inner {
                 ads: HashMap::new(),
+                profiles: HashMap::new(),
                 order: VecDeque::new(),
             }),
             capacity: capacity.max(1),
@@ -61,6 +67,7 @@ impl MembershipTable {
             while inner.order.len() >= self.capacity {
                 if let Some(evict) = inner.order.pop_front() {
                     inner.ads.remove(&evict);
+                    inner.profiles.remove(&evict);
                 } else {
                     break;
                 }
@@ -69,6 +76,45 @@ impl MembershipTable {
         }
         inner.ads.insert(key, ad);
         true
+    }
+
+    /// Ingest a node's signed [`CapabilityProfile`] (the durable self-measured
+    /// maxima) gossiped alongside its [`CapabilityAd`]. Returns `true` if accepted.
+    ///
+    /// TRUST-SAFE BY CONSTRUCTION: the profile is stored ONLY as a capacity/routing
+    /// hint (read via [`MembershipTable::proven_capacity`]) and is NEVER fed into
+    /// trust/reputation — the maxima are self-claimed, so the signature proves only
+    /// provenance + node-id binding, not honesty. Acceptance requires:
+    ///   * a valid signature + node-id↔pubkey binding (`verify_capability_profile`),
+    ///   * the node already has a **PoW-verified ad** in the table (so a profile
+    ///     can't be injected for a fresh, un-PoW'd identity — it inherits the ad's
+    ///     Sybil cost), and
+    ///   * a **strictly increasing `seq`** vs any stored profile (rollback guard).
+    pub fn ingest_profile(&self, profile: CapabilityProfile) -> bool {
+        if !verify_capability_profile(&profile) {
+            return false;
+        }
+        let mut inner = self.inner.lock().unwrap();
+        // PoW gate (by proxy): only accept a profile for an identity that already
+        // proved PoW via a verified ad in this table.
+        if !inner.ads.contains_key(&profile.node_id) {
+            return false;
+        }
+        // Monotonic seq: never replace a newer snapshot with an older one.
+        if let Some(prev) = inner.profiles.get(&profile.node_id) {
+            if profile.seq <= prev.seq {
+                return false;
+            }
+        }
+        inner.profiles.insert(profile.node_id.clone(), profile);
+        true
+    }
+
+    /// The latest verified self-capability profile for `node`, if one was gossiped
+    /// — a capacity/routing hint ("can this peer plausibly handle a job of size
+    /// X?"). NEVER a trust input (see [`MembershipTable::ingest_profile`]).
+    pub fn proven_capacity(&self, node: &NodeId) -> Option<CapabilityProfile> {
+        self.inner.lock().unwrap().profiles.get(node).cloned()
     }
 
     pub fn len(&self) -> usize {
@@ -180,5 +226,61 @@ mod tests {
         assert_eq!(table.len(), 1);
         let cands = table.find_candidates(10, filter()).await;
         assert!(cands.is_empty(), "stale ad must not be a candidate");
+    }
+
+    #[tokio::test]
+    async fn ingest_profile_requires_pow_verified_ad_and_is_monotonic() {
+        use p2p_trust::{sign_capability_profile, CapabilityProfileDraft};
+
+        let table = MembershipTable::new(50, 8, 3600);
+        let id = NodeIdentity::generate().unwrap();
+        let pk = id.public_key_bytes();
+        let now = now_ts();
+        let signer = IdentitySigner(&id);
+        let nid = id.node_id().clone();
+
+        let mk = |seq: u64, rows: u64| {
+            sign_capability_profile(
+                CapabilityProfileDraft {
+                    max_result_rows: rows,
+                    successes: seq,
+                    seq,
+                    ts: now,
+                    ..Default::default()
+                },
+                &signer,
+            )
+        };
+
+        // No verified ad yet ⇒ profile refused (PoW-by-proxy gate), nothing stored.
+        assert!(!table.ingest_profile(mk(1, 100)));
+        assert!(table.proven_capacity(&nid).is_none());
+
+        // Ingest the node's PoW-verified ad, then the profile is accepted.
+        let draft = CapabilityDraft {
+            addr: "127.0.0.1:19000".into(),
+            free_mem_bytes: 1 << 30,
+            free_threads: 4,
+            max_jobs: 3,
+            attestation_level: AttestationLevel::L0,
+            price: 0,
+            recent_receipts_root: None,
+            pow: mint_pow(&pk, pow_epoch(now), 8, 1_000_000).unwrap(),
+            ts: now,
+        };
+        assert!(table.ingest(sign_capability_ad(draft, &signer)));
+        assert!(table.ingest_profile(mk(2, 100)));
+        assert_eq!(table.proven_capacity(&nid).unwrap().max_result_rows, 100);
+
+        // Monotonic seq: equal/older seq rejected; strictly newer updates.
+        assert!(!table.ingest_profile(mk(2, 999)));
+        assert!(!table.ingest_profile(mk(1, 999)));
+        assert!(table.ingest_profile(mk(3, 500)));
+        assert_eq!(table.proven_capacity(&nid).unwrap().max_result_rows, 500);
+
+        // A tampered profile (signature mismatch) is rejected.
+        let mut bad = mk(4, 1);
+        bad.max_result_rows = u64::MAX;
+        assert!(!table.ingest_profile(bad));
     }
 }

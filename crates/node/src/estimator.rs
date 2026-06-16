@@ -966,9 +966,58 @@ pub fn parse_explain_cardinality(explain_text: &str) -> Option<u64> {
     max_ec
 }
 
+// ---------------------------------------------------------------------------
+// Conservative SQL source classification (requester pre-flight router)
+// ---------------------------------------------------------------------------
+
+/// Does this SQL reference any **external data source** — a relation (`FROM`/
+/// `JOIN`), a data-reader table function (`read_csv`/`read_parquet`/`*_scan`/…),
+/// a file/object literal, or `COPY`/`ATTACH` — as opposed to a pure in-memory
+/// computation (`SELECT 1 + 1`, scalar functions, `SELECT now()`)?
+///
+/// This is the conservative gate the requester's pre-flight router uses to keep
+/// ONLY confirmed pure-in-memory queries on the free local path. It is biased to
+/// return `true` ("assume a source") whenever unsure: the locked-down local
+/// engine cannot read external data, and a non-resource local failure does NOT
+/// fail over to the grid, so a false "no source" would turn a working grid query
+/// into a hard error. A false "has source" merely forgoes the local optimization
+/// (the query routes remote, exactly today's behavior) — routing-only, never
+/// correctness. Returns `false` only when NO source marker is present at all.
+pub fn has_data_source(sql: &str) -> bool {
+    let lower = sql.to_ascii_lowercase();
+    // Any of these markers ⇒ treat the query as touching external data. Each only
+    // ADDS conservatism (more → remote), so over-matching (e.g. a column named
+    // `read_count`, or `.csv` inside a string literal) is safe by construction.
+    const MARKERS: &[&str] = &[
+        " from ", "\tfrom ", "\nfrom ", "(from ", ")from ", "\rfrom ", "\nfrom\t",
+        " join ", "\njoin ", "\tjoin ", "(join ",
+        "read_", "scan_", "parquet_", "_scan(", "glob(", "query_table(",
+        "copy ", "attach ", "delta_", "iceberg_",
+        ".parquet", ".csv", ".json", ".ndjson", "://",
+    ];
+    MARKERS.iter().any(|m| lower.contains(m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_data_source_is_conservative() {
+        // Pure in-memory ⇒ no source (eligible for the free local path).
+        assert!(!has_data_source("SELECT 1 + 1"));
+        assert!(!has_data_source("SELECT now()"));
+        assert!(!has_data_source("select 42 as x, upper('hi')"));
+        // Any relation / reader / file / COPY / ATTACH ⇒ treated as a source.
+        assert!(has_data_source("SELECT * FROM t"));
+        assert!(has_data_source("select a\nfrom range(100)"));
+        assert!(has_data_source("SELECT * FROM read_csv_auto('x.csv')"));
+        assert!(has_data_source("SELECT * FROM read_parquet('s3://b/k.parquet')"));
+        assert!(has_data_source("SELECT a JOIN b ON a.x=b.x"));
+        assert!(has_data_source("COPY t TO 'out.csv'"));
+        assert!(has_data_source("ATTACH 'db.duckdb'"));
+        assert!(has_data_source("SELECT * FROM delta_scan('/t')"));
+    }
 
     fn chunk(
         name: &str,

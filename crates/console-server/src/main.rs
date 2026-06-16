@@ -28,11 +28,10 @@ use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, VerifyModeCfg,
 };
 use p2p_node::{
-    AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
-    WorkerParams,
+    AdmissionController, Candidate, Coordinator, CoordinatorError, MockEngine, QueryEngine,
+    StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
-use p2p_settlement::traits::{RecordAnchor, Settlement};
 use p2p_settlement::types::Amount;
 use p2p_settlement::{InMemoryRecordAnchor, InMemoryStakeRegistry, MockSettlement, StakeRegistry};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
@@ -397,20 +396,33 @@ impl Grid {
             }
             Err(e) => {
                 self.acc.failed += 1;
-                let no_workers = format!("{e:?}").contains("InsufficientWorkers");
+                // A failed query dispatched/settled nothing (k=0, no winner): no
+                // escrow was locked and no payment occurred, so report `paid:false`
+                // + `escrowTon:0` regardless of the requested payment mode.
+                //
+                // Distinguish the two `InsufficientWorkers` shapes (it carries how
+                // many hosts cleared the policy vs the quorum needed): "0 eligible"
+                // is a policy/availability problem, whereas "quorum exceeds the
+                // eligible set" means hosts DO qualify but too few for this quorum.
+                let error_msg = match &e {
+                    CoordinatorError::InsufficientWorkers { have, quorum } => {
+                        if *have == 0 {
+                            format!("No hosts meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust})")
+                        } else {
+                            format!("Only {have} host(s) meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust}), but quorum is {quorum}")
+                        }
+                    }
+                    other => format!("{other:?}"),
+                };
                 json!({
                     "id": format!("job_err_{}", created), "sql": sql, "fn": "p2p_query",
                     "dataClass": data_class, "verifyMode": verify_label, "policy": policy_json,
                     "quorum": quorum, "k": 0,
-                    "status": "failed", "paid": paid, "requester": requester, "createdAtMs": created,
-                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat, "escrowTon": if paid { 100 } else { 0 },
+                    "status": "failed", "paid": false, "requester": requester, "createdAtMs": created,
+                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat, "escrowTon": 0,
                     "winner": J::Null, "winnerId": J::Null, "source": "live in-process grid",
                     "candidates": [], "timeline": [], "result": {"columns": [], "rows": []},
-                    "error": if no_workers {
-                        format!("No hosts meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust})")
-                    } else {
-                        format!("{e:?}")
-                    },
+                    "error": error_msg,
                 })
             }
         };

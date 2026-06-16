@@ -30,6 +30,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 mod antiabuse;
+mod binding;
 mod blocklist;
 mod economics;
 mod overrides;
@@ -38,6 +39,7 @@ pub use antiabuse::{
     AntiAbuseConfig, BlocklistPolicyConfig, CostGateConfig, FaultAttributionConfig,
     FreeRateLimitConfig, GossipHardeningConfig, NondeterminismConfig, RequesterTrustConfig,
 };
+pub use binding::{BindingEntry, BindingStore};
 pub use blocklist::{BlockEntry, BlockKind, BlocklistStore};
 pub use economics::{
     ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,

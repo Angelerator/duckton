@@ -271,7 +271,7 @@ impl Node {
         let params = WorkerParams::from_config(&self.config);
         let mut worker = Worker::new(
             transport,
-            Arc::clone(&self.engine),
+            self.host_engine(),
             admission,
             Attestation::stub_l0(),
             params,
@@ -281,6 +281,40 @@ impl Node {
                 .with_capability_store(Arc::new(crate::capability_store::CapabilityStore::open()));
         }
         worker.spawn()
+    }
+
+    /// The engine the host (worker) executes jobs with. Defaults to this node's
+    /// in-process engine. When `[sandbox].process_per_job` is enabled AND a child
+    /// executor is configured (`P2P_JOB_EXEC`), each job is instead run in an
+    /// OS-sandboxed child process via [`crate::subprocess::SubprocessEngine`] (real
+    /// G1/G8 enforcement). The flag-on-but-unconfigured case warns and keeps the
+    /// in-process default, so the working path is never destabilized.
+    fn host_engine(&self) -> Arc<dyn QueryEngine> {
+        let sb = &self.config.sandbox;
+        if sb.process_per_job && sb.enabled {
+            match std::env::var("P2P_JOB_EXEC") {
+                Ok(path) if !path.trim().is_empty() => {
+                    let sandbox = crate::sandbox::build(sb);
+                    return Arc::new(crate::subprocess::SubprocessEngine::new(
+                        sandbox,
+                        path,
+                        Vec::new(),
+                        format!("{}-subprocess", self.engine.version()),
+                        sb.clone(),
+                        self.config.storage.clone(),
+                    ));
+                }
+                _ => {
+                    tracing::warn!(
+                        "[sandbox].process_per_job is enabled but P2P_JOB_EXEC (the child \
+                         executor path) is unset — falling back to the in-process engine. \
+                         Build p2p-job-exec (--features duckdb-engine) and set P2P_JOB_EXEC \
+                         to enable OS-enforced process-per-job execution."
+                    );
+                }
+            }
+        }
+        Arc::clone(&self.engine)
     }
 
     /// Run a query with the simplest possible contract.
@@ -370,15 +404,11 @@ impl Node {
 /// probes — is deferred (see `docs/IMPROVEMENT_ROADMAP.md`); this hook is where it
 /// plugs in.
 fn preflight_estimate(sql: &str) -> Option<WorkingSetEstimate> {
-    let lower = sql.to_ascii_lowercase();
-    // Any `from` token ⇒ assume a data source ⇒ no cheap estimate (today's path).
-    // Crude on purpose: a false "has source" only forgoes the optimization, and a
-    // false "no source" merely attempts local exec (which fails over to the grid),
-    // so neither costs correctness.
-    let has_source = [" from ", "\tfrom ", "\nfrom ", ")from "]
-        .iter()
-        .any(|tok| lower.contains(tok));
-    if has_source {
+    // Any external data source ⇒ no cheap estimate (route as today). The classifier
+    // is deliberately conservative (see [`crate::estimator::has_data_source`]):
+    // only confirmed pure in-memory queries get a (tiny) local estimate, because
+    // the locked-down local engine cannot read external data.
+    if crate::estimator::has_data_source(sql) {
         return None;
     }
     Some(WorkingSetEstimate {

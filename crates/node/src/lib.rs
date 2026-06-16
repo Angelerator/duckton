@@ -35,6 +35,7 @@ pub mod retry;
 pub mod sandbox;
 pub mod signer;
 pub mod storage;
+pub mod subprocess;
 pub mod worker;
 
 pub use admission::{AdmissionController, FreeResources, Lease};
@@ -55,7 +56,7 @@ pub use engine::{
 };
 pub use estimator::{
     csv_metadata, delta_metadata, estimate_parquet, estimate_table_files, estimate_text,
-    estimate_working_set, ndjson_metadata, parquet_metadata_from_resultset,
+    estimate_working_set, has_data_source, ndjson_metadata, parquet_metadata_from_resultset,
     parse_explain_cardinality, Cmp, ColumnChunkMeta, DataFileMeta, DeltaMetadata, EstimateError,
     EstimateParams, IcebergMetadata, ParquetMetadata, Predicate, Projection, QueryShape,
     RowGroupMeta, ScanEstimate, TableFilesMetadata, TextMetadata, WorkingSetEstimate,
@@ -80,6 +81,7 @@ pub use sandbox::{
     JobBudget, JobGuard, NoopSandbox, ResourceLimits, Sandbox, SandboxError, SandboxSpec,
 };
 pub use signer::IdentitySigner;
+pub use subprocess::{serve_job, JobRequest, JobResponse, SubprocessEngine};
 pub use storage::{
     sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
     FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
