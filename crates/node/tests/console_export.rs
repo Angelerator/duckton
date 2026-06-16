@@ -69,6 +69,7 @@ struct WorkerHandle {
     max_jobs: u32,
     delay_ms: u64,
     behavior: &'static str, // "honest" | "cheat" | "fail"
+    price: u64,             // advertised unit price (whole TON), mirrors console-server
     _transport: Arc<QuicTransport>,
     _task: tokio::task::JoinHandle<()>,
 }
@@ -105,6 +106,7 @@ struct Spec {
     max_jobs: u32,
     delay_ms: u64,
     behavior: &'static str,
+    price: u64,
 }
 
 async fn spawn_worker(spec: &Spec) -> WorkerHandle {
@@ -153,6 +155,7 @@ async fn spawn_worker(spec: &Spec) -> WorkerHandle {
         max_jobs: budget.max_jobs,
         delay_ms: spec.delay_ms,
         behavior: spec.behavior,
+        price: spec.price,
         _transport: transport,
         _task: task,
     }
@@ -245,6 +248,10 @@ async fn export_console_snapshot() {
     let generated_at_ms = unix_ms();
 
     // --- Bring up a real, heterogeneous grid over loopback QUIC --------------
+    // This MUST mirror the live console-server demo grid
+    // (crates/console-server/src/main.rs) so the static snapshot matches live:
+    // same 9 hosts, attestation tiers (4 L2 / 2 L1 / 3 L0), stakes, vouchers and
+    // bid prices.
     let specs = [
         Spec {
             alias: "frost-owl",
@@ -254,6 +261,7 @@ async fn export_console_snapshot() {
             max_jobs: 12,
             delay_ms: 12,
             behavior: "honest",
+            price: 7,
         },
         Spec {
             alias: "harbor-vole",
@@ -263,15 +271,27 @@ async fn export_console_snapshot() {
             max_jobs: 10,
             delay_ms: 22,
             behavior: "honest",
+            price: 8,
         },
         Spec {
             alias: "tidal-fox",
-            level: AttestationLevel::L1,
+            level: AttestationLevel::L2,
             mem_gb: 32,
             threads: 16,
             max_jobs: 6,
             delay_ms: 30,
             behavior: "honest",
+            price: 6,
+        },
+        Spec {
+            alias: "marsh-otter",
+            level: AttestationLevel::L2,
+            mem_gb: 48,
+            threads: 24,
+            max_jobs: 8,
+            delay_ms: 18,
+            behavior: "honest",
+            price: 7,
         },
         Spec {
             alias: "amber-mole",
@@ -281,15 +301,17 @@ async fn export_console_snapshot() {
             max_jobs: 4,
             delay_ms: 45,
             behavior: "honest",
+            price: 5,
         },
         Spec {
             alias: "pine-marten",
-            level: AttestationLevel::L0,
+            level: AttestationLevel::L1,
             mem_gb: 16,
             threads: 8,
             max_jobs: 4,
             delay_ms: 60,
             behavior: "honest",
+            price: 4,
         },
         Spec {
             alias: "slate-heron",
@@ -299,6 +321,7 @@ async fn export_console_snapshot() {
             max_jobs: 2,
             delay_ms: 110,
             behavior: "honest",
+            price: 3,
         },
         Spec {
             alias: "rust-shrike",
@@ -308,6 +331,7 @@ async fn export_console_snapshot() {
             max_jobs: 2,
             delay_ms: 18,
             behavior: "cheat",
+            price: 5,
         },
         Spec {
             alias: "cobalt-stoat",
@@ -317,6 +341,7 @@ async fn export_console_snapshot() {
             max_jobs: 1,
             delay_ms: 25,
             behavior: "fail",
+            price: 5,
         },
     ];
     let mut workers = Vec::new();
@@ -339,7 +364,10 @@ async fn export_console_snapshot() {
     ));
 
     // --- Run a real batch of free (public) jobs -----------------------------
-    let cfg = Arc::new(base_cfg(6, 3));
+    // Mirror the console-server warmup: replicas 8 / quorum 6 forces every honest
+    // host to commit on each job, so reputation (and thus effective trust) climbs
+    // to the same ~0.9 band the live grid shows rather than the old ~0.7.
+    let cfg = Arc::new(base_cfg(8, 6));
     let coord = make_coordinator(&wrefs, cfg.clone(), store.clone()).await;
 
     let queries = [
@@ -373,15 +401,18 @@ async fn export_console_snapshot() {
         receipts: Vec<p2p_proto::Receipt>,
     }
     let mut job_recs: Vec<JobRec> = Vec::new();
-    // Two passes so reputation history is meaningful.
-    for pass in 0..2u32 {
+    // Several passes so reputation history is deep enough for the confident
+    // (Wilson-shrunk) reputation — and hence effective trust — to saturate near
+    // the live grid's ~0.9 band (the live server accrues this over its warmup +
+    // ambient jobs).
+    for pass in 0..12u32 {
         for (i, q) in queries.iter().enumerate() {
             let t0 = Instant::now();
             let created = unix_ms();
             let sql = if pass == 0 {
                 q.to_string()
             } else {
-                format!("{q} -- pass2 {i}")
+                format!("{q} -- pass{pass} {i}")
             };
             if let Ok(o) = coord.run_query(&sql, QueryOverrides::default()).await {
                 let lat = t0.elapsed().as_millis() as u64;
@@ -403,20 +434,35 @@ async fn export_console_snapshot() {
         }
     }
 
-    // Add a couple of real vouches so voucher_trust is non-zero for top nodes.
-    store.add_vouch(&workers[0].node_id, 0.6);
-    store.add_vouch(&workers[1].node_id, 0.4);
-    store.add_vouch(&workers[2].node_id, 0.2);
+    // Real vouches — same set/strength as the console-server demo so voucher_trust
+    // matches live (top L2 hosts 0.8, L1 hosts 0.7).
+    let vouchers: BTreeMap<&str, f64> = [
+        ("frost-owl", 0.8),
+        ("harbor-vole", 0.8),
+        ("tidal-fox", 0.8),
+        ("marsh-otter", 0.8),
+        ("amber-mole", 0.7),
+        ("pine-marten", 0.7),
+    ]
+    .into_iter()
+    .collect();
+    for w in &workers {
+        if let Some(v) = vouchers.get(w.alias.as_str()) {
+            store.add_vouch(&w.node_id, *v);
+        }
+    }
 
     // --- Stake registry (real stake_factor) ---------------------------------
+    // Stakes mirror the console-server demo exactly.
     let eco = GridConfig::default().economics;
     let reg = Arc::new(InMemoryStakeRegistry::from_config(&eco.stake));
     let stakes_ton: BTreeMap<&str, u64> = [
         ("frost-owl", 4200),
-        ("harbor-vole", 2600),
-        ("tidal-fox", 1500),
-        ("amber-mole", 800),
-        ("pine-marten", 300),
+        ("harbor-vole", 3000),
+        ("tidal-fox", 2600),
+        ("marsh-otter", 3400),
+        ("amber-mole", 1500),
+        ("pine-marten", 1200),
         ("slate-heron", 120),
     ]
     .into_iter()
@@ -506,6 +552,7 @@ async fn export_console_snapshot() {
             "explorationBonus": expl,
             "stakeTon": stake_ton,
             "stakeNanoton": (stake_ton as Amount * TON).to_string(),
+            "priceTon": w.price,
             "totalMemBytes": w.budget_mem,
             "totalThreads": w.budget_threads,
             "maxJobs": w.max_jobs,
@@ -557,7 +604,7 @@ async fn export_console_snapshot() {
                 "state": state,
                 "verdict": format!("{:?}", r.verdict),
                 "etaMs": r.latency_ms,
-                "price": 0,
+                "price": wkr.map(|w| w.price).unwrap_or(0),
                 "progressPct": if r.verdict.is_correct() || r.verdict == p2p_proto::Verdict::Incorrect { 100 } else { 0 },
                 "committedHash": if r.result_hash.is_empty() { J::Null } else { json!(r.result_hash) },
                 "commitLatencyMs": r.latency_ms,
@@ -913,7 +960,7 @@ async fn export_console_snapshot() {
         worker_id: wid.clone(),
         decision: BidDecision::Accept,
         eta_ms: 2600,
-        price: 0,
+        price: workers[0].price,
         attestation: attest(AttestationLevel::L2),
         recent_receipts: vec![],
         free_mem_bytes: 22 * 1024 * 1024 * 1024,
@@ -959,9 +1006,12 @@ async fn export_console_snapshot() {
     // --- Overview aggregates from the REAL batch ----------------------------
     let verified_count = job_recs.iter().filter(|j| j.verified).count();
     let failed_count = job_recs.len() - verified_count;
+    // Cap to the most recent 60 points, mirroring the live server's SERIES_CAP.
+    let series_skip = job_recs.len().saturating_sub(60);
     let series: Vec<J> = job_recs
         .iter()
         .enumerate()
+        .skip(series_skip)
         .map(|(i, j)| json!({"label": format!("j{}", i + 1), "latencyMs": j.latency_ms, "verified": if j.verified {1} else {0}}))
         .collect();
     // latency histogram from real per-candidate latencies

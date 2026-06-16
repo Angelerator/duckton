@@ -61,6 +61,9 @@ export interface QueryRequest {
   regions?: string[];
   /** require candidate hosts to have bonded stake */
   requireStakedHosts?: boolean;
+  /** per-call escrow cap B (whole TON); the grid settles min(cost, B) and
+   * refunds the remainder. Omitted ⇒ the grid derives a cap from the cost. */
+  maxEscrow?: number;
 }
 
 export interface QueryResult {
@@ -74,8 +77,17 @@ export interface QueryResult {
   k: number;
   /** true when the grid ran this as a PAID job (escrow opened + settled). */
   paid?: boolean;
-  /** escrow locked for a paid job, in whole TON (0 for free jobs). */
+  /** escrow cap B locked for a paid job, in TON (0 for free jobs). Retained for
+   * back-compat; equals `escrowCapTon`. */
   escrowTon?: number;
+  /** actual amount settled out of escrow (winner base + fee + commissions). */
+  settledTon?: number;
+  /** the escrow cap B that bounded settlement. */
+  escrowCapTon?: number;
+  /** refunded to the requester (`escrowCapTon − settledTon`). */
+  refundedTon?: number;
+  /** computed job cost before the cap was applied. */
+  costTon?: number;
   candidates: Job["candidates"];
   result: { columns: string[]; rows: string[][] };
   error?: string;

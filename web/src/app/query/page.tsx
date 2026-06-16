@@ -462,13 +462,18 @@ export default function QueryConsolePage() {
           quorum: qEff,
           k: kClamped,
           prefer,
-          payment,
+          // Only send an explicit payment override; "auto" is omitted so the grid
+          // derives free-vs-paid from the data class (Internal/Sensitive ⇒ paid).
+          // Sending "auto" would leave the backend's paid flag false and mislabel
+          // a paid job as free in the settlement line.
+          payment: payment === "auto" ? undefined : payment,
           minTrust: effMinTrust,
           minAttestation: effMinAtt,
           network: network.trim() || undefined,
           groups,
           regions,
           requireStakedHosts,
+          maxEscrow: effFree ? undefined : maxEscrow,
         });
       } catch (e) {
         outcome = {
@@ -968,16 +973,16 @@ export default function QueryConsolePage() {
                       step={0.5}
                       value={effFree ? 0 : maxEscrow}
                       onChange={(e) => setMaxEscrow(Math.max(0, Number(e.target.value) || 0))}
-                      disabled={effFree || connected}
+                      disabled={effFree}
                       className="tabular-nums"
                     />
                   </div>
                 </div>
                 <p className="text-muted-foreground text-xs">
-                  {connected
-                    ? "In live mode the grid sets the escrow amount from the data class; the payment path follows this selection."
-                    : effFree
-                      ? "Free tier — off-chain, price 0, no escrow."
+                  {effFree
+                    ? "Free tier — off-chain, price 0, no escrow."
+                    : connected
+                      ? "Sent to the grid as the escrow cap B — it settles min(cost, B) and refunds the rest."
                       : "Requester locks up to this escrow; the unused remainder is refunded."}
                 </p>
               </div>
@@ -1456,17 +1461,31 @@ export default function QueryConsolePage() {
                   {(() => {
                     // For a live dispatch, the grid decides free vs paid from the
                     // data class (Public = free/off-chain; Internal/Sensitive = paid,
-                    // escrow opened + settled). Reflect that real outcome rather than
-                    // the editor's escrow knobs. Offline preview falls back to them.
+                    // escrow opened + settled). Show the REAL settlement numbers the
+                    // backend returns (settled cost vs the escrow cap, with refund)
+                    // rather than the old flat "≤ 100 TON". Offline preview falls
+                    // back to the editor's escrow knob.
                     const paid = realOk ? !!real!.paid : !view.free;
-                    const escrow = realOk ? (real!.escrowTon ?? 0) : view.escrow;
-                    return paid ? (
+                    if (!paid) {
+                      return <span>Free public tier — no settlement, receipts gossiped.</span>;
+                    }
+                    if (realOk) {
+                      const cap = real!.escrowCapTon ?? real!.escrowTon ?? 0;
+                      const settled = real!.settledTon ?? 0;
+                      const refunded = real!.refundedTon ?? Math.max(0, cap - settled);
+                      const cost = real!.costTon ?? settled;
+                      return (
+                        <span>
+                          Settled {ton(settled)} (cost {ton(cost)}) from escrow ≤{" "}
+                          {ton(cap)} · refunded {ton(refunded)} · losers RESET.
+                        </span>
+                      );
+                    }
+                    return (
                       <span>
-                        Settled from escrow ≤ {ton(escrow)} · losers RESET, unspent
+                        Settles from escrow ≤ {ton(view.escrow)} · losers RESET, unspent
                         escrow refunded.
                       </span>
-                    ) : (
-                      <span>Free public tier — no settlement, receipts gossiped.</span>
                     );
                   })()}
                 </div>

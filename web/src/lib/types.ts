@@ -40,6 +40,8 @@ export interface Worker {
   explorationBonus: number;
   stakeTon: number;
   stakeNanoton: string;
+  /** advertised unit price (whole TON) the host bids on paid jobs. */
+  priceTon?: number;
   totalMemBytes: number;
   totalThreads: number;
   maxJobs: number;
@@ -104,7 +106,16 @@ export interface Job {
   rowCount: number;
   resultHash: string | null;
   latencyMs: number;
+  /** escrow cap B for a paid job, in TON (0 for free jobs). */
   escrowTon: number;
+  /** actual amount settled out of escrow (paid jobs); 0 for free jobs. */
+  settledTon?: number;
+  /** the escrow cap B that bounded settlement. */
+  escrowCapTon?: number;
+  /** refunded to the requester (`escrowCapTon − settledTon`). */
+  refundedTon?: number;
+  /** computed job cost before the cap was applied. */
+  costTon?: number;
   winner: string | null;
   winnerId: string | null;
   source: string;
