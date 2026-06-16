@@ -145,13 +145,8 @@ impl DuckDbEngine {
 
     /// Defense-in-depth extension hardening applied before any LOAD.
     fn harden_extensions(conn: &Connection) -> Result<(), EngineError> {
-        conn.execute_batch(
-            "SET autoinstall_known_extensions=false; \
-             SET autoload_known_extensions=false; \
-             SET allow_community_extensions=false; \
-             SET allow_unsigned_extensions=false;",
-        )
-        .map_err(|e| EngineError::Rejected(format!("extension hardening: {e}")))
+        conn.execute_batch(crate::engine::EXTENSION_HARDENING_SQL)
+            .map_err(|e| EngineError::Rejected(format!("extension hardening: {e}")))
     }
 
     fn run_locked(

@@ -50,6 +50,22 @@ struct PersistObs {
     fp: u64,
 }
 
+/// Durable mirror of the in-memory `ProvenCapability` aggregate (O(1) maxima +
+/// success count). `#[serde(default)]` keeps older on-disk records readable.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+struct PersistCapability {
+    #[serde(default)]
+    max_input_bytes: u64,
+    #[serde(default)]
+    max_result_rows: u64,
+    #[serde(default)]
+    max_result_bytes: u64,
+    #[serde(default)]
+    successes: u32,
+    #[serde(default)]
+    last_ts: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistWorker {
     obs: Vec<PersistObs>,
@@ -62,6 +78,11 @@ struct PersistWorker {
     penalty: f64,
     /// Insertion sequence (for FIFO eviction).
     seq: u64,
+    /// Measured proven-capability aggregate + its dedup fingerprints (bounded).
+    #[serde(default)]
+    capability: PersistCapability,
+    #[serde(default)]
+    cap_seen: Vec<u64>,
 }
 
 impl Default for PersistWorker {
@@ -72,6 +93,8 @@ impl Default for PersistWorker {
             voucher_trust: 0.0,
             penalty: 0.0,
             seq: 0,
+            capability: PersistCapability::default(),
+            cap_seen: Vec::new(),
         }
     }
 }
@@ -220,6 +243,48 @@ impl TrustStore for RedbTrustStore {
         });
     }
 
+    fn observe_capability(&self, receipt: &Receipt) {
+        if !receipt.verdict.is_correct() {
+            return;
+        }
+        let cap_limit = self.max_obs_per_worker;
+        let fp = crate::reputation::receipt_fingerprint(receipt);
+        let input = receipt.observed_input_bytes;
+        let rows = receipt.observed_result_rows;
+        let bytes = receipt.observed_result_bytes;
+        let ts = receipt.ts;
+        let _ = self.mutate(&receipt.worker_id, |s| {
+            // Replay defense: fold each unique (job, requester) receipt once.
+            if s.cap_seen.contains(&fp) {
+                return;
+            }
+            s.cap_seen.push(fp);
+            while s.cap_seen.len() > cap_limit {
+                s.cap_seen.remove(0);
+            }
+            let c = &mut s.capability;
+            c.max_input_bytes = c.max_input_bytes.max(input);
+            c.max_result_rows = c.max_result_rows.max(rows);
+            c.max_result_bytes = c.max_result_bytes.max(bytes);
+            c.successes = c.successes.saturating_add(1);
+            c.last_ts = c.last_ts.max(ts);
+        });
+    }
+
+    fn proven_capability(&self, worker: &NodeId) -> Option<crate::reputation::ProvenCapability> {
+        let state = self.read_worker(worker).ok().flatten()?;
+        if state.capability.successes == 0 {
+            return None;
+        }
+        Some(crate::reputation::ProvenCapability {
+            max_input_bytes: state.capability.max_input_bytes,
+            max_result_rows: state.capability.max_result_rows,
+            max_result_bytes: state.capability.max_result_bytes,
+            successes: state.capability.successes,
+            last_ts: state.capability.last_ts,
+        })
+    }
+
     fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64> {
         let state = self.read_worker(worker).ok().flatten()?;
         if state.obs.is_empty() {
@@ -303,6 +368,9 @@ mod tests {
             verdict,
             latency_ms: 1,
             ts,
+            observed_input_bytes: 0,
+            observed_result_rows: 0,
+            observed_result_bytes: 0,
             requester_pubkey: String::new(),
             sig: String::new(),
         }

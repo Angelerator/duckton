@@ -20,7 +20,7 @@ use std::sync::Arc;
 use p2p_config::{EconomicsConfig, SchedulerConfig, SettlementRail};
 
 use crate::ton::GlobalParams;
-use crate::traits::{RecordAnchor, Settlement};
+use crate::traits::{RecordAnchor, Settlement, StakeRegistry};
 use crate::types::{Amount, SettleError, WalletAddress};
 use crate::ParamsSource;
 
@@ -42,6 +42,16 @@ pub struct SettlementStack {
     /// On-chain `GlobalParams` read seam for the startup + periodic policy sync.
     /// `None` for the noop/mock rails (no chain reads).
     pub params_source: Option<Arc<dyn ParamsSource>>,
+    /// The stake registry the coordinator consults for the `require_staked_hosts`
+    /// candidate gate and the paid `stake_factor` ranking term. `None` (default /
+    /// free grid) ⇒ the coordinator behaves exactly as today (no stake gate, a
+    /// `0.0` stake factor). The deterministic `mock` rail supplies an in-memory
+    /// registry derived from `[economics.stake]`; the live `ton` rail's
+    /// auto-constructed [`crate::ton::TonStakeRegistry`] is documented as remaining
+    /// (it needs a `VaultConfig` cell matching the deployed vault + a node↔wallet
+    /// binding source to resolve peer vaults). Embedders can always inject any
+    /// `StakeRegistry` directly via `Node::with_wallet`.
+    pub stake_registry: Option<Arc<dyn StakeRegistry>>,
     /// True only for a real value-moving on-chain rail (so callers can assert
     /// "no chain for the default/free grid").
     pub onchain: bool,
@@ -53,6 +63,7 @@ fn noop_stack() -> SettlementStack {
         settlement: Arc::new(crate::noop::NoopSettlement),
         record_anchor: Arc::new(crate::noop::NoopRecordAnchor),
         params_source: None,
+        stake_registry: None,
         onchain: false,
     }
 }
@@ -74,6 +85,12 @@ pub fn resolve_settlement_stack(econ: &EconomicsConfig) -> Result<SettlementStac
             settlement: Arc::new(crate::mock::MockSettlement::new()),
             record_anchor: Arc::new(crate::mock::InMemoryRecordAnchor::new()),
             params_source: None,
+            // The mock models the full paid path: a real (in-memory) stake
+            // registry derived from `[economics.stake]`. Stakes are empty until an
+            // operator/test sets them, so the gate/factor stay inert by default.
+            stake_registry: Some(Arc::new(crate::mock::InMemoryStakeRegistry::from_config(
+                &econ.stake,
+            ))),
             onchain: true, // mock models the full paid path (no funds)
         }),
         SettlementRail::Onchain | SettlementRail::Channel => resolve_onchain_stack(econ),
@@ -165,10 +182,18 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
         None => None,
     };
 
+    // REMAINING (documented): an auto-constructed `TonStakeRegistry` for the live
+    // gate/factor needs (a) a `VaultConfig` cell builder matching the deployed
+    // `StakeVault` config and (b) a node↔wallet binding source (gossip or a
+    // persistent store) to resolve each peer's per-node vault address. Until those
+    // land, the live rail leaves `stake_registry` unset (the coordinator then
+    // behaves as today); embedders with bindings can inject a `TonStakeRegistry`
+    // directly via `Node::with_wallet`.
     Ok(SettlementStack {
         settlement: Arc::new(settlement),
         record_anchor: anchor,
         params_source,
+        stake_registry: None,
         onchain: true,
     })
 }
@@ -408,6 +433,10 @@ mod tests {
         let s = resolve_settlement_stack(&e).unwrap();
         assert!(!s.onchain, "default/free grid is not on-chain");
         assert!(s.params_source.is_none());
+        assert!(
+            s.stake_registry.is_none(),
+            "free grid wires no stake registry"
+        );
         assert!(!s.settlement.is_onchain());
 
         // Explicit noop rail ⇒ same no-op stack.
@@ -431,6 +460,10 @@ mod tests {
         assert!(s.settlement.is_onchain());
         // Mock reads no on-chain GlobalParams (no params source).
         assert!(s.params_source.is_none());
+        // Mock supplies an in-memory stake registry (empty stakes ⇒ inert until
+        // set), so a mock paid node models the full stake-aware path.
+        let reg = s.stake_registry.expect("mock supplies a stake registry");
+        assert_eq!(reg.stake_of(&p2p_proto::NodeId("b3:x".into())), 0);
     }
 
     #[test]

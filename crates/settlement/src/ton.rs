@@ -1266,6 +1266,7 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         max_bid: Amount,
         expected_hash: &Hash32,
         params_version: u32,
+        candidates: &[WalletAddress],
     ) -> Result<EscrowHandle, SettleError> {
         // Build a FRESH per-job `EscrowTerms` binding the HTLC lock (the agreed
         // quorum result hash) + the B1 candidate-set commitment + the on-chain
@@ -1280,9 +1281,16 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
             SettleError::Backend("open_escrow requires a requester wallet".into())
         })?;
         let treasury = self.treasury.unwrap_or(self.arbiter);
-        // B1: bind the candidate-set commitment. `settle` MUST later present a
-        // `candidates` map hashing to exactly this (empty set ⇒ empty-dict hash).
-        let candidates_hash = candidates_commitment(&self.candidates);
+        // B1: bind the candidate-set commitment over the per-job payout set passed
+        // by the coordinator (winner ∪ agreeing non-winners). `settle` MUST later
+        // present a `candidates` map hashing to exactly this. Fall back to the
+        // builder-bound set when the caller passes none (empty ⇒ empty-dict hash).
+        let cands: &[WalletAddress] = if candidates.is_empty() {
+            &self.candidates
+        } else {
+            candidates
+        };
+        let candidates_hash = candidates_commitment(cands);
         let terms = build_escrow_terms(&treasury, expected_hash, &candidates_hash, params_version);
         let deadline = now_secs_u32().saturating_add(self.escrow_window_secs);
         let init = EscrowInit {

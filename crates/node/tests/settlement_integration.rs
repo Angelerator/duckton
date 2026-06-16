@@ -760,7 +760,7 @@ impl ParamsSource for FixedParamsSource {
 /// A settlement that records the per-job terms (`expected_hash`, `params_version`)
 /// the coordinator binds via the open-escrow-per-job path, plus the settle split.
 struct TermsRecordingSettlement {
-    opened: std::sync::Mutex<Vec<(Amount, Hash32, u32)>>,
+    opened: std::sync::Mutex<Vec<(Amount, Hash32, u32, Vec<WalletAddress>)>>,
     settled: std::sync::Mutex<Vec<(Amount, SettlementOutcome)>>,
 }
 impl TermsRecordingSettlement {
@@ -778,7 +778,7 @@ impl Settlement for TermsRecordingSettlement {
         self.opened
             .lock()
             .unwrap()
-            .push((max_bid, [0xFFu8; 32], u32::MAX));
+            .push((max_bid, [0xFFu8; 32], u32::MAX, Vec::new()));
         Ok(EscrowHandle {
             job: job.clone(),
             address: wallet(0xEE),
@@ -791,11 +791,12 @@ impl Settlement for TermsRecordingSettlement {
         max_bid: Amount,
         expected_hash: &Hash32,
         params_version: u32,
+        candidates: &[WalletAddress],
     ) -> Result<EscrowHandle, SettleError> {
         self.opened
             .lock()
             .unwrap()
-            .push((max_bid, *expected_hash, params_version));
+            .push((max_bid, *expected_hash, params_version, candidates.to_vec()));
         Ok(EscrowHandle {
             job: job.clone(),
             address: wallet(0xEE),
@@ -905,11 +906,11 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
     // agreed quorum result hash. The terms-aware path was used (not the sentinel).
     let opened = settlement.opened.lock().unwrap().clone();
     assert_eq!(opened.len(), 1, "escrow opened once after the quorum hash");
-    let (b, expected_hash, version) = opened[0];
-    assert_eq!(b, max_bid);
-    assert_eq!(version, 9, "escrow terms bind the SYNCED params version");
+    let (b, expected_hash, version, _cands) = &opened[0];
+    assert_eq!(*b, max_bid);
+    assert_eq!(*version, 9, "escrow terms bind the SYNCED params version");
     assert_eq!(
-        expected_hash,
+        *expected_hash,
         *blake3::hash(agreed.as_bytes()).as_bytes(),
         "HTLC lock = quorum hash"
     );
@@ -936,6 +937,63 @@ async fn paid_job_syncs_params_overlays_config_and_binds_version() {
         records[0].params_version, 9,
         "anchored record stamped with synced version"
     );
+}
+
+/// P0-2: the coordinator threads a requester-committed candidate payout set into
+/// the per-job escrow at open (`open_escrow_with_terms`) that is EXACTLY the payee
+/// set the settle presents (winner ∪ agreeing non-winners), so the on-chain
+/// `candidatesCommitment(candidates) == terms.candidatesHash` check passes. We
+/// assert the committed set equals the settle outcome's payees (as a set).
+#[tokio::test]
+async fn paid_job_commits_candidate_set_matching_settle_payees() {
+    let w1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let w3 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let cfg = paid_cfg(3, 3);
+
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    for w in [&w1, &w2, &w3] {
+        reg.set_stake(&w.node_id, 1_000 * TON);
+    }
+    let settlement = Arc::new(TermsRecordingSettlement::new());
+    let anchor = Arc::new(InMemoryRecordAnchor::new());
+
+    let coord = coordinator(&[&w1, &w2, &w3], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_stake_registry(reg)
+        .with_settlement(settlement.clone())
+        .with_record_anchor(anchor.clone());
+
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+
+    let opened = settlement.opened.lock().unwrap().clone();
+    let settled = settlement.settled.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1, "escrow opened once via the terms path");
+    assert_eq!(settled.len(), 1, "settled once");
+    let (_b, _hash, _ver, candidates) = &opened[0];
+    let (_sb, split) = &settled[0];
+
+    // The committed candidate set must equal the payees the settle presents.
+    let mut committed = candidates.clone();
+    committed.sort_by_key(|w| w.hash);
+    let mut payees = vec![split.winner.to];
+    for p in &split.participants {
+        if !payees.contains(&p.to) {
+            payees.push(p.to);
+        }
+    }
+    payees.sort_by_key(|w| w.hash);
+    assert_eq!(
+        committed, payees,
+        "open candidate commitment must equal the settle payees"
+    );
+    // winner + two agreeing non-winners ⇒ three distinct payout wallets committed.
+    assert_eq!(committed.len(), 3, "winner + 2 agreeing participants");
 }
 
 /// On the paid grid the staked worker out-ranks an unstaked peer with identical
@@ -973,4 +1031,168 @@ async fn paid_stake_factor_decides_single_replica_winner() {
             "the staked worker must out-rank the unstaked peer on the paid grid",
         );
     }
+}
+
+/// `require_staked_hosts` is a hard candidate gate: with it on, only bonded hosts
+/// are eligible, so a single-replica job routes exclusively to the staked worker
+/// even when an unstaked peer is also discoverable.
+#[tokio::test]
+async fn require_staked_hosts_gate_excludes_unstaked_candidates() {
+    let staked = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let unstaked = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    reg.set_stake(&staked.node_id, 1_000 * TON);
+    // `unstaked` intentionally has zero stake.
+
+    let coord = coordinator(
+        &[&staked, &unstaked],
+        base_cfg(1, 1),
+        st.clone() as Arc<dyn TrustStore>,
+    )
+    .await
+    .with_stake_registry(reg);
+
+    for _ in 0..5 {
+        let ov = QueryOverrides {
+            require_staked_hosts: Some(true),
+            ..Default::default()
+        };
+        let outcome = coord.run_query("SELECT 1", ov).await.unwrap();
+        assert_eq!(
+            outcome.winner.as_ref(),
+            Some(&staked.node_id),
+            "only the bonded host may be selected under the staked-hosts gate",
+        );
+    }
+}
+
+/// Fail-closed: with the staked-hosts gate on and NO stake registry wired, no
+/// candidate can be proven bonded, so the query surfaces `NoCandidates` rather
+/// than silently routing to unbonded hosts.
+#[tokio::test]
+async fn require_staked_hosts_without_registry_fails_closed() {
+    let a = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let b = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    // No `.with_stake_registry(...)` wired.
+    let coord = coordinator(&[&a, &b], base_cfg(1, 1), st as Arc<dyn TrustStore>).await;
+
+    let ov = QueryOverrides {
+        require_staked_hosts: Some(true),
+        ..Default::default()
+    };
+    let err = coord.run_query("SELECT 1", ov).await.unwrap_err();
+    assert!(
+        matches!(err, p2p_node::CoordinatorError::NoCandidates),
+        "staked-hosts gate with no registry must fail closed, got {err:?}",
+    );
+}
+
+// --------------------------------------------------------------------------
+// Anti-cheat: newcomer trust ceiling + Sybil stake-floor gate (default-off)
+// --------------------------------------------------------------------------
+
+/// The newcomer trust ceiling caps a thin-history node's selection score: with a
+/// low ceiling and a high observation threshold, a fresh node is capped below the
+/// `min_trust` gate and excluded; with the ceiling off (1.0) the SAME fresh node
+/// clears the gate. Isolates the ceiling (only that knob changes).
+#[tokio::test]
+async fn newcomer_trust_ceiling_caps_fresh_nodes() {
+    let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    // Ceiling off (1.0): the fresh node's bootstrap score clears a tiny gate.
+    {
+        let mut cfg = base_cfg(1, 1);
+        cfg.trust.min_trust = 0.01;
+        cfg.economics.ranking.newcomer_trust_ceiling = 1.0;
+        cfg.validate().unwrap();
+        let coord = coordinator(&[&w], cfg, st.clone() as Arc<dyn TrustStore>).await;
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
+        assert!(outcome.verified, "uncapped fresh node clears the gate");
+    }
+
+    // Ceiling 0.0 with a high threshold: the same fresh node is capped to 0.0,
+    // below the 0.01 gate, so it is excluded → no usable workers.
+    {
+        let mut cfg = base_cfg(1, 1);
+        cfg.trust.min_trust = 0.01;
+        cfg.economics.ranking.newcomer_trust_ceiling = 0.0;
+        cfg.economics.ranking.newcomer_obs_threshold = 100;
+        cfg.validate().unwrap();
+        let coord = coordinator(&[&w], cfg, st.clone() as Arc<dyn TrustStore>).await;
+        let err = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                p2p_node::CoordinatorError::InsufficientWorkers { .. }
+                    | p2p_node::CoordinatorError::NoCandidates
+            ),
+            "capped newcomer must be excluded, got {err:?}",
+        );
+    }
+}
+
+/// The Sybil stake-floor gate (`[sybil].min_stake`, whole TON) excludes a
+/// candidate whose bonded stake is below the floor, even when a richer peer is
+/// also discoverable — raising the cost of throwaway identities. Default 0 = off.
+#[tokio::test]
+async fn sybil_min_stake_gate_excludes_under_staked_candidates() {
+    let rich = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let poor = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    reg.set_stake(&rich.node_id, 50 * TON); // clears the 10-TON floor
+    reg.set_stake(&poor.node_id, 1 * TON); // below the floor
+
+    let mut cfg = base_cfg(1, 1);
+    cfg.sybil.min_stake = 10; // whole TON
+    cfg.validate().unwrap();
+    let coord = coordinator(&[&rich, &poor], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_stake_registry(reg);
+
+    for _ in 0..5 {
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.winner.as_ref(),
+            Some(&rich.node_id),
+            "only the sufficiently-staked host may be selected under the Sybil floor",
+        );
+    }
+}
+
+/// Fail-closed: the Sybil stake-floor gate with NO stake registry wired admits
+/// nobody (no candidate can be proven to clear the floor) → `NoCandidates`.
+#[tokio::test]
+async fn sybil_min_stake_without_registry_fails_closed() {
+    let a = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let b = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    let mut cfg = base_cfg(1, 1);
+    cfg.sybil.min_stake = 5;
+    cfg.validate().unwrap();
+    let coord = coordinator(&[&a, &b], cfg, st as Arc<dyn TrustStore>).await;
+
+    let err = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, p2p_node::CoordinatorError::NoCandidates),
+        "Sybil stake floor with no registry must fail closed, got {err:?}",
+    );
 }

@@ -15,6 +15,7 @@
 pub mod admission;
 pub mod antiabuse;
 pub mod canary;
+pub mod capability_store;
 pub mod compression;
 pub mod coordinator;
 pub mod datasource;
@@ -39,6 +40,7 @@ pub mod worker;
 pub use admission::{AdmissionController, FreeResources, Lease};
 pub use antiabuse::{cost_gate_reason, Blocklist, RateLimiter};
 pub use canary::CanaryAuditor;
+pub use capability_store::{CapabilityStore, MeasuredExecution};
 pub use coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 pub use datasource::{
     default_provider, AzureProvider, CloudCredential, DataFormat, DataSourceError, GcsProvider,
@@ -48,7 +50,9 @@ pub use datasource::{
 pub use discovery::{Candidate, CandidateFilter, Discovery, StaticDiscovery};
 #[cfg(feature = "duckdb-engine")]
 pub use duckdb_engine::DuckDbEngine;
-pub use engine::{EngineError, ExecLease, JobContext, MockEngine, QueryEngine};
+pub use engine::{
+    EngineError, ExecLease, JobContext, MockEngine, QueryEngine, EXTENSION_HARDENING_SQL,
+};
 pub use estimator::{
     csv_metadata, delta_metadata, estimate_parquet, estimate_table_files, estimate_text,
     estimate_working_set, ndjson_metadata, parquet_metadata_from_resultset,

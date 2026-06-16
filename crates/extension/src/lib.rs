@@ -26,8 +26,8 @@ use duckdb::vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab};
 use duckdb::{duckdb_entrypoint_c_api, Connection, Result};
 
 use p2p_config::{
-    BlockKind, BlocklistStore, ConfigStore, PaymentPref, PreferMode, QueryOverrides, SettingRow,
-    VerifyModeCfg,
+    BlockKind, BlocklistStore, ConfigStore, DataClassCfg, PaymentPref, PreferMode, QueryOverrides,
+    SettingRow, VerifyModeCfg,
 };
 use p2p_node::{EngineError, ExecLease, Node, QueryEngine};
 use p2p_proto::{ResultSet, Value as PValue};
@@ -635,19 +635,26 @@ fn broadcast_stake(
     const TON: u128 = 1_000_000_000;
     let amt = (amount.max(0) as u128) * TON;
     let qid = now_secs();
+    // Gas/storage headroom (nanoton) attached on top of any bonded value so the
+    // vault's COMPUTE phase actually runs on-chain: a 0-value internal message is
+    // skipped (cskip_no_gas), and StakeDeposit additionally requires the incoming
+    // value to clear `amount + MIN_TONS_FOR_STORAGE` (0.05 TON). 0.1 TON covers
+    // the 0.05 storage floor + compute/forward fees with margin.
+    const ONCHAIN_GAS: u128 = 100_000_000; // 0.1 TON
     let hash = match action {
         "unstake" => rpc
             .send_internal(
                 &vault_addr,
-                0,
+                ONCHAIN_GAS,
                 &p2p_settlement::build_stake_unbond(qid, amt),
             )
             .map_err(boxed)?,
-        // stake deposit attaches the bonded value to the vault.
+        // stake deposit attaches the bonded value PLUS gas/storage headroom so the
+        // vault receives `amt + ONCHAIN_GAS` (> amt + 0.05 floor) and bonds `amt`.
         _ => rpc
             .send_internal(
                 &vault_addr,
-                amt,
+                amt + ONCHAIN_GAS,
                 &p2p_settlement::build_stake_deposit(qid, amt),
             )
             .map_err(boxed)?,
@@ -854,7 +861,11 @@ fn broadcast_admin_params(
     let params = GlobalParams::from_config_parts(e, sched);
     params.validate().map_err(boxed)?;
     let body = p2p_settlement::build_update_params(now_secs(), &fee_addr, &params);
-    rpc.send_internal(&gp_addr, 0, &body).map_err(boxed)
+    // Attach compute-gas headroom (nanoton): a 0-value internal message to
+    // GlobalParams is skipped (cskip_no_gas) and never runs update_params. The
+    // contract edits storage in place, so this small value only funds its compute
+    // phase (it is not a payout). 0.05 TON is ample for the update.
+    rpc.send_internal(&gp_addr, 50_000_000, &body).map_err(boxed)
 }
 
 /// `CALL p2p_admin_params()` — push the current `[economics]` params to the
@@ -1269,15 +1280,12 @@ impl HostEngine {
         // (e.g. `read_csv_auto('/etc/passwd')`). Finally `lock_configuration=true`
         // so the untrusted query cannot re-open any of it with a later `SET`.
         conn.execute_batch(&format!(
-            "SET memory_limit='{mb}MB'; SET threads={}; \
-             SET autoinstall_known_extensions=false; \
-             SET autoload_known_extensions=false; \
-             SET allow_community_extensions=false; \
-             SET allow_unsigned_extensions=false; \
+            "SET memory_limit='{mb}MB'; SET threads={threads}; {hardening} \
              SET enable_external_access=false; \
              SET disabled_filesystems='LocalFileSystem'; \
              SET lock_configuration=true;",
-            lease.threads.max(1)
+            threads = lease.threads.max(1),
+            hardening = p2p_node::EXTENSION_HARDENING_SQL,
         ))
         .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
 
@@ -1424,6 +1432,20 @@ fn query_overrides(bind: &BindInfo) -> QueryOverrides {
             _ => None,
         };
     }
+    if let Some(v) = bind.get_named_parameter("data_class") {
+        ov.data_class = match v.to_string().trim().to_ascii_lowercase().as_str() {
+            "public" => Some(DataClassCfg::Public),
+            "internal" => Some(DataClassCfg::Internal),
+            "sensitive" => Some(DataClassCfg::Sensitive),
+            _ => None,
+        };
+    }
+    if let Some(v) = bind.get_named_parameter("require_staked_hosts") {
+        ov.require_staked_hosts = Some(matches!(
+            v.to_string().trim().to_ascii_lowercase().as_str(),
+            "true" | "1" | "yes" | "on"
+        ));
+    }
     ov
 }
 
@@ -1512,17 +1534,110 @@ impl VTab for QueryVTab {
     }
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
-        let v = |id| LogicalTypeHandle::from(id);
-        Some(vec![
-            ("replicas".to_string(), v(LogicalTypeId::Bigint)),
-            ("quorum".to_string(), v(LogicalTypeId::Bigint)),
-            ("min_trust".to_string(), v(LogicalTypeId::Double)),
-            ("min_attest".to_string(), v(LogicalTypeId::Varchar)),
-            ("min_attestation".to_string(), v(LogicalTypeId::Varchar)),
-            ("verify".to_string(), v(LogicalTypeId::Varchar)),
-            ("prefer".to_string(), v(LogicalTypeId::Varchar)),
-            ("payment".to_string(), v(LogicalTypeId::Varchar)),
-        ])
+        Some(query_named_params())
+    }
+}
+
+/// The per-call named parameters shared by `p2p_query` and `p2p_query_meta`.
+fn query_named_params() -> Vec<(String, LogicalTypeHandle)> {
+    let v = |id| LogicalTypeHandle::from(id);
+    vec![
+        ("replicas".to_string(), v(LogicalTypeId::Bigint)),
+        ("quorum".to_string(), v(LogicalTypeId::Bigint)),
+        ("min_trust".to_string(), v(LogicalTypeId::Double)),
+        ("min_attest".to_string(), v(LogicalTypeId::Varchar)),
+        ("min_attestation".to_string(), v(LogicalTypeId::Varchar)),
+        ("verify".to_string(), v(LogicalTypeId::Varchar)),
+        ("prefer".to_string(), v(LogicalTypeId::Varchar)),
+        ("payment".to_string(), v(LogicalTypeId::Varchar)),
+        ("data_class".to_string(), v(LogicalTypeId::Varchar)),
+        ("require_staked_hosts".to_string(), v(LogicalTypeId::Boolean)),
+    ]
+}
+
+/// Render a [`p2p_node::QueryOutcome`]'s execution/verification metadata as
+/// (group, key, value) rows for `p2p_query_meta` — the introspection companion to
+/// `p2p_query`, which returns only the result rows.
+fn query_meta_rows(outcome: &p2p_node::QueryOutcome) -> Vec<[String; 3]> {
+    let g = "query";
+    let winner = outcome
+        .winner
+        .as_ref()
+        .map(|w| w.as_str().to_string())
+        .unwrap_or_else(|| "<none>".to_string());
+    vec![
+        [g.into(), "job_id".into(), outcome.job_id.0.clone()],
+        [
+            g.into(),
+            "executed_locally".into(),
+            outcome.executed_locally.to_string(),
+        ],
+        [g.into(), "verified".into(), outcome.verified.to_string()],
+        [g.into(), "agreement".into(), outcome.agreement.to_string()],
+        [g.into(), "quorum".into(), outcome.quorum.to_string()],
+        [g.into(), "winner".into(), winner],
+        [
+            g.into(),
+            "participants".into(),
+            outcome.participants.len().to_string(),
+        ],
+        [g.into(), "receipts".into(), outcome.receipts.len().to_string()],
+        [
+            g.into(),
+            "agreed_hash".into(),
+            outcome
+                .agreed_hash
+                .clone()
+                .unwrap_or_else(|| "<none>".to_string()),
+        ],
+        [
+            g.into(),
+            "result_rows".into(),
+            outcome.result.row_count().to_string(),
+        ],
+    ]
+}
+
+/// `FROM p2p_query_meta('SELECT ...', [same named params as p2p_query])` — run a
+/// query and return its execution/verification METADATA (executed_locally,
+/// verified, agreement/quorum, winner, participant/receipt counts, agreed hash,
+/// result row count) as (group, key, value) rows. Back-compatible companion to
+/// `p2p_query`, whose row shape is unchanged (it still returns only result rows).
+struct QueryMetaVTab;
+impl VTab for QueryMetaVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let sql = bind.get_parameter(0).to_string();
+        let overrides = query_overrides(bind);
+        let node = get_node().map_err(boxed)?;
+        let outcome = runtime()
+            .block_on(async { node.query(&sql, overrides).await })
+            .map_err(boxed)?;
+        Ok(Rows3 {
+            rows: query_meta_rows(&outcome),
+        })
+    }
+
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    }
+
+    fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
+        Some(query_named_params())
     }
 }
 
@@ -1780,6 +1895,7 @@ pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // Distributed grid surface: run queries on the grid / locally, become a
     // host, join a swarm. These drive the live async `p2p-node`.
     con.register_table_function::<QueryVTab>("p2p_query")?;
+    con.register_table_function::<QueryMetaVTab>("p2p_query_meta")?;
     con.register_table_function::<ShareVTab>("p2p_share")?;
     con.register_table_function::<JoinVTab>("p2p_join")?;
     Ok(())

@@ -38,6 +38,22 @@ pub struct QueryOverrides {
     /// folds into `economics.default_payment` for this query only. `free` ⇒ NO
     /// chain interaction (no escrow/stake/anchor/fees); the job is still scored.
     pub payment: Option<PaymentPref>,
+    /// Per-call data class (`data_class => public|internal|sensitive`). Drives the
+    /// worker admission gate and the attestation/min-trust selection floors.
+    /// `None`/`public` ⇒ unchanged public-tier behavior (back-compatible).
+    pub data_class: Option<DataClassCfg>,
+    /// Per-call security gate (`require_staked_hosts => true`): restrict selection
+    /// to bonded/staked hosts. `None` ⇒ inherit `scheduler.require_staked_hosts`.
+    pub require_staked_hosts: Option<bool>,
+}
+
+/// Rank of an attestation tier string for floor comparison (`L0 < L1 < L2`).
+fn attestation_rank(level: &str) -> u8 {
+    match level.trim().to_ascii_uppercase().as_str() {
+        "L2" => 2,
+        "L1" => 1,
+        _ => 0,
+    }
 }
 
 impl QueryOverrides {
@@ -89,6 +105,22 @@ impl QueryOverrides {
             // Fold the per-call payment choice into the resolved config; the
             // coordinator then resolves the final free/paid mode per data class.
             cfg.economics.default_payment = pm;
+        }
+        if let Some(b) = self.require_staked_hosts {
+            cfg.scheduler.require_staked_hosts = b;
+        }
+        if let Some(dc) = self.data_class {
+            // Apply the class selection floors (raise-only): a higher class needs
+            // a stronger attestation tier + min trust; an explicit per-call
+            // min_attestation/min_trust above the floor still wins.
+            if let Some((floor_att, floor_trust)) = dc.selection_floor() {
+                if attestation_rank(floor_att) > attestation_rank(&cfg.trust.min_attestation) {
+                    cfg.trust.min_attestation = floor_att.to_string();
+                }
+                if floor_trust > cfg.trust.min_trust {
+                    cfg.trust.min_trust = floor_trust;
+                }
+            }
         }
         // candidate_sample_size must stay >= replicas; widen if needed.
         if cfg.discovery.candidate_sample_size < cfg.scheduler.replicas {
@@ -218,6 +250,41 @@ mod tests {
         .apply(&local_default)
         .unwrap();
         assert_eq!(eff.planner.prefer, PreferMode::Remote);
+    }
+
+    #[test]
+    fn data_class_applies_selection_floors_raise_only() {
+        let base = GridConfig::default();
+        // Public (or unset) leaves the trust gates unchanged.
+        let pub_eff = QueryOverrides {
+            data_class: Some(DataClassCfg::Public),
+            ..Default::default()
+        }
+        .apply(&base)
+        .unwrap();
+        assert_eq!(pub_eff.trust.min_attestation, base.trust.min_attestation);
+        assert_eq!(pub_eff.trust.min_trust, base.trust.min_trust);
+
+        // Sensitive raises the attestation floor to L2 and min_trust to the floor.
+        let sens = QueryOverrides {
+            data_class: Some(DataClassCfg::Sensitive),
+            ..Default::default()
+        }
+        .apply(&base)
+        .unwrap();
+        assert_eq!(sens.trust.min_attestation, "L2");
+        assert!(sens.trust.min_trust >= 0.80);
+
+        // An explicit higher min_trust still wins (floor only raises).
+        let higher = QueryOverrides {
+            data_class: Some(DataClassCfg::Internal),
+            min_trust: Some(0.95),
+            ..Default::default()
+        }
+        .apply(&base)
+        .unwrap();
+        assert_eq!(higher.trust.min_attestation, "L1");
+        assert_eq!(higher.trust.min_trust, 0.95);
     }
 
     #[test]

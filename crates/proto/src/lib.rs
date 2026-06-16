@@ -17,7 +17,7 @@ pub mod value;
 pub mod version;
 
 pub use attestation::{Attestation, AttestationLevel};
-pub use capability::CapabilityAd;
+pub use capability::{CapabilityAd, CapabilityProfile};
 pub use ids::{JobId, NodeId, QueryHash};
 pub use messages::*;
 pub use value::{ResultSet, Value};

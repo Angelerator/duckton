@@ -236,6 +236,17 @@ struct SyncedParamsState {
     policy: Option<OnchainPolicy>,
 }
 
+/// Requester-measured workload magnitude attested into a [`Receipt`] (the
+/// grid-wide measured-capability signal). `0` = unknown. Only the winner's
+/// result is measured by the requester (losers are reset before transfer), so
+/// non-winner / failure receipts carry the default zeros.
+#[derive(Debug, Clone, Copy, Default)]
+struct ObservedSize {
+    input_bytes: u64,
+    result_rows: u64,
+    result_bytes: u64,
+}
+
 /// One worker that committed a result hash and whose decision stream is open.
 struct InFlight {
     worker: NodeId,
@@ -465,10 +476,14 @@ impl Coordinator {
             return Ok(outcome);
         }
 
-        let data_class = DataClass::Public; // class selection is a future extension
-                                            // Resolve the per-job payment mode (free vs paid). Free jobs run the exact
-                                            // off-chain path (no escrow/stake/anchor/fees); only PAID jobs feed the
-                                            // economics `stake_factor` into selection. Scoring runs regardless.
+        // Per-job data class from the request (`data_class => ...`), defaulting to
+        // Public so the unset path is unchanged. It drives the worker admission
+        // gate (`serves_data_class`), the economics free/paid resolution, and the
+        // attestation/min-trust selection floors already applied in `apply`.
+        let data_class = data_class_from_cfg(overrides.data_class.unwrap_or(DataClassCfg::Public));
+        // Resolve the per-job payment mode (free vs paid). Free jobs run the exact
+        // off-chain path (no escrow/stake/anchor/fees); only PAID jobs feed the
+        // economics `stake_factor` into selection. Scoring runs regardless.
         let paid = cfg
             .economics
             .resolve_payment(data_class_to_cfg(data_class))
@@ -662,9 +677,41 @@ impl Coordinator {
                         return false;
                     }
                 }
+                // Staked-hosts security gate: when required, only bonded hosts
+                // (positive stake in the wired registry) qualify. No registry
+                // wired ⇒ nobody qualifies (fail closed → NoCandidates).
+                if cfg.scheduler.require_staked_hosts {
+                    let staked = self
+                        .stake_registry
+                        .as_ref()
+                        .map(|r| r.stake_of(id) > 0)
+                        .unwrap_or(false);
+                    if !staked {
+                        return false;
+                    }
+                }
+                // Sybil stake-floor gate (anti-cheat): when `[sybil].min_stake`
+                // (whole TON) is set, a candidate must clear that bonded stake to
+                // qualify — raising the cost of minting throwaway identities.
+                // Default `0` ⇒ off; like the staked-hosts gate it fails closed
+                // when no registry/stake is present.
+                if cfg.sybil.min_stake > 0 {
+                    const TON: Amount = 1_000_000_000;
+                    let need = cfg.sybil.min_stake as Amount * TON;
+                    let staked = self
+                        .stake_registry
+                        .as_ref()
+                        .map(|r| r.stake_of(id))
+                        .unwrap_or(0);
+                    if staked < need {
+                        return false;
+                    }
+                }
                 true
             }
-            None => true, // unknown id (TOFU) can't be tracked → keep
+            // Unknown id (TOFU) can't be tracked → keep, UNLESS a stake gate is on
+            // (an unverifiable peer cannot be proven bonded → drop, fail closed).
+            None => !cfg.scheduler.require_staked_hosts && cfg.sybil.min_stake == 0,
         });
         if candidates.is_empty() {
             return Ok(AttemptResult::NoCandidates);
@@ -1047,12 +1094,33 @@ impl Coordinator {
 
         // 7c. Verdict + receipt accounting for ALL committed providers (winner +
         // losers). Streams are already settled above.
+        //
+        // The requester MEASURES the winner's delivered result (rows + serialized
+        // bytes) — a counterparty-attested capability signal that the provider
+        // cannot inflate. Losers are reset before transfer, so only the winner
+        // carries a measured magnitude; input size is unknown here (0).
+        let winner_obs = ObservedSize {
+            input_bytes: 0,
+            result_rows: result.as_ref().map(|r| r.row_count() as u64).unwrap_or(0),
+            result_bytes: result
+                .as_ref()
+                .and_then(|r| p2p_proto::to_bytes(r).ok())
+                .map(|b| b.len() as u64)
+                .unwrap_or(0),
+        };
         for f in std::iter::once(&winner).chain(losers.iter()) {
             let is_winner = std::ptr::eq(f, &winner);
             if !is_winner && f.hash == agreed && !non_verifiable {
                 agreeing_non_winners.push(f.worker.clone());
             }
             let verdict = if non_verifiable {
+                Verdict::Inconclusive
+            } else if is_winner && result.is_none() {
+                // The winner committed the agreed hash but its result transfer
+                // failed/timed out (7b): the attempt is abandoned as inconclusive
+                // and re-dispatched. Do NOT book a `Correct` success it never
+                // delivered — and no penalty either (an at-transfer silence is a
+                // job-fault here, indistinguishable from a transport hiccup).
                 Verdict::Inconclusive
             } else if f.hash == agreed {
                 Verdict::Correct
@@ -1066,6 +1134,11 @@ impl Coordinator {
                 commitment_failers.push(f.worker.clone());
             }
 
+            let obs = if is_winner {
+                winner_obs
+            } else {
+                ObservedSize::default()
+            };
             receipts.push(self.make_receipt(
                 job_id,
                 &f.worker,
@@ -1073,6 +1146,7 @@ impl Coordinator {
                 &f.hash,
                 verdict,
                 f.latency_ms,
+                obs,
             ));
             if verdict.is_provider_fault() {
                 let penalty = penalty_for(true);
@@ -1101,7 +1175,15 @@ impl Coordinator {
         //    fault — never penalizing a worker that simply declined.
         if verified {
             for node in &silent {
-                receipts.push(self.make_receipt(job_id, node, query_hash, "", Verdict::Timeout, 0));
+                receipts.push(self.make_receipt(
+                    job_id,
+                    node,
+                    query_hash,
+                    "",
+                    Verdict::Timeout,
+                    0,
+                    ObservedSize::default(),
+                ));
                 let penalty = penalty_for(true);
                 if penalty > 0.0 {
                     self.trust_store.penalize(node, penalty);
@@ -1112,7 +1194,15 @@ impl Coordinator {
                 // Use the classified verdict (neutral for an "at capacity" decline,
                 // resource/infeasible for a job fault). Only an actual provider
                 // fault penalizes / counts as a broken commitment.
-                receipts.push(self.make_receipt(job_id, node, query_hash, "", *verdict, 0));
+                receipts.push(self.make_receipt(
+                    job_id,
+                    node,
+                    query_hash,
+                    "",
+                    *verdict,
+                    0,
+                    ObservedSize::default(),
+                ));
                 if verdict.is_provider_fault() {
                     let penalty = penalty_for(true);
                     if penalty > 0.0 {
@@ -1125,16 +1215,23 @@ impl Coordinator {
 
         for r in &receipts {
             self.trust_store.record(r);
+            // Fold the requester-measured workload magnitude into the peer's
+            // proven-capability aggregate (no-op for non-Correct receipts).
+            self.trust_store.observe_capability(r);
         }
-        self.trust_store.record_requester(&self_id, verified, now);
 
         let result = match result {
             Some(r) => r,
             None => {
-                // Winner did not actually stream a result — re-dispatch.
+                // Winner did not actually stream a result — re-dispatch. The
+                // requester observation is booked only on a terminal outcome (as
+                // in every other inconclusive re-dispatch path), never for an
+                // attempt that produced no usable result.
                 return Ok(AttemptResult::Inconclusive { tried: selected });
             }
         };
+
+        self.trust_store.record_requester(&self_id, verified, now);
 
         // Settle the paid job: open the per-job escrow NOW that the verified quorum
         // hash is known (open-escrow-per-job, BLOCKCHAIN_ECONOMICS §6.2/§12) binding
@@ -1342,7 +1439,35 @@ impl Coordinator {
             cfg.economics.ranking.exploration_rate,
             cfg.economics.ranking.exploration_saturation,
         );
-        (soft_trust_score(&cfg.trust.weights, &inputs) + bonus).clamp(0.0, 1.0)
+        // Measured proven-capability term (grid-wide capability model): bias
+        // selection toward peers COUNTERPARTY-measured to handle real work. The
+        // weight defaults to 0.0, so this is a strict no-op (byte-identical
+        // selection) until an operator opts in. An inflated self-claim earns
+        // nothing here because the term is driven purely by measured successes.
+        let capability_weight = cfg.economics.ranking.capability_weight;
+        let cap_term = if capability_weight > 0.0 {
+            capability_weight
+                * self.trust_store.capability_confidence(
+                    worker,
+                    rep.prior_alpha,
+                    rep.prior_beta,
+                    rep.confidence_z,
+                )
+        } else {
+            0.0
+        };
+        let score = (soft_trust_score(&cfg.trust.weights, &inputs) + bonus + cap_term).clamp(0.0, 1.0);
+        // Newcomer trust ceiling (anti-cheat): a thin-history node cannot exceed
+        // `newcomer_trust_ceiling` until it has `newcomer_obs_threshold` verified
+        // observations — so a freshly minted identity (even a well-staked or
+        // vouched one) can't jump straight into the top ranks. Default ceiling
+        // `1.0` ⇒ no-op (byte-identical selection).
+        let ranking = &cfg.economics.ranking;
+        if ranking.newcomer_trust_ceiling < 1.0 && obs < ranking.newcomer_obs_threshold {
+            score.min(ranking.newcomer_trust_ceiling)
+        } else {
+            score
+        }
     }
 
     fn make_receipt(
@@ -1353,6 +1478,7 @@ impl Coordinator {
         result_hash: &str,
         verdict: Verdict,
         latency_ms: u64,
+        obs: ObservedSize,
     ) -> Receipt {
         let draft = ReceiptDraft {
             job_id: job_id.clone(),
@@ -1362,6 +1488,9 @@ impl Coordinator {
             verdict,
             latency_ms,
             ts: now_ts(),
+            observed_input_bytes: obs.input_bytes,
+            observed_result_rows: obs.result_rows,
+            observed_result_bytes: obs.result_bytes,
         };
         sign_receipt(draft, &IdentitySigner(self.identity()))
     }
@@ -1391,6 +1520,7 @@ impl Coordinator {
                 &f.hash,
                 verdict,
                 f.latency_ms,
+                ObservedSize::default(),
             );
             self.trust_store.record(&r);
         }
@@ -1449,18 +1579,27 @@ impl Coordinator {
         // for its confirmation — so we never settle against an unfunded escrow nor
         // report a job paid on a settle that actually failed/aborted.
         //
-        // PHASE-5 LIVE-PAID FOLLOW-UP (does not affect the mock/noop or free path):
-        // the hardened `JobEscrow` now binds a requester-committed candidate set
-        // (`candidatesHash`) so a compromised arbiter cannot redirect funds to an
-        // outside address. For the live `ton` rail this candidate set (the
-        // dispatched workers' payout wallets, resolvable here via `self.wallet_of`)
-        // must be threaded through `open_escrow_with_terms` and presented byte-
-        // identically at `settle`. Until that trait/EscrowHandle plumbing lands,
-        // the live paid settlement will be rejected on-chain by the candidate-
-        // commitment check. The economics layer is "design only (not implemented)"
-        // per docs/BLOCKCHAIN_ECONOMICS.md, so this gap is consistent with status.
-        let handle = match settlement.open_escrow_with_terms(job_id, max_bid, &result_hash, version)
-        {
+        // The requester-committed payout-eligible candidate set: the winner plus
+        // every agreeing non-winner (their payout wallets). The `ton` rail binds
+        // `candidatesCommitment(set)` into the per-job escrow terms at open and the
+        // settle below re-presents the SAME payees, so the on-chain candidate-set
+        // check passes. The mock/noop rails ignore it.
+        let mut candidate_wallets: Vec<WalletAddress> =
+            Vec::with_capacity(1 + agreeing_non_winners.len());
+        candidate_wallets.push(self.wallet_of(winner));
+        for n in agreeing_non_winners {
+            let w = self.wallet_of(n);
+            if !candidate_wallets.contains(&w) {
+                candidate_wallets.push(w);
+            }
+        }
+        let handle = match settlement.open_escrow_with_terms(
+            job_id,
+            max_bid,
+            &result_hash,
+            version,
+            &candidate_wallets,
+        ) {
             Ok(h) => h,
             Err(e) => {
                 debug!("open_escrow failed: {e}");
@@ -1542,6 +1681,15 @@ fn data_class_to_cfg(c: DataClass) -> DataClassCfg {
         DataClass::Public => DataClassCfg::Public,
         DataClass::Internal => DataClassCfg::Internal,
         DataClass::Sensitive => DataClassCfg::Sensitive,
+    }
+}
+
+/// Map the config data class onto the proto wire enum carried in an `Offer`.
+fn data_class_from_cfg(c: DataClassCfg) -> DataClass {
+    match c {
+        DataClassCfg::Public => DataClass::Public,
+        DataClassCfg::Internal => DataClass::Internal,
+        DataClassCfg::Sensitive => DataClass::Sensitive,
     }
 }
 

@@ -341,6 +341,17 @@ pub struct Receipt {
     pub latency_ms: u64,
     /// Unix-seconds timestamp.
     pub ts: u64,
+    /// Requester-MEASURED workload magnitude for this job (the grid-wide
+    /// measured-capability signal): input bytes dispatched, and the result the
+    /// requester actually received. `0` = unknown. These are signature-covered,
+    /// so they cannot be edited after the requester attests them. `#[serde(default)]`
+    /// keeps older receipts (without these fields) readable as zeros.
+    #[serde(default)]
+    pub observed_input_bytes: u64,
+    #[serde(default)]
+    pub observed_result_rows: u64,
+    #[serde(default)]
+    pub observed_result_bytes: u64,
     /// Hex Ed25519 public key of the requester (so verifiers can check `sig`).
     pub requester_pubkey: String,
     /// Hex Ed25519 signature over the canonical signing bytes.

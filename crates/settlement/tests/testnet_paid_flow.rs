@@ -384,7 +384,7 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
         ESCROW_BID + DEPLOY_GAS_BUFFER
     );
     let handle = settlement
-        .open_escrow_with_terms(&job, ESCROW_BID, &result_hash, synced_version)
+        .open_escrow_with_terms(&job, ESCROW_BID, &result_hash, synced_version, &[wallet])
         .expect("open_escrow_with_terms broadcasts the funded deploy");
     let escrow_raw = handle.address.to_raw_string();
     println!("  escrow address = {escrow_raw}");

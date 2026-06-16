@@ -49,6 +49,26 @@ struct Observation {
     fp: u64,
 }
 
+/// Bounded, O(1) measured-capability aggregate for one peer (the grid-wide
+/// proven-power signal). Built from counterparty-attested receipts: a provider
+/// cannot inflate it because the magnitudes are MEASURED by the requester, not
+/// claimed by the provider. Maxima ratchet up on verified success; `successes`
+/// feeds a confidence shrink so a peer seen once at a size is not yet trusted to
+/// do it routinely.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ProvenCapability {
+    /// Largest input the peer returned a verified answer for (bytes; `0` = none).
+    pub max_input_bytes: u64,
+    /// Largest result the requester actually received from the peer (rows).
+    pub max_result_rows: u64,
+    /// Largest result the requester actually received from the peer (bytes).
+    pub max_result_bytes: u64,
+    /// Count of verified successful observations backing the maxima.
+    pub successes: u32,
+    /// Timestamp of the most recent successful observation.
+    pub last_ts: u64,
+}
+
 /// Pluggable reputation/receipt store.
 ///
 /// Implementations must be cheap to share (`Arc<dyn TrustStore>`); methods take
@@ -56,6 +76,38 @@ struct Observation {
 pub trait TrustStore: Send + Sync {
     /// Ingest a verified receipt (caller must have checked the signature).
     fn record(&self, receipt: &Receipt);
+
+    /// Ingest a verified receipt's MEASURED workload magnitude into the peer's
+    /// proven-capability aggregate (architecture: grid-wide measured-capability
+    /// model). Only `Correct` receipts contribute, deduped by the same
+    /// `(job, requester)` fingerprint as [`Self::record`] so replays cannot
+    /// inflate it. Default no-op so existing stores/tests compile unchanged.
+    fn observe_capability(&self, _receipt: &Receipt) {}
+
+    /// The peer's measured proven capability, or `None` if nothing was ever
+    /// observed. Default `None` (stores that don't track capability).
+    fn proven_capability(&self, _worker: &NodeId) -> Option<ProvenCapability> {
+        None
+    }
+
+    /// A `[0,1]` confidence in the peer's proven capability: the Wilson-shrunk
+    /// fraction of measured successes, so a peer with thin capability history is
+    /// not yet treated as fully proven. `0.0` when no capability is recorded.
+    /// Reuses [`confidence_reputation`] over the success count. Default `0.0`.
+    fn capability_confidence(
+        &self,
+        worker: &NodeId,
+        prior_alpha: f64,
+        prior_beta: f64,
+        z: f64,
+    ) -> f64 {
+        match self.proven_capability(worker) {
+            Some(cap) if cap.successes > 0 => {
+                confidence_reputation(1.0, cap.successes as usize, prior_alpha, prior_beta, z)
+            }
+            _ => 0.0,
+        }
+    }
     /// Recency-weighted correctness rate in `[0,1]` for a worker (`now` = clock).
     fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64>;
     /// Number of recorded observations for a worker.
@@ -121,6 +173,12 @@ struct WorkerState {
     seen: HashSet<u64>,
     voucher_trust: f64,
     penalty: f64,
+    /// Measured proven-capability aggregate (O(1) maxima + success count).
+    capability: ProvenCapability,
+    /// Fingerprints of receipts already folded into `capability` (replay dedup),
+    /// with a FIFO order so the set stays bounded by the observation cap.
+    cap_seen: HashSet<u64>,
+    cap_seen_order: VecDeque<u64>,
 }
 
 impl WorkerState {
@@ -130,6 +188,9 @@ impl WorkerState {
             seen: HashSet::new(),
             voucher_trust: 0.0,
             penalty: 0.0,
+            capability: ProvenCapability::default(),
+            cap_seen: HashSet::new(),
+            cap_seen_order: VecDeque::new(),
         }
     }
 }
@@ -228,6 +289,50 @@ impl TrustStore for InMemoryTrustStore {
                 }
             }
         });
+    }
+
+    fn observe_capability(&self, receipt: &Receipt) {
+        // Only a verified success demonstrates capability; everything else is
+        // neutral (a heavy/infeasible job that the peer legitimately could not do
+        // is a job/requester fault, never a capability claim).
+        if !receipt.verdict.is_correct() {
+            return;
+        }
+        let cap = self.max_obs_per_worker;
+        let fp = receipt_fingerprint(receipt);
+        let input = receipt.observed_input_bytes;
+        let rows = receipt.observed_result_rows;
+        let bytes = receipt.observed_result_bytes;
+        let ts = receipt.ts;
+        self.with_worker(&receipt.worker_id, |state| {
+            // Replay defense: fold each unique (job, requester) receipt once so a
+            // replayed receipt cannot inflate the success count.
+            if !state.cap_seen.insert(fp) {
+                return;
+            }
+            state.cap_seen_order.push_back(fp);
+            while state.cap_seen_order.len() > cap {
+                if let Some(old) = state.cap_seen_order.pop_front() {
+                    state.cap_seen.remove(&old);
+                }
+            }
+            let c = &mut state.capability;
+            c.max_input_bytes = c.max_input_bytes.max(input);
+            c.max_result_rows = c.max_result_rows.max(rows);
+            c.max_result_bytes = c.max_result_bytes.max(bytes);
+            c.successes = c.successes.saturating_add(1);
+            c.last_ts = c.last_ts.max(ts);
+        });
+    }
+
+    fn proven_capability(&self, worker: &NodeId) -> Option<ProvenCapability> {
+        let inner = self.inner.lock().unwrap();
+        let cap = inner.workers.get(worker)?.capability;
+        if cap.successes == 0 {
+            None
+        } else {
+            Some(cap)
+        }
     }
 
     fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64> {
@@ -470,6 +575,9 @@ mod tests {
             verdict,
             latency_ms: 1,
             ts,
+            observed_input_bytes: 0,
+            observed_result_rows: 0,
+            observed_result_bytes: 0,
             requester_pubkey: String::new(),
             sig: String::new(),
         }
@@ -611,6 +719,46 @@ mod tests {
         assert!(s
             .confident_reputation(&NodeId("b3:none".into()), 100, 1.0, 2.0, 1.96)
             .is_none());
+    }
+
+    #[test]
+    fn observe_capability_ratchets_maxima_dedups_and_ignores_failures() {
+        let s = store();
+        let w = NodeId("b3:w".into());
+        assert!(s.proven_capability(&w).is_none(), "no history => None");
+
+        let mut r = receipt("b3:w", Verdict::Correct, 100);
+        r.observed_input_bytes = 1_000;
+        r.observed_result_rows = 50;
+        r.observed_result_bytes = 2_000;
+        s.observe_capability(&r);
+        s.observe_capability(&r); // replay of the SAME receipt is deduped
+        let cap = s.proven_capability(&w).unwrap();
+        assert_eq!(cap.successes, 1, "replay must not inflate the success count");
+        assert_eq!(cap.max_input_bytes, 1_000);
+        assert_eq!(cap.max_result_rows, 50);
+        assert_eq!(cap.max_result_bytes, 2_000);
+
+        // A distinct, smaller success bumps the count but never lowers the maxima.
+        let mut r2 = receipt("b3:w", Verdict::Correct, 200);
+        r2.observed_result_rows = 10;
+        s.observe_capability(&r2);
+        let cap = s.proven_capability(&w).unwrap();
+        assert_eq!(cap.successes, 2);
+        assert_eq!(cap.max_result_rows, 50, "maxima ratchet up only");
+
+        // A non-Correct verdict never contributes to proven capability.
+        s.observe_capability(&receipt("b3:w", Verdict::Incorrect, 300));
+        assert_eq!(s.proven_capability(&w).unwrap().successes, 2);
+
+        // Confidence is positive once proven, zero for an unknown peer, and grows
+        // with more measured successes.
+        let c2 = s.capability_confidence(&w, 1.0, 2.0, 1.96);
+        assert!(c2 > 0.0 && c2 < 1.0);
+        assert_eq!(
+            s.capability_confidence(&NodeId("b3:none".into()), 1.0, 2.0, 1.96),
+            0.0
+        );
     }
 
     #[test]

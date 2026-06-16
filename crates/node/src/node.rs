@@ -39,6 +39,7 @@ use crate::admission::AdmissionController;
 use crate::coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 use crate::discovery::{Candidate, StaticDiscovery};
 use crate::engine::QueryEngine;
+use crate::estimator::WorkingSetEstimate;
 use crate::planner::{DefaultPlanner, LocalExecutor, LocalOrRemotePlanner};
 use crate::worker::{Worker, WorkerParams};
 
@@ -208,6 +209,12 @@ impl Node {
         if let Some(src) = stack.params_source {
             self.coordinator = self.coordinator.with_params_source(src);
         }
+        // Wire the on-chain/in-memory stake registry so the `require_staked_hosts`
+        // gate and the paid `stake_factor` reflect it. `None` (free grid) leaves
+        // the coordinator's default behavior (no gate, `0.0` factor) untouched.
+        if let Some(reg) = stack.stake_registry {
+            self.coordinator = self.coordinator.with_stake_registry(reg);
+        }
         if stack.onchain {
             self.has_wallet = true;
         }
@@ -262,13 +269,17 @@ impl Node {
         let transport = self.coordinator.transport();
         let admission = AdmissionController::new(&self.config.budget);
         let params = WorkerParams::from_config(&self.config);
-        let worker = Worker::new(
+        let mut worker = Worker::new(
             transport,
             Arc::clone(&self.engine),
             admission,
             Attestation::stub_l0(),
             params,
         );
+        if self.config.worker.self_measure_capability {
+            worker = worker
+                .with_capability_store(Arc::new(crate::capability_store::CapabilityStore::open()));
+        }
         worker.spawn()
     }
 
@@ -316,7 +327,19 @@ impl Node {
             ov.prefer = Some(PreferMode::Local);
         }
 
-        match self.coordinator.run_query(sql, ov.clone()).await {
+        // Conservative pre-flight estimate (P1-2): only for confidently-tiny,
+        // pure in-memory queries (no data source). It lets `auto` keep such a
+        // query on the free local path even when a grid is configured, instead of
+        // shipping it remote. `None` (any query with a data source, the common
+        // case) ⇒ exactly today's routing. The full estimate source (a SQL-source
+        // analyzer + engine Parquet/EXPLAIN probes) is deferred — see docs.
+        let estimate = preflight_estimate(sql);
+
+        match self
+            .coordinator
+            .run_query_planned(sql, ov.clone(), estimate)
+            .await
+        {
             Ok(outcome) => Ok(outcome),
             // Graceful fallback: the user did not pin remote and the grid turned
             // out to be unreachable / insufficient → run locally for free. Not in
@@ -331,6 +354,43 @@ impl Node {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// A **conservative** cheap pre-flight working-set estimate (P1-2): returns a
+/// (tiny) estimate ONLY for a query with no data source at all (a pure in-memory
+/// scalar like `SELECT 1 + 1`), so `auto` keeps it on the free local path rather
+/// than shipping it to the grid. Any query that references a data source — which
+/// the locked-down local engine cannot read anyway (no FS / no network) — yields
+/// `None`, preserving today's routing exactly. A wrong guess only affects the
+/// local-vs-remote *route* (the adaptive local-exec failover re-dispatches to the
+/// grid on a resource blow-up), never the result, so this stays safe.
+///
+/// The full estimate source — a SQL-source analyzer (referenced tables/columns/
+/// predicates + blocking-operator shape) and engine-backed Parquet/`EXPLAIN`
+/// probes — is deferred (see `docs/IMPROVEMENT_ROADMAP.md`); this hook is where it
+/// plugs in.
+fn preflight_estimate(sql: &str) -> Option<WorkingSetEstimate> {
+    let lower = sql.to_ascii_lowercase();
+    // Any `from` token ⇒ assume a data source ⇒ no cheap estimate (today's path).
+    // Crude on purpose: a false "has source" only forgoes the optimization, and a
+    // false "no source" merely attempts local exec (which fails over to the grid),
+    // so neither costs correctness.
+    let has_source = [" from ", "\tfrom ", "\nfrom ", ")from "]
+        .iter()
+        .any(|tok| lower.contains(tok));
+    if has_source {
+        return None;
+    }
+    Some(WorkingSetEstimate {
+        scanned_uncompressed_bytes: 0,
+        estimated_rows: 0,
+        scan_buffer_bytes: 0,
+        group_by_bytes: 0,
+        join_build_bytes: 0,
+        sort_bytes: 0,
+        peak_working_set_bytes: 0,
+        estimated_runtime_ms: 0,
+    })
 }
 
 /// Parse configured bootstrap seeds (`quic://host:port`, `host:port`, or a bare
@@ -354,4 +414,22 @@ fn resolve_seeds(seeds: &[String]) -> Vec<Candidate> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preflight_estimate;
+
+    #[test]
+    fn preflight_estimate_only_for_pure_in_memory_queries() {
+        // Pure scalar / no data source ⇒ a (tiny) estimate so `auto` stays local.
+        let e = preflight_estimate("SELECT 1 + 1").expect("pure scalar gets an estimate");
+        assert_eq!(e.peak_working_set_bytes, 0);
+        assert!(preflight_estimate("SELECT now()").is_some());
+
+        // Anything with a data source ⇒ None (today's routing preserved).
+        assert!(preflight_estimate("SELECT * FROM t").is_none());
+        assert!(preflight_estimate("select count(*)\nfrom read_csv_auto('x.csv')").is_none());
+        assert!(preflight_estimate("SELECT a FROM range(100)").is_none());
+    }
 }

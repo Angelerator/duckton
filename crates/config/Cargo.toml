@@ -15,5 +15,16 @@ serde_json = "1.0.150"
 thiserror = "2.0.18"
 toml = "1.1.2"
 
+# Windows owner-only DACL hardening for the secret/runtime files (the
+# cross-platform analog of the Unix 0600/0700 mode). Target-gated so it is only
+# pulled in (and compiled) on Windows; a no-op everywhere else.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tempfile = "3.27.0"

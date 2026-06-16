@@ -14,6 +14,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use p2p_proto::{ResultSet, Value};
 
+/// DuckDB extension-hardening PRAGMAs applied before any LOAD: no auto-install,
+/// no auto-load of known extensions, and no community/unsigned extensions. Shared
+/// verbatim by the node's strict `DuckDbEngine` and the extension's in-process
+/// `HostEngine` so this security-critical lockdown fragment cannot drift between
+/// the two engines.
+pub const EXTENSION_HARDENING_SQL: &str = "SET autoinstall_known_extensions=false; \
+     SET autoload_known_extensions=false; \
+     SET allow_community_extensions=false; \
+     SET allow_unsigned_extensions=false;";
+
 /// Errors from query execution.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {

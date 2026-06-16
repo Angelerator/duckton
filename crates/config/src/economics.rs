@@ -290,6 +290,22 @@ pub struct RankingEconomics {
     /// Observation count at which the exploration bonus has fully decayed to 0
     /// (a node with this many verified jobs is no longer "new").
     pub exploration_saturation: usize,
+    /// Weight of the **measured proven-capability** term in the selection score
+    /// (the grid-wide capability model): `+ capability_weight · capability_confidence`,
+    /// where confidence is the Wilson-shrunk fraction of counterparty-measured
+    /// successes. `0.0` (default) reproduces today's selection exactly; a small
+    /// positive value biases heavy work toward peers proven to handle it.
+    pub capability_weight: f64,
+    /// **Newcomer trust ceiling** (anti-cheat / cheap-fresh-identity guardrail): a
+    /// thin-history node — fewer than `newcomer_obs_threshold` verified
+    /// observations — cannot score above this in selection, regardless of its
+    /// inputs (stake, vouchers, a lucky "3-for-3"). `1.0` (default) ⇒ NO cap, so
+    /// selection is byte-identical to today; set e.g. `0.6` to keep brand-new
+    /// identities out of the top ranks until they actually build history.
+    pub newcomer_trust_ceiling: f64,
+    /// Observation count at/above which `newcomer_trust_ceiling` no longer applies
+    /// (a node with this many verified jobs is no longer "new").
+    pub newcomer_obs_threshold: usize,
 }
 
 impl Default for RankingEconomics {
@@ -300,6 +316,9 @@ impl Default for RankingEconomics {
             w_price: 0.25,
             exploration_rate: 0.0,
             exploration_saturation: 20,
+            capability_weight: 0.0,
+            newcomer_trust_ceiling: 1.0,
+            newcomer_obs_threshold: 20,
         }
     }
 }
@@ -632,7 +651,11 @@ impl EconomicsConfig {
         if r.w_quality < 0.0 || r.w_stake < 0.0 || r.w_price < 0.0 {
             return inv("economics.ranking weights must be >= 0".into());
         }
+        if r.capability_weight < 0.0 {
+            return inv("economics.ranking.capability_weight must be >= 0".into());
+        }
         pct("ranking.exploration_rate", r.exploration_rate)?;
+        pct("ranking.newcomer_trust_ceiling", r.newcomer_trust_ceiling)?;
 
         // Quality weights must be non-negative.
         let q = &self.quality;

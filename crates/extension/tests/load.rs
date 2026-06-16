@@ -211,6 +211,71 @@ fn extension_p2p_query_local_execution_end_to_end() {
     );
 }
 
+/// P0-1: `p2p_query_meta` surfaces the `QueryOutcome` execution/verification
+/// metadata (which `p2p_query` discards) back to SQL. A local-path query must
+/// report `executed_locally=true`, `verified=true`, and the real result row
+/// count — proving the introspection companion is wired to the live node.
+#[test]
+fn extension_p2p_query_meta_surfaces_outcome_metadata() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_query_meta_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
+    let ext = out_ext.display().to_string();
+    let cfg_dir = tmp_dir.join("cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+
+    let run = |sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", &cfg_dir)
+            .output()
+            .expect("run duckdb p2p_query_meta");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // The local (zero-grid) path runs in-process: executed_locally + verified.
+    let (ok, stdout, stderr) =
+        run("SELECT value FROM p2p_query_meta('SELECT 42 AS x') WHERE key='executed_locally';");
+    assert!(ok, "p2p_query_meta failed: {stderr}");
+    assert_eq!(stdout, "true", "local query must report executed_locally=true");
+
+    let (ok, stdout, _e) =
+        run("SELECT value FROM p2p_query_meta('SELECT 42 AS x') WHERE key='verified';");
+    assert!(ok);
+    assert_eq!(stdout, "true", "own-machine local result is verified");
+
+    let (ok, stdout, _e) = run(
+        "SELECT value FROM p2p_query_meta('SELECT * FROM range(3)') WHERE key='result_rows';",
+    );
+    assert!(ok);
+    assert_eq!(stdout, "3", "metadata must report the real result row count");
+
+    // p2p_query (the row surface) is unchanged: still returns only the rows.
+    let (ok, stdout, _e) = run("FROM p2p_query('SELECT 42 AS x');");
+    assert!(ok);
+    assert_eq!(stdout, "42", "p2p_query row shape is unchanged");
+}
+
 /// The free **local-execution** engine (`HostEngine`) must be locked down exactly
 /// like the node's strict engine: no network egress and NO local-filesystem
 /// access. A `p2p_query` that tries to read a local file off the free path must

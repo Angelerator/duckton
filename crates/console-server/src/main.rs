@@ -305,16 +305,33 @@ impl Grid {
                         r.latency_ms
                     }
                 });
+                // Terminal candidate state for the race visualization. Receipts are
+                // latency-sorted, so the fastest `quorum` agreeing workers (the winner
+                // + quorum-1) COMMIT and form the quorum; agreeing replicas beyond
+                // quorum were hedged extras the coordinator RESET; a divergent hash is
+                // committed-but-incorrect; anything else never delivered.
+                let mut agree_seen = 0usize;
                 let cands: Vec<J> = rs
                     .iter()
                     .map(|r| {
                         let is_winner = winner.as_ref() == Some(&r.worker_id);
                         let agreeing = o.agreed_hash.as_deref() == Some(r.result_hash.as_str())
                             && r.verdict.is_correct();
+                        let agree_rank = if agreeing {
+                            let i = agree_seen;
+                            agree_seen += 1;
+                            Some(i)
+                        } else {
+                            None
+                        };
                         let state = if is_winner {
                             "won"
-                        } else if r.verdict.is_correct() && agreeing {
-                            "reset"
+                        } else if let Some(rank) = agree_rank {
+                            if rank < quorum {
+                                "committed"
+                            } else {
+                                "reset"
+                            }
                         } else if r.verdict == p2p_proto::Verdict::Incorrect {
                             "committed"
                         } else {
@@ -733,6 +750,15 @@ async fn main() {
             behavior: "honest",
         },
         Spec {
+            alias: "marsh-otter",
+            level: AttestationLevel::L2,
+            mem_gb: 48,
+            threads: 24,
+            max_jobs: 8,
+            delay_ms: 18,
+            behavior: "honest",
+        },
+        Spec {
             alias: "amber-mole",
             level: AttestationLevel::L1,
             mem_gb: 24,
@@ -790,6 +816,7 @@ async fn main() {
         ("frost-owl", 0.8),
         ("harbor-vole", 0.8),
         ("tidal-fox", 0.8),
+        ("marsh-otter", 0.8),
         ("amber-mole", 0.7),
         ("pine-marten", 0.7),
     ]
@@ -809,6 +836,7 @@ async fn main() {
         ("frost-owl", 4200),
         ("harbor-vole", 3000),
         ("tidal-fox", 2600),
+        ("marsh-otter", 3400),
         ("amber-mole", 1500),
         ("pine-marten", 1200),
         ("slate-heron", 120),

@@ -27,10 +27,43 @@ pub struct ReceiptDraft {
     pub verdict: Verdict,
     pub latency_ms: u64,
     pub ts: u64,
+    /// Requester-measured workload magnitude (grid-wide capability signal); `0`
+    /// = unknown. Signature-covered.
+    pub observed_input_bytes: u64,
+    pub observed_result_rows: u64,
+    pub observed_result_bytes: u64,
+}
+
+impl ReceiptDraft {
+    /// A draft with no measured workload magnitude (`observed_* = 0`). Use the
+    /// struct fields directly when the requester has measured sizes.
+    pub fn new(
+        job_id: JobId,
+        worker_id: NodeId,
+        query_hash: QueryHash,
+        result_hash: String,
+        verdict: Verdict,
+        latency_ms: u64,
+        ts: u64,
+    ) -> Self {
+        Self {
+            job_id,
+            worker_id,
+            query_hash,
+            result_hash,
+            verdict,
+            latency_ms,
+            ts,
+            observed_input_bytes: 0,
+            observed_result_rows: 0,
+            observed_result_bytes: 0,
+        }
+    }
 }
 
 /// Canonical bytes that a receipt's signature covers. Stable field order with
 /// length-prefixing so distinct field values can never produce the same bytes.
+#[allow(clippy::too_many_arguments)]
 pub fn signing_bytes(
     job_id: &JobId,
     worker_id: &NodeId,
@@ -40,6 +73,9 @@ pub fn signing_bytes(
     verdict: Verdict,
     latency_ms: u64,
     ts: u64,
+    observed_input_bytes: u64,
+    observed_result_rows: u64,
+    observed_result_bytes: u64,
 ) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(b"duckdb-p2p-receipt-v1");
@@ -55,6 +91,9 @@ pub fn signing_bytes(
     buf.push(verdict_tag(verdict));
     buf.extend_from_slice(&latency_ms.to_le_bytes());
     buf.extend_from_slice(&ts.to_le_bytes());
+    buf.extend_from_slice(&observed_input_bytes.to_le_bytes());
+    buf.extend_from_slice(&observed_result_rows.to_le_bytes());
+    buf.extend_from_slice(&observed_result_bytes.to_le_bytes());
     buf
 }
 
@@ -82,6 +121,9 @@ pub fn sign_receipt(draft: ReceiptDraft, signer: &impl Signer) -> Receipt {
         draft.verdict,
         draft.latency_ms,
         draft.ts,
+        draft.observed_input_bytes,
+        draft.observed_result_rows,
+        draft.observed_result_bytes,
     );
     let sig = signer.sign_bytes(&msg);
     Receipt {
@@ -93,6 +135,9 @@ pub fn sign_receipt(draft: ReceiptDraft, signer: &impl Signer) -> Receipt {
         verdict: draft.verdict,
         latency_ms: draft.latency_ms,
         ts: draft.ts,
+        observed_input_bytes: draft.observed_input_bytes,
+        observed_result_rows: draft.observed_result_rows,
+        observed_result_bytes: draft.observed_result_bytes,
         requester_pubkey: hex::encode(signer.public_key()),
         sig: hex::encode(sig),
     }
@@ -135,6 +180,9 @@ pub fn verify_receipt(r: &Receipt) -> bool {
         r.verdict,
         r.latency_ms,
         r.ts,
+        r.observed_input_bytes,
+        r.observed_result_rows,
+        r.observed_result_bytes,
     );
     // `verify_strict` (not `verify`) rejects signature malleability and
     // low-order / small-subgroup public keys, so a valid signature is unique and
@@ -172,6 +220,9 @@ mod tests {
             verdict: Verdict::Correct,
             latency_ms: 12,
             ts: 1000,
+            observed_input_bytes: 0,
+            observed_result_rows: 0,
+            observed_result_bytes: 0,
         }
     }
 

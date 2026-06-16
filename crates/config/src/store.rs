@@ -735,22 +735,59 @@ fn is_secret_key(key: &str) -> bool {
     )
 }
 
-pub(crate) fn default_config_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("P2P_CONFIG_DIR") {
-        return PathBuf::from(d);
+/// The resolved config directory: `$P2P_CONFIG_DIR`, else `$XDG_CONFIG_HOME/duckdb-p2p`,
+/// else — on **Windows** — `%APPDATA%\duckdb-p2p`, else `$HOME/.config/duckdb-p2p`,
+/// else `%APPDATA%\duckdb-p2p`, else a temp dir. Shared by the runtime/blocklist/
+/// capability stores so they co-locate.
+///
+/// Windows prefers `%APPDATA%` ahead of `HOME`: under Git-Bash/MSYS a `HOME` is
+/// set, which would otherwise capture config under `HOME/.config` rather than the
+/// native per-user roaming location. Unix behavior is unchanged.
+pub fn default_config_dir() -> PathBuf {
+    let p2p = std::env::var("P2P_CONFIG_DIR").ok();
+    let xdg = std::env::var("XDG_CONFIG_HOME").ok();
+    let appdata = std::env::var("APPDATA").ok();
+    let home = std::env::var("HOME").ok();
+    pick_config_dir(
+        p2p.as_deref(),
+        xdg.as_deref(),
+        appdata.as_deref(),
+        home.as_deref(),
+        cfg!(windows),
+    )
+    .unwrap_or_else(|| std::env::temp_dir().join("duckdb-p2p"))
+}
+
+/// Pure precedence resolution from explicit env values + the platform flag, so
+/// the ordering is unit-testable without mutating the (process-global) env.
+/// Returns `None` to signal the temp-dir fallback. `windows == true` prefers
+/// `%APPDATA%` ahead of `HOME` (see [`default_config_dir`]); on unix the
+/// `%APPDATA%`-before-`HOME` branch is skipped, so behavior is identical to before.
+fn pick_config_dir(
+    p2p_config_dir: Option<&str>,
+    xdg_config_home: Option<&str>,
+    appdata: Option<&str>,
+    home: Option<&str>,
+    windows: bool,
+) -> Option<PathBuf> {
+    if let Some(d) = p2p_config_dir {
+        return Some(PathBuf::from(d));
     }
-    if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(x).join("duckdb-p2p");
+    if let Some(x) = xdg_config_home {
+        return Some(PathBuf::from(x).join("duckdb-p2p"));
     }
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return PathBuf::from(h).join(".config").join("duckdb-p2p");
+    if windows {
+        if let Some(a) = appdata.filter(|a| !a.is_empty()) {
+            return Some(PathBuf::from(a).join("duckdb-p2p"));
         }
     }
-    if let Ok(a) = std::env::var("APPDATA") {
-        return PathBuf::from(a).join("duckdb-p2p");
+    if let Some(h) = home.filter(|h| !h.is_empty()) {
+        return Some(PathBuf::from(h).join(".config").join("duckdb-p2p"));
     }
-    std::env::temp_dir().join("duckdb-p2p")
+    if let Some(a) = appdata {
+        return Some(PathBuf::from(a).join("duckdb-p2p"));
+    }
+    None
 }
 
 #[cfg(unix)]
@@ -763,7 +800,108 @@ fn restrict_permissions(path: &Path) {
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
+fn restrict_permissions(path: &Path) {
+    restrict_path_to_owner(path);
+}
+
+/// Restrict `path` so only the current OS user can access it — the cross-platform
+/// analog of the Unix `0600`/`0700` mode applied by [`restrict_permissions`].
+///
+/// On **Windows** this installs a *protected*, owner-only DACL (a single
+/// access-allowed ACE for the process token's user, with inheritance disabled so
+/// inherited grants — e.g. an `Everyone`/`Users` ACE from a loose parent — are
+/// dropped). Best-effort: a failure to harden is ignored (mirroring the Unix
+/// path, which also ignores errors), so a write never fails just because the OS
+/// rejected the ACL change. On non-Windows targets it is a no-op (Unix callers
+/// set the mode directly).
+///
+/// Residual risk: this grants the **owner** full control and removes inherited
+/// ACEs, but does not strip `SYSTEM`/`Administrators` (which can read any file
+/// regardless). That matches the Unix model's practical guarantee (root can read
+/// `0600` files) — the goal is "no other *standard* user can read the secret".
+pub fn restrict_path_to_owner(path: &Path) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+        use windows_sys::Win32::Security::Authorization::{
+            SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS,
+            TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
+        };
+        use windows_sys::Win32::Security::{
+            GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        // Full control for the owner; inheritance disabled. `windows-sys` exposes
+        // these flag types as plain integer aliases, so numeric values assign
+        // directly (FILE_ALL_ACCESS = 0x1F01FF; NO_INHERITANCE = 0).
+        const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
+        const NO_INHERITANCE: u32 = 0;
+
+        // Wide, NUL-terminated path for the `*W` API.
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        wide.push(0);
+
+        unsafe {
+            // 1. Current process token → its user (owner) SID.
+            let mut token: HANDLE = std::ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return;
+            }
+            let mut len: u32 = 0;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+            if len == 0 {
+                CloseHandle(token);
+                return;
+            }
+            let mut buf = vec![0u8; len as usize];
+            let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+            CloseHandle(token);
+            if ok == 0 {
+                return;
+            }
+            let sid = (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid;
+            if sid.is_null() {
+                return;
+            }
+
+            // 2. One ACE: the owner gets full control; nothing else is granted.
+            let mut ea: EXPLICIT_ACCESS_W = std::mem::zeroed();
+            ea.grfAccessPermissions = FILE_ALL_ACCESS;
+            ea.grfAccessMode = SET_ACCESS;
+            ea.grfInheritance = NO_INHERITANCE;
+            ea.Trustee.TrusteeForm = TRUSTEE_IS_SID;
+            ea.Trustee.TrusteeType = TRUSTEE_IS_USER;
+            ea.Trustee.ptstrName = sid.cast();
+
+            // 3. Build the new owner-only DACL.
+            let mut acl: *mut ACL = std::ptr::null_mut();
+            if SetEntriesInAclW(1, &ea, std::ptr::null(), &mut acl) != 0 {
+                return;
+            }
+
+            // 4. Apply it as a PROTECTED dacl (drops inherited ACEs) on the file.
+            SetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                acl,
+                std::ptr::null_mut(),
+            );
+            if !acl.is_null() {
+                LocalFree(acl.cast());
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -777,6 +915,38 @@ mod tests {
             dir.path().join("secrets"),
         );
         (store, dir)
+    }
+
+    #[test]
+    fn config_dir_precedence_is_platform_aware() {
+        // P2P_CONFIG_DIR wins outright on both platforms.
+        assert_eq!(
+            pick_config_dir(Some("/explicit"), Some("/xdg"), Some("C:\\AppData"), Some("/home/u"), true),
+            Some(PathBuf::from("/explicit")),
+        );
+        // XDG_CONFIG_HOME is next on both platforms.
+        assert_eq!(
+            pick_config_dir(None, Some("/xdg"), Some("C:\\AppData"), Some("/home/u"), false),
+            Some(PathBuf::from("/xdg").join("duckdb-p2p")),
+        );
+        // Windows prefers %APPDATA% ahead of a (Git-Bash/MSYS) HOME.
+        assert_eq!(
+            pick_config_dir(None, None, Some("C:\\Users\\me\\AppData\\Roaming"), Some("C:\\Users\\me"), true),
+            Some(PathBuf::from("C:\\Users\\me\\AppData\\Roaming").join("duckdb-p2p")),
+        );
+        // Unix ordering is UNCHANGED: HOME/.config wins, %APPDATA% ignored.
+        assert_eq!(
+            pick_config_dir(None, None, Some("C:\\ignored"), Some("/home/me"), false),
+            Some(PathBuf::from("/home/me").join(".config").join("duckdb-p2p")),
+        );
+        // %APPDATA% is the final non-temp fallback on unix when HOME is absent.
+        assert_eq!(
+            pick_config_dir(None, None, Some("C:\\AppData"), None, false),
+            Some(PathBuf::from("C:\\AppData").join("duckdb-p2p")),
+        );
+        // Nothing set ⇒ temp-dir fallback (None).
+        assert_eq!(pick_config_dir(None, None, None, None, true), None);
+        assert_eq!(pick_config_dir(None, None, None, None, false), None);
     }
 
     #[test]

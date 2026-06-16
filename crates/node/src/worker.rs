@@ -159,6 +159,10 @@ pub struct Worker {
     params: WorkerParams,
     sandbox: SandboxPolicy,
     antiabuse: Option<AntiAbuseRuntime>,
+    /// Optional durable self-capability profile store: when set, each successful
+    /// execution's MEASURED magnitude is folded into the node's signed
+    /// `CapabilityProfile`. `None` (default) ⇒ no profile is written.
+    capability: Option<Arc<crate::capability_store::CapabilityStore>>,
 }
 
 impl Worker {
@@ -177,7 +181,20 @@ impl Worker {
             params,
             sandbox: SandboxPolicy::disabled(),
             antiabuse: None,
+            capability: None,
         }
+    }
+
+    /// Wire a durable self-capability profile store (architecture §3 routing):
+    /// each successful execution's measured rows/bytes are folded into the node's
+    /// signed, monotonic [`crate::capability_store::CapabilityProfile`]. Off by
+    /// default; enabling it is the host opt-in (`[worker].self_measure_capability`).
+    pub fn with_capability_store(
+        mut self,
+        store: Arc<crate::capability_store::CapabilityStore>,
+    ) -> Self {
+        self.capability = Some(store);
+        self
     }
 
     /// Wire the anti-abuse runtime (ARCHITECTURE "Abuse resistance"): a shared
@@ -221,6 +238,19 @@ impl Worker {
                  Untrusted queries run in-process and DuckDB cannot restrict network egress \
                  to specific endpoints. Run hosts behind an OS-level egress firewall, or \
                  enable a real sandbox backend ([sandbox]), before exposing remote reads."
+            );
+        }
+        // Opt-in process-per-job OS enforcement (G1/G8) is requested but the
+        // enforced child-execution path (a sandboxed DuckDB subprocess + its
+        // result/credential transfer protocol) is not yet wired: be loud that jobs
+        // still run IN-PROCESS so an operator never believes a job that exceeds its
+        // lease will be OS-killed. The in-process default is fully intact.
+        if cfg.sandbox.process_per_job {
+            warn!(
+                sandbox_backend = sandbox.name(),
+                "[sandbox].process_per_job is enabled, but enforced process-per-job execution \
+                 is NOT yet wired — jobs continue to run in-process under the DuckDB lockdown. \
+                 See ARCHITECTURE.md §9.4 for the remaining subprocess protocol."
             );
         }
         self.sandbox = SandboxPolicy {
@@ -416,6 +446,29 @@ impl Worker {
             recent_receipts: vec![],
             free_mem_bytes: free.memory_bytes,
             free_threads: free.threads,
+        }
+    }
+
+    /// Fold a successful execution's MEASURED magnitude (result rows + serialized
+    /// bytes) into the durable self-capability profile. A no-op unless a store is
+    /// wired ([`Worker::with_capability_store`]); the node signs the update with
+    /// its own identity and a failed write is logged and ignored.
+    fn record_capability(&self, result: &ResultSet) {
+        let Some(store) = &self.capability else {
+            return;
+        };
+        let m = crate::capability_store::MeasuredExecution {
+            input_bytes: 0,
+            result_rows: result.row_count() as u64,
+            result_bytes: p2p_proto::to_bytes(result)
+                .map(|b| b.len() as u64)
+                .unwrap_or(0),
+            peak_memory_bytes: 0,
+            temp_dir_bytes: 0,
+        };
+        let signer = crate::signer::IdentitySigner(self.transport.identity());
+        if let Err(e) = store.observe(&signer, m) {
+            debug!("capability profile update failed: {e}");
         }
     }
 
@@ -679,6 +732,11 @@ impl Worker {
             }),
         )
         .await?;
+
+        // Fold this successful execution's measured magnitude into the node's
+        // durable self-capability profile (no-op unless wired). Done after the
+        // commit so it never delays delivery.
+        self.record_capability(&result);
 
         // Await the requester's decision: proceed (winner) or cancel (loser).
         match read_msg(&mut recv).await {

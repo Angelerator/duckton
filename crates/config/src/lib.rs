@@ -46,7 +46,10 @@ pub use economics::{
     WalletConfig,
 };
 pub use overrides::{JoinOverrides, QueryOverrides, ShareOverrides};
-pub use store::{flatten_settings, status_rows, ConfigStore, SettingRow, StoreError};
+pub use store::{
+    default_config_dir, flatten_settings, restrict_path_to_owner, status_rows, ConfigStore,
+    SettingRow, StoreError,
+};
 
 /// Errors from loading or validating configuration.
 #[derive(Debug, thiserror::Error)]
@@ -701,6 +704,12 @@ pub struct SchedulerConfig {
     pub progress_stall_multiplier: u32,
     /// Maximum number of jobs a requester runs concurrently (semaphore bound).
     pub max_inflight_jobs: usize,
+    /// Security gate: when `true`, only **bonded/staked** hosts (a positive stake
+    /// in the wired `StakeRegistry`) are eligible candidates — composes with the
+    /// attestation-tier routing for sensitive data. Default `false` (no gate, so
+    /// behavior is unchanged). With the gate on and no stake registry wired, no
+    /// candidate qualifies and the query surfaces `NoCandidates`.
+    pub require_staked_hosts: bool,
 }
 
 impl Default for SchedulerConfig {
@@ -722,6 +731,7 @@ impl Default for SchedulerConfig {
             progress_interval_ms: 2_000,
             progress_stall_multiplier: 5,
             max_inflight_jobs: 64,
+            require_staked_hosts: false,
         }
     }
 }
@@ -750,6 +760,12 @@ pub struct WorkerConfig {
     /// How often the host streams a progress/heartbeat update to the requester
     /// while a job executes (ms). `0` disables progress streaming.
     pub progress_interval_ms: u64,
+    /// When `true`, the host folds each successful execution's MEASURED magnitude
+    /// (result rows/bytes) into its durable, signed self-capability profile
+    /// (`capability.json`), building the empirical "what this node has really
+    /// pulled off" record. `false` (default) writes no profile — behavior is
+    /// exactly as before.
+    pub self_measure_capability: bool,
 }
 
 impl Default for WorkerConfig {
@@ -757,6 +773,7 @@ impl Default for WorkerConfig {
         Self {
             job_timeout_ms: 60_000,
             progress_interval_ms: 2_000,
+            self_measure_capability: false,
         }
     }
 }
@@ -885,6 +902,22 @@ pub enum DataClassCfg {
     Public,
     Internal,
     Sensitive,
+}
+
+impl DataClassCfg {
+    /// Selection-policy floors for this data class (architecture §7.5): the
+    /// minimum attestation tier (a HARD gate) and minimum soft-trust score a
+    /// worker needs to be selected for the class. `None` for `Public` so the
+    /// public tier is unchanged from the configured base (back-compatible). For
+    /// `Internal`/`Sensitive` these are applied as FLOORS (only ever raise the
+    /// configured `trust.min_attestation` / `trust.min_trust`, never lower them).
+    pub fn selection_floor(self) -> Option<(&'static str, f64)> {
+        match self {
+            DataClassCfg::Public => None,
+            DataClassCfg::Internal => Some(("L1", 0.85)),
+            DataClassCfg::Sensitive => Some(("L2", 0.80)),
+        }
+    }
 }
 
 /// Trust engine settings (architecture §7).
@@ -1307,6 +1340,20 @@ pub struct SandboxConfig {
     pub temp_dir_policy: SandboxTempDirPolicy,
     /// Explicit temp dir, required when `temp_dir_policy = custom`.
     pub temp_dir: Option<String>,
+    /// **Opt-in process-per-job OS enforcement (G1/G8).** When `true` (and a real
+    /// sandbox `backend` is available) the host runs each job in a dedicated,
+    /// OS-sandboxed child process via [`crate`-external `Sandbox::command`] —
+    /// rlimits / Seatbelt / cgroups+seccomp / Job Object — so a job that exceeds
+    /// its lease is killed without taking down the node.
+    ///
+    /// `false` (default) keeps the current, fully-tested **in-process** engine
+    /// (`HostEngine`/`DuckDbEngine`) behavior under the DuckDB configuration
+    /// lockdown — zero behavior change. NOTE: the enforced child-execution path
+    /// (a sandboxed DuckDB subprocess + its result/credential transfer protocol)
+    /// is not yet wired; enabling this flag today logs a one-time warning and
+    /// falls back to in-process. See `docs/ARCHITECTURE.md` §9.4 for the remaining
+    /// protocol work.
+    pub process_per_job: bool,
 }
 
 impl Default for SandboxConfig {
@@ -1319,6 +1366,7 @@ impl Default for SandboxConfig {
             egress_allowlist: Vec::new(),
             temp_dir_policy: SandboxTempDirPolicy::Ephemeral,
             temp_dir: None,
+            process_per_job: false,
         }
     }
 }
@@ -1517,6 +1565,9 @@ impl GridConfig {
                 }
                 "P2P_SCHEDULER_PROGRESS_STALL_MULTIPLIER" => {
                     self.scheduler.progress_stall_multiplier = parse(k, v)?
+                }
+                "P2P_SCHEDULER_REQUIRE_STAKED_HOSTS" | "P2P_REQUIRE_STAKED_HOSTS" => {
+                    self.scheduler.require_staked_hosts = parse(k, v)?
                 }
                 // ---- worker execution deadline / progress (env layer) ----
                 "P2P_WORKER_JOB_TIMEOUT_MS" => self.worker.job_timeout_ms = parse(k, v)?,

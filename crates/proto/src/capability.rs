@@ -43,6 +43,37 @@ pub struct CapabilityAd {
     pub sig: String,
 }
 
+/// A node's **durable, self-measured** capability profile (the empirical
+/// "what this node has really pulled off" record, architecture §3 of the
+/// routing design). Distinct from the ephemeral [`CapabilityAd`] ("free
+/// resources now"): this is a compact, all-time, monotonic aggregate persisted
+/// across restarts. It is Ed25519-signed + node-id-bound (provenance/integrity)
+/// and carries a strictly-increasing `seq` so a rollback to an older snapshot is
+/// detectable. Signing/verification live in `p2p-trust::capability`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityProfile {
+    /// Wire schema tag of this record.
+    pub schema_version: u16,
+    pub node_id: NodeId,
+    /// Hex Ed25519 public key (so verifiers can derive node_id and check `sig`).
+    pub pubkey: String,
+    /// All-time maxima from REAL successful local executions (ratchet up only).
+    pub max_input_bytes: u64,
+    pub max_result_rows: u64,
+    pub max_result_bytes: u64,
+    /// Largest peak buffer memory / temp-dir (spill) that still succeeded.
+    pub max_peak_memory_bytes: u64,
+    pub max_temp_dir_bytes: u64,
+    /// Count of successful local executions backing the maxima.
+    pub successes: u64,
+    /// Strictly-increasing update counter (rollback/monotonicity guard).
+    pub seq: u64,
+    /// Unix-seconds timestamp of the last update.
+    pub ts: u64,
+    /// Hex Ed25519 signature over the canonical signing bytes.
+    pub sig: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
