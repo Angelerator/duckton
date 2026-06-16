@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  AlertTriangle,
   Coins,
   Database,
   Table2,
@@ -239,6 +240,14 @@ function JobDetail({ job }: { job: Job }) {
                 />
               ))}
             </div>
+          ) : job.status === "failed" ? (
+            <div className="text-destructive border-destructive/30 bg-destructive/10 flex items-start gap-2 rounded-lg border p-3 text-xs">
+              <AlertTriangle className="mt-px size-4 shrink-0" />
+              <span>
+                {job.error ??
+                  "Dispatch failed before any worker committed — no hosts met the selection policy for this job."}
+              </span>
+            </div>
           ) : (
             <div className="text-muted-foreground rounded-lg border border-dashed p-3 text-xs">
               Paid-pool job — settled directly to the escrow split; per-candidate
@@ -252,6 +261,11 @@ function JobDetail({ job }: { job: Job }) {
         {/* Timeline */}
         <div>
           <SectionTitle hint="ms offset from start">Timeline</SectionTitle>
+          {job.timeline.length === 0 ? (
+            <p className="text-muted-foreground text-xs">
+              No timeline — the dispatch was rejected before any stage ran.
+            </p>
+          ) : (
           <ol className="relative ml-1 space-y-4 border-l pl-5">
             {job.timeline.map((e) => (
               <li key={`${e.tMs}-${e.stage}`} className="relative">
@@ -278,6 +292,7 @@ function JobDetail({ job }: { job: Job }) {
               </li>
             ))}
           </ol>
+          )}
         </div>
 
         <Separator />

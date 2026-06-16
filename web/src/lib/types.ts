@@ -111,6 +111,9 @@ export interface Job {
   candidates: JobCandidate[];
   timeline: TimelineEvent[];
   result: ResultPreview;
+  /** Reason a dispatch failed (e.g. no hosts met the data-class policy). Only
+   * present on failed jobs from the live grid. */
+  error?: string;
 }
 
 export interface Receipt {
