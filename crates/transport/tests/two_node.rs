@@ -28,6 +28,7 @@ fn make_offer(requester: &NodeId) -> Offer {
         network: None,
         groups: Vec::new(),
         regions: Vec::new(),
+        group_proof: None,
     }
 }
 

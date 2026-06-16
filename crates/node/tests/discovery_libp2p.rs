@@ -52,6 +52,7 @@ fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
         listen_addrs: vec![],
         bootstrap,
         topic: TEST_TOPIC.to_string(),
+        profile_topic: format!("{TEST_TOPIC}-profiles"),
         heartbeat: Duration::from_millis(250),
         mesh_n: 4,
         capability_ttl_secs: 3600,

@@ -68,6 +68,9 @@ pub struct Libp2pDiscoveryConfig {
     pub listen_addrs: Vec<Multiaddr>,
     pub bootstrap: Vec<Multiaddr>,
     pub topic: String,
+    /// Companion gossip topic carrying signed [`CapabilityProfile`]s alongside the
+    /// ads on `topic`. Derived as `<topic>-profiles`.
+    pub profile_topic: String,
     pub heartbeat: Duration,
     pub mesh_n: usize,
     pub capability_ttl_secs: u64,
@@ -228,6 +231,7 @@ impl Libp2pDiscoveryConfig {
             listen_addrs: parse_multiaddrs(&cfg.discovery.listen_addrs)?,
             bootstrap: parse_multiaddrs(&cfg.discovery.bootstrap)?,
             topic: cfg.discovery.gossip.topic.clone(),
+            profile_topic: format!("{}-profiles", cfg.discovery.gossip.topic),
             heartbeat: Duration::from_millis(cfg.discovery.gossip.heartbeat_ms.max(1)),
             mesh_n: cfg.discovery.gossip.fanout.max(1),
             capability_ttl_secs: cfg.discovery.gossip.capability_ttl_secs,
@@ -334,6 +338,23 @@ pub fn evaluate_ad(
     }
 }
 
+/// Decide whether a raw gossip payload is an acceptable capability PROFILE. The
+/// profile is consumed ONLY as a capacity/routing hint (never a trust input); the
+/// membership table enforces signature + node-id binding + the "must already have
+/// a PoW-verified ad" + monotonic-seq guards (see
+/// [`MembershipTable::ingest_profile`]).
+pub fn evaluate_profile(data: &[u8], membership: &MembershipTable) -> AdOutcome {
+    let profile: p2p_proto::CapabilityProfile = match p2p_proto::from_bytes(data) {
+        Ok(p) => p,
+        Err(_) => return AdOutcome::Malformed,
+    };
+    if membership.ingest_profile(profile) {
+        AdOutcome::Accepted
+    } else {
+        AdOutcome::Rejected
+    }
+}
+
 /// Combined network behaviour for the discovery overlay.
 ///
 /// Beyond Kademlia + gossipsub + identify, this carries the global NAT-traversal
@@ -362,6 +383,8 @@ struct DiscoveryBehaviour {
 enum Command {
     /// Set/replace the local capability ad to (re)publish each heartbeat.
     SetAd(Vec<u8>),
+    /// Set/replace the local capability profile to (re)publish each heartbeat.
+    SetProfile(Vec<u8>),
 }
 
 /// A running libp2p discovery overlay implementing [`Discovery`].
@@ -542,10 +565,16 @@ impl Libp2pDiscovery {
 
         let local_peer_id = *swarm.local_peer_id();
         let topic = gossipsub::IdentTopic::new(cfg.topic.clone());
+        let profile_topic = gossipsub::IdentTopic::new(cfg.profile_topic.clone());
         swarm
             .behaviour_mut()
             .gossipsub
             .subscribe(&topic)
+            .map_err(|e| DiscoveryError::Build(e.to_string()))?;
+        swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&profile_topic)
             .map_err(|e| DiscoveryError::Build(e.to_string()))?;
 
         // Listen: explicit addrs, or an ephemeral loopback TCP port for tests.
@@ -622,9 +651,11 @@ impl Libp2pDiscovery {
         let driver = SwarmDriver {
             swarm,
             topic,
+            profile_topic,
             membership: membership.clone(),
             listen_addrs: listen_addrs.clone(),
             current_ad: None,
+            current_profile: None,
             ttl_secs: cfg.capability_ttl_secs,
             protocol_major: cfg.protocol_major,
             heartbeat,
@@ -663,6 +694,21 @@ impl Libp2pDiscovery {
             .map_err(|_| DiscoveryError::TaskStopped)
     }
 
+    /// Publish (and keep republishing each heartbeat) this node's signed
+    /// capability PROFILE to the companion gossip topic, alongside its ad. The
+    /// profile is consumed by peers ONLY as a capacity/routing hint.
+    pub async fn publish_profile(
+        &self,
+        profile: &p2p_proto::CapabilityProfile,
+    ) -> Result<(), DiscoveryError> {
+        let bytes =
+            p2p_proto::to_bytes(profile).map_err(|e| DiscoveryError::Build(e.to_string()))?;
+        self.cmd_tx
+            .send(Command::SetProfile(bytes))
+            .await
+            .map_err(|_| DiscoveryError::TaskStopped)
+    }
+
     /// Current bound listen multiaddrs, each with `/p2p/<peer_id>` appended so
     /// they can be handed to another node as a bootstrap seed.
     pub fn listeners(&self) -> Vec<Multiaddr> {
@@ -695,6 +741,10 @@ impl Discovery for Libp2pDiscovery {
     async fn find_candidates(&self, want: usize, filter: CandidateFilter) -> Vec<Candidate> {
         self.membership.find_candidates(want, filter).await
     }
+
+    fn proven_capacity(&self, id: &p2p_proto::NodeId) -> Option<p2p_proto::CapabilityProfile> {
+        self.membership.proven_capacity(id)
+    }
 }
 
 /// Extract the `/p2p/<peer_id>` component of a multiaddr, if present.
@@ -708,9 +758,11 @@ fn peer_id_from_multiaddr(addr: &Multiaddr) -> Option<PeerId> {
 struct SwarmDriver {
     swarm: libp2p::Swarm<DiscoveryBehaviour>,
     topic: gossipsub::IdentTopic,
+    profile_topic: gossipsub::IdentTopic,
     membership: Arc<MembershipTable>,
     listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
     current_ad: Option<Vec<u8>>,
+    current_profile: Option<Vec<u8>>,
     ttl_secs: u64,
     protocol_major: u16,
     heartbeat: Duration,
@@ -733,6 +785,10 @@ impl SwarmDriver {
                         self.current_ad = Some(bytes);
                         self.try_publish();
                     }
+                    Some(Command::SetProfile(bytes)) => {
+                        self.current_profile = Some(bytes);
+                        self.try_publish();
+                    }
                     None => break, // handle dropped
                 },
                 _ = republish.tick() => {
@@ -746,20 +802,22 @@ impl SwarmDriver {
     }
 
     fn try_publish(&mut self) {
-        if let Some(bytes) = &self.current_ad {
-            match self
-                .swarm
-                .behaviour_mut()
-                .gossipsub
-                .publish(self.topic.clone(), bytes.clone())
-            {
-                Ok(_) => {}
-                Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
-                    // No subscribed mesh peers yet; the next heartbeat will retry.
-                    debug!("gossip publish deferred: no subscribed peers yet");
-                }
-                Err(e) => debug!("gossip publish error: {e}"),
+        if let Some(bytes) = self.current_ad.clone() {
+            self.publish_on(self.topic.clone(), bytes);
+        }
+        if let Some(bytes) = self.current_profile.clone() {
+            self.publish_on(self.profile_topic.clone(), bytes);
+        }
+    }
+
+    fn publish_on(&mut self, topic: gossipsub::IdentTopic, bytes: Vec<u8>) {
+        match self.swarm.behaviour_mut().gossipsub.publish(topic, bytes) {
+            Ok(_) => {}
+            Err(gossipsub::PublishError::NoPeersSubscribedToTopic) => {
+                // No subscribed mesh peers yet; the next heartbeat will retry.
+                debug!("gossip publish deferred: no subscribed peers yet");
             }
+            Err(e) => debug!("gossip publish error: {e}"),
         }
     }
 
@@ -771,15 +829,21 @@ impl SwarmDriver {
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Gossipsub(
                 gossipsub::Event::Message { message, .. },
             )) => {
-                let outcome = evaluate_ad(
-                    &message.data,
-                    &self.membership,
-                    now_ts(),
-                    self.ttl_secs,
-                    self.protocol_major,
-                );
+                // Route by topic: ads on `topic`, capability profiles on the
+                // companion `profile_topic` (consumed only as a capacity hint).
+                let outcome = if message.topic == self.profile_topic.hash() {
+                    evaluate_profile(&message.data, &self.membership)
+                } else {
+                    evaluate_ad(
+                        &message.data,
+                        &self.membership,
+                        now_ts(),
+                        self.ttl_secs,
+                        self.protocol_major,
+                    )
+                };
                 if outcome != AdOutcome::Accepted {
-                    debug!("rejected gossiped ad: {outcome:?}");
+                    debug!("rejected gossiped message on {:?}: {outcome:?}", message.topic);
                 }
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Identify(
@@ -892,5 +956,75 @@ impl SwarmDriver {
             }
             Err(e) => debug!("autorelay: reservation via {peer} failed: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::IdentitySigner;
+    use p2p_proto::AttestationLevel;
+    use p2p_transport::NodeIdentity;
+    use p2p_trust::sybil::pow_epoch;
+    use p2p_trust::{
+        mint_pow, sign_capability_ad, sign_capability_profile, CapabilityDraft,
+        CapabilityProfileDraft,
+    };
+
+    #[test]
+    fn evaluate_profile_decodes_and_delegates_to_ingest() {
+        // The companion profile-topic path: a malformed payload is rejected; a
+        // valid profile is consumed ONLY once the node already has a PoW-verified
+        // ad (the trust-safe gate in `ingest_profile`), then becomes a capacity
+        // hint readable via `proven_capacity`.
+        let table = MembershipTable::new(50, 8, 3600);
+        let id = NodeIdentity::generate().unwrap();
+        let pk = id.public_key_bytes();
+        let signer = IdentitySigner(&id);
+        let now = now_ts();
+
+        assert_eq!(
+            evaluate_profile(b"not-a-profile", &table),
+            AdOutcome::Malformed
+        );
+
+        let profile = sign_capability_profile(
+            CapabilityProfileDraft {
+                max_result_rows: 1234,
+                successes: 1,
+                seq: 1,
+                ts: now,
+                ..Default::default()
+            },
+            &signer,
+        );
+        let bytes = p2p_proto::to_bytes(&profile).unwrap();
+        // No verified ad yet ⇒ rejected (PoW-by-proxy gate).
+        assert_eq!(evaluate_profile(&bytes, &table), AdOutcome::Rejected);
+
+        let ad = sign_capability_ad(
+            CapabilityDraft {
+                addr: "127.0.0.1:19000".into(),
+                free_mem_bytes: 1 << 30,
+                free_threads: 4,
+                max_jobs: 3,
+                attestation_level: AttestationLevel::L0,
+                price: 0,
+                recent_receipts_root: None,
+                pow: mint_pow(&pk, pow_epoch(now), 8, 1_000_000).unwrap(),
+                ts: now,
+                enabled: true,
+                networks: vec!["default".into()],
+                groups: vec![],
+                region: None,
+            },
+            &signer,
+        );
+        assert!(table.ingest(ad));
+        assert_eq!(evaluate_profile(&bytes, &table), AdOutcome::Accepted);
+        assert_eq!(
+            table.proven_capacity(id.node_id()).unwrap().max_result_rows,
+            1234
+        );
     }
 }

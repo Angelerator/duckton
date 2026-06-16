@@ -156,6 +156,26 @@ impl StorageCredentialProvider for FakeGcsProvider {
     }
 }
 
+/// Build the requester-side per-job credential issuer matching the configured
+/// storage provider (architecture §9.2). Returns `None` for `local-fake` /
+/// unknown ids (the local path needs no issued credential). The cloud arms
+/// return the FAKE issuers shipped in this crate — they mint correctly-shaped,
+/// short-lived, scoped tokens so the end-to-end wiring runs, but a REAL
+/// deployment must swap in a live STS / SAS / downscoped-token client behind the
+/// same [`StorageCredentialProvider`] trait.
+pub fn default_credential_provider(
+    cfg: &p2p_config::StorageConfig,
+) -> Option<Arc<dyn StorageCredentialProvider>> {
+    match cfg.provider.trim().to_ascii_lowercase().as_str() {
+        "s3" => Some(Arc::new(FakeStsS3Provider::new(
+            cfg.region.clone().unwrap_or_else(|| "us-east-1".into()),
+        ))),
+        "az" | "azure" | "abfss" => Some(Arc::new(FakeAzureSasProvider)),
+        "gcs" | "gs" => Some(Arc::new(FakeGcsProvider)),
+        _ => None,
+    }
+}
+
 /// **Requester side.** Build a per-job [`ScopedCredential`] whose opaque token
 /// carries `cred` **sealed** (X25519 + ChaCha20-Poly1305) to a worker's
 /// `worker_sealing_pub` key, scoped to `prefix` for `ttl_secs` (architecture
@@ -310,6 +330,28 @@ mod tests {
         assert_eq!(cred.prefix, "events/2024/");
         assert!(cred.expires_at > now_secs());
         assert!(cred.expires_at <= now_secs() + 900);
+    }
+
+    #[test]
+    fn default_credential_provider_maps_cloud_ids_only() {
+        let mut cfg = p2p_config::StorageConfig::default();
+        // local-fake (default) ⇒ no issued credential (local path needs none).
+        assert!(default_credential_provider(&cfg).is_none());
+        cfg.provider = "s3".into();
+        assert_eq!(
+            default_credential_provider(&cfg).unwrap().provider_id(),
+            "s3"
+        );
+        cfg.provider = "gcs".into();
+        assert_eq!(
+            default_credential_provider(&cfg).unwrap().provider_id(),
+            "gcs"
+        );
+        cfg.provider = "az".into();
+        assert_eq!(
+            default_credential_provider(&cfg).unwrap().provider_id(),
+            "az"
+        );
     }
 
     #[test]

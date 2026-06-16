@@ -81,7 +81,7 @@ pub use sandbox::{
     JobBudget, JobGuard, NoopSandbox, ResourceLimits, Sandbox, SandboxError, SandboxSpec,
 };
 pub use signer::IdentitySigner;
-pub use subprocess::{serve_job, JobRequest, JobResponse, SubprocessEngine};
+pub use subprocess::{serve_job, JobFrame, JobProgress, JobRequest, JobResponse, SubprocessEngine};
 pub use storage::{
     sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
     FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,

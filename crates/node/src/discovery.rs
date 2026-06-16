@@ -10,14 +10,39 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
-use p2p_proto::{AttestationLevel, DataClass, NodeId};
+use p2p_proto::{AttestationLevel, CapabilityProfile, DataClass, NodeId};
 use rand::seq::SliceRandom;
+
+/// How a candidate's `node_id` was learned — gates the fail-closed security
+/// checks (`require_staked_hosts`, `sybil.min_stake`). Only a CRYPTOGRAPHICALLY
+/// attributable id may satisfy those gates; a trust-on-first-use id (learned from
+/// an unauthenticated source) must not, even once it has been pinned for routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdProvenance {
+    /// Operator-configured (static seed with an explicit id) — trusted by config.
+    Pinned,
+    /// From a signature + node-id-bound + PoW-verified capability ad.
+    Advertised,
+    /// Trust-on-first-use: no id, or an id learned without independent
+    /// verification. Never satisfies a stake/sybil gate (fail closed).
+    Tofu,
+}
+
+impl IdProvenance {
+    /// Whether this id is attributable enough to satisfy the fail-closed
+    /// stake/sybil gates (operator-pinned or signed-ad). TOFU is never verified.
+    pub fn is_verified(self) -> bool {
+        matches!(self, IdProvenance::Pinned | IdProvenance::Advertised)
+    }
+}
 
 /// A discovered worker candidate.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     /// Known node id, if any (enables pinning; `None` => trust-on-first-use).
     pub node_id: Option<NodeId>,
+    /// How `node_id` was learned (gates the stake/sybil fail-closed checks).
+    pub id_provenance: IdProvenance,
     pub addr: SocketAddr,
     /// Advertised attestation level (from gossip capability ad), if known.
     pub advertised_level: Option<AttestationLevel>,
@@ -33,14 +58,39 @@ pub struct Candidate {
 
 impl Candidate {
     pub fn new(node_id: Option<NodeId>, addr: SocketAddr) -> Self {
+        // An explicit id supplied at construction is operator-pinned (config seed);
+        // no id is trust-on-first-use. Signed-ad candidates set `Advertised`
+        // explicitly via [`Candidate::advertised`].
+        let id_provenance = if node_id.is_some() {
+            IdProvenance::Pinned
+        } else {
+            IdProvenance::Tofu
+        };
         Self {
             node_id,
+            id_provenance,
             addr,
             advertised_level: None,
             advertised_networks: Vec::new(),
             advertised_groups: Vec::new(),
             advertised_region: None,
         }
+    }
+
+    /// Mark this candidate's id as learned from a verified capability ad.
+    pub fn advertised(mut self) -> Self {
+        self.id_provenance = IdProvenance::Advertised;
+        self
+    }
+
+    /// Pin a TOFU-learned id (e.g. from a handshake) for ROUTING/dedup WITHOUT
+    /// granting it stake/sybil gate-eligibility — the id stays `Tofu`, so the
+    /// fail-closed gates continue to exclude it. This is the safe way to remember
+    /// an id we have not independently attested.
+    pub fn with_tofu_id(mut self, node_id: NodeId) -> Self {
+        self.node_id = Some(node_id);
+        self.id_provenance = IdProvenance::Tofu;
+        self
     }
 }
 
@@ -97,6 +147,15 @@ pub trait Discovery: Send + Sync {
     /// Return up to `want` candidate workers matching `filter`. Implementations
     /// MUST bound the returned set (never the whole swarm).
     async fn find_candidates(&self, want: usize, filter: CandidateFilter) -> Vec<Candidate>;
+
+    /// Optional CAPACITY/ROUTING hint: the peer's gossiped, signed
+    /// [`CapabilityProfile`] (self-measured maxima). NEVER a trust input — a
+    /// requester may use it only to bias routing toward peers that can plausibly
+    /// handle a job's size. Default `None` (impls without a profile cache return
+    /// nothing, so selection is unchanged).
+    fn proven_capacity(&self, _id: &NodeId) -> Option<CapabilityProfile> {
+        None
+    }
 }
 
 /// Static seed-list discovery with bounded random sampling.
@@ -201,6 +260,32 @@ mod tests {
             regions: vec![],
         };
         assert!(disc.find_candidates(10, f).await.is_empty());
+    }
+
+    #[test]
+    fn id_provenance_gates_stake_eligibility() {
+        // A no-id seed is TOFU (never gate-eligible). An operator-supplied id is
+        // Pinned (verified). A signed-ad id is Advertised (verified). A TOFU id
+        // pinned for routing stays TOFU — so learning-then-pinning never relaxes
+        // the fail-closed stake/sybil gates.
+        let tofu = peer(50_000);
+        assert_eq!(tofu.id_provenance, IdProvenance::Tofu);
+        assert!(!tofu.id_provenance.is_verified());
+
+        let addr = "127.0.0.1:50001".parse().unwrap();
+        let pinned = Candidate::new(Some(NodeId("b3:op".into())), addr);
+        assert_eq!(pinned.id_provenance, IdProvenance::Pinned);
+        assert!(pinned.id_provenance.is_verified());
+
+        let advertised = Candidate::new(Some(NodeId("b3:ad".into())), addr).advertised();
+        assert_eq!(advertised.id_provenance, IdProvenance::Advertised);
+        assert!(advertised.id_provenance.is_verified());
+
+        // Pinning a TOFU-learned id keeps it routable but NOT gate-eligible.
+        let learned = peer(50_002).with_tofu_id(NodeId("b3:learned".into()));
+        assert_eq!(learned.node_id, Some(NodeId("b3:learned".into())));
+        assert_eq!(learned.id_provenance, IdProvenance::Tofu);
+        assert!(!learned.id_provenance.is_verified());
     }
 
     #[test]

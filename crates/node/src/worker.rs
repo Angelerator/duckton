@@ -20,6 +20,11 @@ use crate::engine::EngineError;
 use crate::liveness::now_ms;
 use p2p_proto::ResultSet;
 
+/// Decode a hex ed25519 pubkey into 32 bytes (`None` on malformed input).
+fn decode_pubkey(hex_s: &str) -> Option<[u8; 32]> {
+    hex::decode(hex_s).ok()?.try_into().ok()
+}
+
 /// Result of running a job under the progress/heartbeat + deadline wrapper.
 enum ExecOutcome {
     /// Execution completed with a result.
@@ -76,6 +81,14 @@ pub struct WorkerParams {
     pub groups: Vec<String>,
     /// Declared region of this host (`None` ⇒ unspecified).
     pub region: Option<String>,
+    /// Group-membership enforcement tier (`soft` trusts declared claims; `token`
+    /// verifies the requester's `group_proof` against `group_issuers`).
+    pub group_enforcement: p2p_config::GroupEnforcement,
+    /// Trusted group issuer pubkeys (group → hex ed25519 key) for the token tier.
+    pub group_issuers: std::collections::BTreeMap<String, String>,
+    /// This host's region-attestation proof (JSON `CapabilityToken`), attached to
+    /// accepting bids so attested-tier requesters can verify residency.
+    pub region_token: Option<String>,
 }
 
 impl WorkerParams {
@@ -101,6 +114,9 @@ impl WorkerParams {
             networks: cfg.membership.networks.clone(),
             groups: cfg.membership.groups.clone(),
             region: cfg.membership.region.clone(),
+            group_enforcement: cfg.membership.group_enforcement,
+            group_issuers: cfg.membership.group_issuers.clone(),
+            region_token: cfg.membership.region_token.clone(),
         }
     }
 
@@ -177,6 +193,13 @@ pub struct Worker {
     /// execution's MEASURED magnitude is folded into the node's signed
     /// `CapabilityProfile`. `None` (default) ⇒ no profile is written.
     capability: Option<Arc<crate::capability_store::CapabilityStore>>,
+    /// Optional real attestor (architecture §7.2/§9.3): when wired, each bid's
+    /// attestation is produced PER-OFFER, binding `attest_bound_pub` to this
+    /// node's environment and freshened by the offer nonce — the honest L1/L2
+    /// honor-path a verifier-equipped requester checks. `None` (default, all
+    /// shipped hosts) ⇒ the fixed L0 stub, unchanged.
+    attestor: Option<Arc<dyn p2p_trust::attestation::Attestor>>,
+    attest_bound_pub: [u8; 32],
 }
 
 impl Worker {
@@ -196,6 +219,30 @@ impl Worker {
             sandbox: SandboxPolicy::disabled(),
             antiabuse: None,
             capability: None,
+            attestor: None,
+            attest_bound_pub: [0u8; 32],
+        }
+    }
+
+    /// Wire a real (or software) attestor that produces per-offer, nonce-bound
+    /// attestation evidence binding `bound_pub` (e.g. the node's sealing key) to
+    /// its environment. The matching requester runs an `AttestationVerifier`.
+    pub fn with_attestor(
+        mut self,
+        attestor: Arc<dyn p2p_trust::attestation::Attestor>,
+        bound_pub: [u8; 32],
+    ) -> Self {
+        self.attestor = Some(attestor);
+        self.attest_bound_pub = bound_pub;
+        self
+    }
+
+    /// The attestation to present for `offer`: a per-offer nonce-bound quote when
+    /// an attestor is wired (the honor-path), else the fixed stub.
+    fn attestation_for(&self, offer: &Offer) -> Attestation {
+        match &self.attestor {
+            Some(a) => a.produce(&offer.nonce.to_le_bytes(), &self.attest_bound_pub),
+            None => self.attestation.clone(),
         }
     }
 
@@ -353,6 +400,7 @@ impl Worker {
             recent_receipts: vec![],
             free_mem_bytes: free.memory_bytes,
             free_threads: free.threads,
+            region_proof: None,
         }
     }
 
@@ -434,10 +482,19 @@ impl Worker {
                 return Some(self.reject_bid(offer, "host is not in the requested network"));
             }
         }
-        // 3. Group membership (soft tier): a grouped host serves a requester only
-        //    if they share ≥1 group. An ungrouped (public) host ignores this.
+        // 3. Group membership: a grouped host serves a requester only if it can
+        //    prove a shared group. The SOFT tier (default) trusts the requester's
+        //    declared `offer.groups`; the TOKEN tier verifies a cryptographic
+        //    `group_proof` against the configured issuer for one of the host's
+        //    groups (bound to the requester's identity). An ungrouped (public)
+        //    host ignores this entirely.
         if !p.groups.is_empty() {
-            let shares = offer.groups.iter().any(|g| p.groups.contains(g));
+            let shares = match p.group_enforcement {
+                p2p_config::GroupEnforcement::Soft => {
+                    offer.groups.iter().any(|g| p.groups.contains(g))
+                }
+                p2p_config::GroupEnforcement::Token => self.token_proves_group(offer),
+            };
             if !shares {
                 return Some(
                     self.reject_bid(offer, "requester shares none of the host's groups"),
@@ -456,6 +513,34 @@ impl Worker {
             }
         }
         None
+    }
+
+    /// Token-tier group check: the requester's `group_proof` must verify against
+    /// the issuer configured for one of this host's groups, AND the proven holder
+    /// key must hash to the requester's node id (so a proof can't be replayed by a
+    /// different node). Any parse/verify/binding failure ⇒ not proven (fail-closed).
+    fn token_proves_group(&self, offer: &Offer) -> bool {
+        let Some(proof) = &offer.group_proof else {
+            return false;
+        };
+        let Ok(token) = serde_json::from_str::<p2p_trust::CapabilityToken>(proof) else {
+            return false;
+        };
+        let now = p2p_trust::now_ts();
+        for hg in &self.params.groups {
+            let Some(issuer_hex) = self.params.group_issuers.get(hg) else {
+                continue;
+            };
+            let Some(issuer) = decode_pubkey(issuer_hex) else {
+                continue;
+            };
+            if let Ok(holder) = p2p_trust::verify_group_membership(&token, &issuer, hg, now) {
+                if p2p_proto::NodeId::from_pubkey(&holder) == offer.requester_id {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Admission-control decision for an offer.
@@ -482,6 +567,7 @@ impl Worker {
                 recent_receipts: vec![],
                 free_mem_bytes: free.memory_bytes,
                 free_threads: free.threads,
+                region_proof: None,
             };
         }
 
@@ -507,10 +593,16 @@ impl Worker {
             decision,
             eta_ms,
             price: 0,
-            attestation: self.attestation.clone(),
+            // Per-offer nonce-bound attestation when an attestor is wired (honor
+            // path); otherwise the fixed L0 stub. The requester's verifier checks
+            // the evidence is bound to THIS offer's nonce.
+            attestation: self.attestation_for(offer),
             recent_receipts: vec![],
             free_mem_bytes: free.memory_bytes,
             free_threads: free.threads,
+            // Attach the host's region-attestation proof so an attested-tier
+            // requester can verify residency. Inert under the declared default.
+            region_proof: self.params.region_token.clone(),
         }
     }
 

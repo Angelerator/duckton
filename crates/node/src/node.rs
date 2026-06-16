@@ -156,6 +156,19 @@ impl Node {
             coordinator = coordinator.with_blocklist(blocklist);
         }
 
+        // Sealed/scoped credential delivery (architecture §9.2): only when the
+        // operator opts into remote object-store reads (`enable_remote_access`) do
+        // we mint per-job credentials — so a default node (local data, egress off)
+        // attaches no credential, exactly as before. The cloud issuers are the
+        // crate's shaped-but-fake providers (swap in real STS/SAS for production).
+        if config.storage.enable_remote_access {
+            if let Some(provider) =
+                crate::storage::default_credential_provider(&config.storage)
+            {
+                coordinator = coordinator.with_credential_provider(provider);
+            }
+        }
+
         Ok(Self {
             coordinator,
             config,
@@ -339,6 +352,7 @@ impl Node {
                         format!("{}-subprocess", self.engine.version()),
                         sb.clone(),
                         self.config.storage.clone(),
+                        self.config.worker.progress_interval_ms,
                     ));
                 }
                 _ => {
@@ -514,6 +528,7 @@ mod tests {
             network: None,
             groups: Vec::new(),
             regions: Vec::new(),
+            group_proof: None,
         };
         assert!(
             matches!(worker.bid_for(&mk(1_000)).decision, BidDecision::Reject { .. }),
@@ -542,6 +557,7 @@ mod tests {
             network: network.map(String::from),
             groups: groups.into_iter().map(String::from).collect(),
             regions: regions.into_iter().map(String::from).collect(),
+            group_proof: None,
         };
         let build = |f: &dyn Fn(&mut GridConfig)| {
             let mut cfg = GridConfig::default();
@@ -585,6 +601,81 @@ mod tests {
         // A host with NO declared region fails closed under a region pin.
         let n = build(&|_| {});
         assert!(reject(&n.host_worker().bid_for(&mk(None, vec![], vec!["eu"]))));
+    }
+
+    #[tokio::test]
+    async fn host_worker_token_group_tier_verifies_proof() {
+        // Under `group_enforcement = token` a grouped host ignores the requester's
+        // SOFT declared groups and instead requires a cryptographic `group_proof`
+        // that (a) verifies against the configured issuer for one of the host's
+        // groups and (b) is bound to the requester's identity. Mirrors the
+        // soft-tier admission test but exercises the token path.
+        use ed25519_dalek::SigningKey;
+        use p2p_trust::{CapabilityToken, Caveat};
+        use rand::rngs::OsRng;
+
+        let issuer = SigningKey::generate(&mut OsRng);
+        let issuer_hex = hex::encode(issuer.verifying_key().to_bytes());
+        let requester = SigningKey::generate(&mut OsRng);
+        let req_pub = requester.verifying_key().to_bytes();
+        let req_id = NodeId::from_pubkey(&req_pub);
+        let now = p2p_trust::now_ts();
+        let mint = |group: &str, exp: u64| {
+            let t = CapabilityToken::mint(
+                &issuer,
+                &req_pub,
+                vec![Caveat::Group(group.into()), Caveat::ExpiresAt(exp)],
+            );
+            serde_json::to_string(&t).unwrap()
+        };
+
+        let mut cfg = GridConfig::default();
+        cfg.membership.groups = vec!["finance".into()];
+        cfg.membership.group_enforcement = p2p_config::GroupEnforcement::Token;
+        cfg.membership
+            .group_issuers
+            .insert("finance".into(), issuer_hex);
+        cfg.validate().unwrap();
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let w = node.host_worker();
+
+        let offer = |proof: Option<String>, declared: Vec<&str>| Offer {
+            job_id: JobId::new(),
+            requester_id: req_id.clone(),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(1),
+            data_class: DataClass::Public,
+            nonce: 0,
+            network: None,
+            groups: declared.into_iter().map(String::from).collect(),
+            regions: Vec::new(),
+            group_proof: proof,
+        };
+        let reject = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Reject { .. });
+
+        // Valid finance proof ⇒ accept (soft declared groups are irrelevant here).
+        assert!(matches!(
+            w.bid_for(&offer(Some(mint("finance", now + 100_000)), vec![]))
+                .decision,
+            BidDecision::Accept
+        ));
+        // A merely-declared group with no token ⇒ reject (soft claims don't count).
+        assert!(reject(&w.bid_for(&offer(None, vec!["finance"]))));
+        // A token for a different group ⇒ reject.
+        assert!(reject(&w.bid_for(&offer(Some(mint("ops", now + 100_000)), vec![]))));
+        // An expired token ⇒ reject.
+        assert!(reject(&w.bid_for(&offer(Some(mint("finance", now.saturating_sub(10))), vec![]))));
+        // A valid token NOT bound to this requester id ⇒ reject.
+        let other = SigningKey::generate(&mut OsRng);
+        let stolen = CapabilityToken::mint(
+            &issuer,
+            &other.verifying_key().to_bytes(),
+            vec![Caveat::Group("finance".into()), Caveat::ExpiresAt(now + 100_000)],
+        );
+        assert!(reject(&w.bid_for(&offer(
+            Some(serde_json::to_string(&stolen).unwrap()),
+            vec![]
+        ))));
     }
 
     #[test]

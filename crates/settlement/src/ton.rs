@@ -877,6 +877,70 @@ pub fn build_vault_data(init: &VaultInit, config: Cell) -> Cell {
         .build()
 }
 
+/// Slash-split parameters, mirroring `stake_types.tolk::SlashConfig` field order:
+/// `treasury, redundancyPool, splitChallengerBps(16), splitRedundancyBps(16),
+/// splitBurnBps(16), splitTreasuryBps(16)`.
+#[derive(Debug, Clone)]
+pub struct SlashSplitConfig {
+    pub treasury: WalletAddress,
+    pub redundancy_pool: WalletAddress,
+    pub split_challenger_bps: u16,
+    pub split_redundancy_bps: u16,
+    pub split_burn_bps: u16,
+    pub split_treasury_bps: u16,
+}
+
+/// Shared `StakeVault` config parameters, mirroring `stake_types.tolk::VaultConfig`
+/// field order: `minStake(coins), unbondingPeriod(32), challengeWindow(32),
+/// keeperGrace(32), keeperBountyBps(16), slasher(addr), upgradeAuthority(addr),
+/// receiptWalletCode(^), slash(^)`.
+#[derive(Debug, Clone)]
+pub struct VaultConfigParams {
+    pub min_stake: Amount,
+    pub unbonding_period: u32,
+    pub challenge_window: u32,
+    pub keeper_grace: u32,
+    pub keeper_bounty_bps: u16,
+    pub slasher: WalletAddress,
+    pub upgrade_authority: WalletAddress,
+    pub receipt_wallet_code: Cell,
+    pub slash: SlashSplitConfig,
+}
+
+/// Build the `SlashConfig` child cell (`SlashConfig.toCell()`).
+pub fn build_slash_config(s: &SlashSplitConfig) -> Cell {
+    CellBuilder::new()
+        .store_address(&s.treasury)
+        .store_address(&s.redundancy_pool)
+        .store_uint(s.split_challenger_bps as u128, 16)
+        .store_uint(s.split_redundancy_bps as u128, 16)
+        .store_uint(s.split_burn_bps as u128, 16)
+        .store_uint(s.split_treasury_bps as u128, 16)
+        .build()
+}
+
+/// Build the shared `VaultConfig` cell (`VaultConfig.toCell()`) — the `config`
+/// child every per-node vault references, byte-faithful to `stake_types.tolk`.
+///
+/// This is the Rust counterpart of the TypeScript `buildStakeVaultDeploy` config
+/// section. NOTE: it is NOT yet wired into the live `resolve_onchain_stack` — see
+/// the wiring blocker: a deployed-address PARITY check (requires the real
+/// `StakeVault` + `StakeReceiptWallet` code BoCs and a fully-recorded deploy
+/// vector via the Acton emulator) must pass before the live rail trusts it.
+pub fn build_vault_config(c: &VaultConfigParams) -> Cell {
+    CellBuilder::new()
+        .store_coins(c.min_stake)
+        .store_uint(c.unbonding_period as u128, 32)
+        .store_uint(c.challenge_window as u128, 32)
+        .store_uint(c.keeper_grace as u128, 32)
+        .store_uint(c.keeper_bounty_bps as u128, 16)
+        .store_address(&c.slasher)
+        .store_address(&c.upgrade_authority)
+        .store_ref(c.receipt_wallet_code.clone())
+        .store_ref(build_slash_config(&c.slash))
+        .build()
+}
+
 /// Per-job `JobEscrow` init parameters (mirrors `EscrowStorage`, fresh escrow:
 /// `settled = false`). `terms` is the `EscrowTerms` child cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2991,6 +3055,49 @@ mod tests {
         assert_eq!(reg.vault_of(&node), Some(addr));
         // An unbound node has no vault (no placeholder address).
         assert_eq!(reg.vault_of(&NodeId("b3:unknown".into())), None);
+    }
+
+    #[test]
+    fn vault_config_cell_builds_byte_stably() {
+        // Regression guard on the `VaultConfig` cell layout (field order / bit
+        // sizes) via the deterministic vault address it produces. The pin catches
+        // any accidental drift from `stake_types.tolk`. (Contract-PARITY against a
+        // deployed vault additionally needs the real StakeVault/StakeReceiptWallet
+        // code BoCs + an Acton probe — see `build_vault_config`'s wiring note.)
+        let addr = WalletAddress::new(
+            0,
+            hex32("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"),
+        );
+        let receipt = CellBuilder::new().store_uint(0xCAFE, 16).build();
+        let cfg = build_vault_config(&VaultConfigParams {
+            min_stake: 0,
+            unbonding_period: 604_800,
+            challenge_window: 86_400,
+            keeper_grace: 86_400,
+            keeper_bounty_bps: 200,
+            slasher: addr.clone(),
+            upgrade_authority: addr.clone(),
+            receipt_wallet_code: receipt,
+            slash: SlashSplitConfig {
+                treasury: addr.clone(),
+                redundancy_pool: addr.clone(),
+                split_challenger_bps: 4000,
+                split_redundancy_bps: 3000,
+                split_burn_bps: 2000,
+                split_treasury_bps: 1000,
+            },
+        });
+        let code = CellBuilder::new().store_uint(0xC0DE, 16).build();
+        let init = VaultInit {
+            owner: addr,
+            binding_hash: [0u8; 32],
+        };
+        let data = build_vault_data(&init, cfg);
+        let derived = WalletAddress::from_state_init(BASECHAIN, &code, &data);
+        assert_eq!(
+            hex::encode(derived.hash),
+            "25d5e3ac5c4d653d8960ce4bb714d840fadf12f21ac3c56d9469779146c21b0f"
+        );
     }
 
     #[test]

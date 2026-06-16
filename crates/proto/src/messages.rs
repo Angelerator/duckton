@@ -64,6 +64,12 @@ pub struct Offer {
     /// region constraint.
     #[serde(default)]
     pub regions: Vec<String>,
+    /// Optional cryptographic group-membership proof (a JSON-encoded
+    /// `p2p_trust::CapabilityToken`) presented under `group_enforcement = token`.
+    /// `None` under the default soft tier. Kept as an opaque string so the wire
+    /// crate stays free of the trust-crate dependency.
+    #[serde(default)]
+    pub group_proof: Option<String>,
 }
 
 /// A worker's decision on an [`Offer`].
@@ -91,6 +97,12 @@ pub struct Bid {
     pub free_mem_bytes: u64,
     /// Currently-free worker threads.
     pub free_threads: u32,
+    /// Optional cryptographic region-attestation proof (a JSON-encoded
+    /// `p2p_trust::CapabilityToken`) the host presents so a requester running the
+    /// attested region tier can verify residency. `None` under the default
+    /// declared tier. Opaque string to keep the wire crate trust-free.
+    #[serde(default)]
+    pub region_proof: Option<String>,
 }
 
 /// A scoped, short-lived storage credential delivered inside a [`Dispatch`]
@@ -471,6 +483,7 @@ mod tests {
             network: None,
             groups: vec![],
             regions: vec![],
+            group_proof: None,
         });
         let bytes = crate::to_bytes(&offer).unwrap();
         let back: Wire = crate::from_bytes(&bytes).unwrap();
@@ -543,6 +556,7 @@ mod tests {
             recent_receipts: vec![],
             free_mem_bytes: 1 << 30,
             free_threads: 4,
+            region_proof: None,
         };
         assert_eq!(bid.attestation.level, crate::AttestationLevel::L0);
         let w = Wire::Bid(bid.clone());

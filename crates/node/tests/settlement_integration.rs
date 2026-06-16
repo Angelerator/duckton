@@ -86,6 +86,40 @@ async fn spawn_worker_att(engine: Arc<dyn QueryEngine>, attestation: Attestation
     }
 }
 
+/// Like [`spawn_worker`] but wires a real (software) attestor so the worker
+/// emits PER-OFFER, nonce-bound attestation evidence (the honest L1/L2 path).
+async fn spawn_worker_attestor(
+    engine: Arc<dyn QueryEngine>,
+    attestor: Arc<dyn p2p_trust::attestation::Attestor>,
+    bound_pub: [u8; 32],
+) -> WorkerHandle {
+    let budget = GridConfig::default().budget;
+    let net = GridConfig::default().network;
+    let transport =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let admission = AdmissionController::new(&budget);
+    let mut cfg = GridConfig::default();
+    cfg.budget = budget;
+    let params = WorkerParams::from_config(&cfg);
+    let node_id = transport.local_node_id().clone();
+    let addr = transport.local_addr().unwrap();
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    )
+    .with_attestor(attestor, bound_pub);
+    let task = worker.spawn();
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
+}
+
 fn base_cfg(replicas: usize, quorum: usize) -> GridConfig {
     let mut c = GridConfig::default();
     c.scheduler.replicas = replicas;
@@ -1129,6 +1163,64 @@ async fn spoofed_attestation_level_is_downgraded_and_excluded() {
     assert!(outcome.verified);
 }
 
+/// Attestation honor-path (§7.2/§9.3): a host wired with a (software) attestor
+/// emits per-offer, nonce-bound L2 evidence; a requester with the matching
+/// `AttestationVerifier` HONORS the L2 level and admits it under an L2 gate.
+/// Without the verifier, even valid evidence is ignored (downgraded to L0, fail
+/// closed). Real TPM/TEE L1/L2 plugs in behind the same `Attestor`/`Verifier`.
+#[tokio::test]
+async fn attestation_honor_path_admits_verified_l2_host() {
+    use ed25519_dalek::SigningKey;
+    use p2p_proto::AttestationLevel;
+    use p2p_trust::{AllowlistVerifier, MockAttestor};
+    use rand::rngs::OsRng;
+
+    let authority = SigningKey::generate(&mut OsRng);
+    let authority_pub = authority.verifying_key().to_bytes();
+    let bound = [7u8; 32];
+    let attestor = Arc::new(MockAttestor::new(
+        authority,
+        "duckdb-enclave-v1",
+        AttestationLevel::L2,
+    ));
+    let w = spawn_worker_attestor(Arc::new(MockEngine::deterministic()), attestor, bound).await;
+    let st = store();
+
+    let l2 = || QueryOverrides {
+        min_attestation: Some("L2".into()),
+        ..Default::default()
+    };
+
+    // No verifier wired ⇒ even valid evidence is not trusted above L0 → the L2
+    // gate excludes the host (fail closed).
+    {
+        let coord = coordinator(&[&w], base_cfg(1, 1), st.clone() as Arc<dyn TrustStore>).await;
+        let err = coord.run_query("SELECT 1", l2()).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                p2p_node::CoordinatorError::InsufficientWorkers { .. }
+                    | p2p_node::CoordinatorError::NoCandidates
+            ),
+            "no verifier ⇒ L2 claim downgraded, got {err:?}",
+        );
+    }
+
+    // With the matching verifier, the per-offer nonce-bound evidence verifies and
+    // the L2 level is honored ⇒ the host is admitted and wins.
+    let verifier = Arc::new(AllowlistVerifier::new(
+        authority_pub,
+        ["duckdb-enclave-v1".to_string()],
+        AttestationLevel::L0,
+    ));
+    let coord = coordinator(&[&w], base_cfg(1, 1), st as Arc<dyn TrustStore>)
+        .await
+        .with_attestation_verifier(verifier);
+    let outcome = coord.run_query("SELECT 1", l2()).await.unwrap();
+    assert!(outcome.verified);
+    assert_eq!(outcome.winner.as_ref(), Some(&w.node_id));
+}
+
 // --------------------------------------------------------------------------
 // Request-scoping / routing constraints (§7.5) — coordinator selection
 // --------------------------------------------------------------------------
@@ -1191,6 +1283,91 @@ async fn network_target_excludes_hosts_in_other_partition() {
     };
     let outcome = coord.run_query("SELECT 1", ov_default).await.unwrap();
     assert!(outcome.verified);
+}
+
+/// Sealed/scoped credential delivery (§9.2): when a credential provider is
+/// wired, the coordinator mints a per-job scoped credential into the `Dispatch`;
+/// the worker accepts and executes it. With the MockEngine the credential rides
+/// along unused, proving the live path is non-destabilizing.
+#[tokio::test]
+async fn credential_provider_attaches_without_breaking_query() {
+    let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let coord = coordinator(&[&w], base_cfg(1, 1), st as Arc<dyn TrustStore>)
+        .await
+        .with_credential_provider(Arc::new(p2p_node::FakeStsS3Provider::new("eu-west-1")));
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+}
+
+/// Wallet-collateral history binding (G4): reputation is aggregated across every
+/// node id bound to the same collateral wallet, so rotating the node key alone
+/// (re-binding the new id to the same wallet) does NOT shed accumulated history.
+#[tokio::test]
+async fn wallet_binding_aggregates_reputation_across_rotated_keys() {
+    use p2p_config::BindingStore;
+
+    let veteran = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let rotated = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+
+    // Build the veteran key's reputation via many verified jobs (shared store).
+    {
+        let coord = coordinator(&[&veteran], base_cfg(1, 1), st.clone() as Arc<dyn TrustStore>)
+            .await;
+        for _ in 0..15 {
+            coord
+                .run_query("SELECT 1", QueryOverrides::default())
+                .await
+                .unwrap();
+        }
+    }
+
+    // A min-trust gate the FRESH rotated key can't clear on its own (bootstrap).
+    let mut cfg = base_cfg(1, 1);
+    cfg.trust.min_trust = 0.5;
+    cfg.validate().unwrap();
+
+    // Without a binding, the rotated key has no history ⇒ excluded.
+    {
+        let coord = coordinator(&[&rotated], cfg.clone(), st.clone() as Arc<dyn TrustStore>).await;
+        let err = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                p2p_node::CoordinatorError::InsufficientWorkers { .. }
+                    | p2p_node::CoordinatorError::NoCandidates
+            ),
+            "fresh rotated key with no history must miss the gate, got {err:?}",
+        );
+    }
+
+    // Bind BOTH keys to the same collateral wallet: the rotated key now inherits
+    // the veteran's aggregated history and clears the same gate.
+    let dir = tempfile::tempdir().unwrap();
+    let bs = Arc::new(BindingStore::with_path(dir.path().join("bindings.toml")));
+    bs.bind(veteran.node_id.as_str(), "EQ_collateral_wallet", "h", 1)
+        .unwrap();
+    bs.bind(rotated.node_id.as_str(), "EQ_collateral_wallet", "h", 2)
+        .unwrap();
+    let coord = coordinator(&[&rotated], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_binding_store(bs);
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.winner.as_ref(),
+        Some(&rotated.node_id),
+        "rotated key inherits wallet-bound history and clears the gate",
+    );
 }
 
 // --------------------------------------------------------------------------

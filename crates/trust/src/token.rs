@@ -27,15 +27,26 @@ pub enum Caveat {
     ResourcePrefix(String),
     /// Maximum number of rows the operation may scan/return.
     MaxRows(u64),
+    /// Authorizes membership in a logical group (request-scoping §7.5, token
+    /// tier). The host checks the proof carries this for one of its own groups.
+    Group(String),
+    /// Authorizes a node's data-residency region (request-scoping §7.5, attested
+    /// tier). The requester checks a host's region proof carries an accepted one.
+    Region(String),
 }
 
 /// Context describing the action being authorized, checked against caveats.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AuthContext {
     pub now: u64,
     pub operation: String,
     pub resource: String,
     pub rows: u64,
+    /// Group being checked (for [`Caveat::Group`]); `None` ⇒ no group caveat may
+    /// be satisfied.
+    pub group: Option<String>,
+    /// Region being checked (for [`Caveat::Region`]); `None` ⇒ none may match.
+    pub region: Option<String>,
 }
 
 impl Caveat {
@@ -45,6 +56,8 @@ impl Caveat {
             Caveat::Operation(op) => &ctx.operation == op,
             Caveat::ResourcePrefix(p) => ctx.resource.starts_with(p),
             Caveat::MaxRows(m) => ctx.rows <= *m,
+            Caveat::Group(g) => ctx.group.as_deref() == Some(g.as_str()),
+            Caveat::Region(r) => ctx.region.as_deref() == Some(r.as_str()),
         }
     }
 }
@@ -117,6 +130,18 @@ fn encode_caveats(caveats: &[Caveat]) -> Vec<u8> {
             Caveat::MaxRows(m) => {
                 buf.push(4);
                 buf.extend_from_slice(&m.to_le_bytes());
+            }
+            Caveat::Group(g) => {
+                buf.push(5);
+                let b = g.as_bytes();
+                buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+                buf.extend_from_slice(b);
+            }
+            Caveat::Region(r) => {
+                buf.push(6);
+                let b = r.as_bytes();
+                buf.extend_from_slice(&(b.len() as u64).to_le_bytes());
+                buf.extend_from_slice(b);
             }
         }
     }
@@ -254,6 +279,65 @@ impl CapabilityToken {
 
         self.holder()
     }
+
+    /// Whether any layer carries a `Group(group)` caveat (so an empty/unrelated
+    /// token can't vacuously pass the group check).
+    fn authorizes_group(&self, group: &str) -> bool {
+        self.layers
+            .iter()
+            .flat_map(|l| &l.caveats)
+            .any(|c| matches!(c, Caveat::Group(g) if g == group))
+    }
+
+    /// Whether any layer carries a `Region(region)` caveat.
+    fn authorizes_region(&self, region: &str) -> bool {
+        self.layers
+            .iter()
+            .flat_map(|l| &l.caveats)
+            .any(|c| matches!(c, Caveat::Region(r) if r == region))
+    }
+}
+
+/// Verify a **group-membership proof** (request-scoping token tier): the token
+/// must be signed by the trusted `issuer_pk`, carry a `Group(group)` caveat, hold
+/// a valid (unexpired) lifetime, and pass every caveat at `now`. Returns the
+/// proven holder pubkey on success; the caller binds it to the requester identity
+/// (`NodeId::from_pubkey(holder) == requester`).
+pub fn verify_group_membership(
+    token: &CapabilityToken,
+    issuer_pk: &[u8; 32],
+    group: &str,
+    now: u64,
+) -> Result<[u8; 32], TokenError> {
+    if !token.authorizes_group(group) {
+        return Err(TokenError::CaveatFailed);
+    }
+    let ctx = AuthContext {
+        now,
+        group: Some(group.to_string()),
+        ..Default::default()
+    };
+    token.verify(issuer_pk, &ctx)
+}
+
+/// Verify a **region-attestation proof** (request-scoping attested tier): the
+/// token must be signed by the trusted `issuer_pk`, carry a `Region(region)`
+/// caveat, and pass every caveat at `now`. Returns the proven holder pubkey.
+pub fn verify_region_attestation(
+    token: &CapabilityToken,
+    issuer_pk: &[u8; 32],
+    region: &str,
+    now: u64,
+) -> Result<[u8; 32], TokenError> {
+    if !token.authorizes_region(region) {
+        return Err(TokenError::CaveatFailed);
+    }
+    let ctx = AuthContext {
+        now,
+        region: Some(region.to_string()),
+        ..Default::default()
+    };
+    token.verify(issuer_pk, &ctx)
 }
 
 #[cfg(test)]
@@ -267,6 +351,8 @@ mod tests {
             operation: "query".into(),
             resource: "s3://bkt/events/2024.parquet".into(),
             rows: 100,
+            group: None,
+            region: None,
         }
     }
 
@@ -388,6 +474,68 @@ mod tests {
         let root = CapabilityToken::mint(&issuer, &holder.verifying_key().to_bytes(), vec![]);
         let r = root.attenuate(&impostor, &impostor.verifying_key().to_bytes(), vec![]);
         assert_eq!(r, Err(TokenError::NotHolder));
+    }
+
+    #[test]
+    fn group_membership_proof_accept_reject_expiry() {
+        let issuer = SigningKey::generate(&mut OsRng);
+        let other = SigningKey::generate(&mut OsRng);
+        let holder = SigningKey::generate(&mut OsRng);
+        let holder_pk = holder.verifying_key().to_bytes();
+        let issuer_pk = issuer.verifying_key().to_bytes();
+
+        let tok = CapabilityToken::mint(
+            &issuer,
+            &holder_pk,
+            vec![Caveat::Group("finance".into()), Caveat::ExpiresAt(2000)],
+        );
+        // Accept: right issuer, right group, unexpired ⇒ returns the holder key.
+        assert_eq!(
+            verify_group_membership(&tok, &issuer_pk, "finance", 1000),
+            Ok(holder_pk)
+        );
+        // Reject: wrong group (the token doesn't authorize "ops").
+        assert_eq!(
+            verify_group_membership(&tok, &issuer_pk, "ops", 1000),
+            Err(TokenError::CaveatFailed)
+        );
+        // Reject: untrusted issuer.
+        assert_eq!(
+            verify_group_membership(&tok, &other.verifying_key().to_bytes(), "finance", 1000),
+            Err(TokenError::IssuerMismatch)
+        );
+        // Reject: expired.
+        assert_eq!(
+            verify_group_membership(&tok, &issuer_pk, "finance", 2001),
+            Err(TokenError::CaveatFailed)
+        );
+        // Reject: a token with no Group caveat can't vacuously pass.
+        let bare = CapabilityToken::mint(&issuer, &holder_pk, vec![Caveat::ExpiresAt(2000)]);
+        assert_eq!(
+            verify_group_membership(&bare, &issuer_pk, "finance", 1000),
+            Err(TokenError::CaveatFailed)
+        );
+    }
+
+    #[test]
+    fn region_attestation_proof_accept_reject() {
+        let issuer = SigningKey::generate(&mut OsRng);
+        let holder = SigningKey::generate(&mut OsRng);
+        let holder_pk = holder.verifying_key().to_bytes();
+        let issuer_pk = issuer.verifying_key().to_bytes();
+        let tok = CapabilityToken::mint(
+            &issuer,
+            &holder_pk,
+            vec![Caveat::Region("eu".into()), Caveat::ExpiresAt(2000)],
+        );
+        assert_eq!(
+            verify_region_attestation(&tok, &issuer_pk, "eu", 1000),
+            Ok(holder_pk)
+        );
+        assert_eq!(
+            verify_region_attestation(&tok, &issuer_pk, "us", 1000),
+            Err(TokenError::CaveatFailed)
+        );
     }
 
     #[test]

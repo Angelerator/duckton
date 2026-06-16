@@ -145,7 +145,9 @@ impl Discovery for MembershipTable {
             .filter(|ad| ad.attestation_level >= filter.min_attestation)
             .filter_map(|ad| {
                 let addr = ad.addr.parse().ok()?;
-                let mut c = Candidate::new(Some(ad.node_id.clone()), addr);
+                // The id is bound by the ad's signature + node-id binding + PoW
+                // (verified on ingest), so it is `Advertised` (gate-eligible).
+                let mut c = Candidate::new(Some(ad.node_id.clone()), addr).advertised();
                 c.advertised_level = Some(ad.attestation_level);
                 // Carry the advertised request-scoping labels so the filter can
                 // prune by them (and the coordinator can re-check).
@@ -165,6 +167,11 @@ impl Discovery for MembershipTable {
         eligible.shuffle(&mut rng);
         eligible.truncate(take);
         eligible
+    }
+
+    fn proven_capacity(&self, id: &NodeId) -> Option<CapabilityProfile> {
+        // Inherent method (priority over this trait method); no recursion.
+        MembershipTable::proven_capacity(self, id)
     }
 }
 

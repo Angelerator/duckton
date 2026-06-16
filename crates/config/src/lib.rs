@@ -815,9 +815,24 @@ pub struct MembershipConfig {
     /// `token` (Phase 4, deferred) requires a verified group-membership token.
     pub group_enforcement: GroupEnforcement,
     /// How a host's region claim is trusted. `declared` (default) trusts the
-    /// self-declared region; `attested` (Phase 4, deferred) requires the region to
-    /// be bound into hardware attestation and raises the attestation floor.
+    /// self-declared region; `attested` requires the region to be backed by a
+    /// verified region-attestation token (and raises the attestation floor).
     pub region_trust: RegionTrust,
+    /// Trusted group issuer pubkeys (group name → hex ed25519 key). Under
+    /// `group_enforcement = token` a host admits a requester only if its
+    /// `group_proof` verifies against the issuer configured here for one of the
+    /// host's groups. Empty (default) ⇒ no token issuers configured.
+    pub group_issuers: BTreeMap<String, String>,
+    /// Trusted region issuer pubkeys (region name → hex ed25519 key). Under
+    /// `region_trust = attested` a requester accepts a host only if its
+    /// `region_proof` verifies against the issuer configured here for the region.
+    pub region_issuers: BTreeMap<String, String>,
+    /// This node's own group-membership proof (a JSON-encoded `CapabilityToken`)
+    /// presented as a REQUESTER when claiming a group under the token tier.
+    pub group_token: Option<String>,
+    /// This node's own region-attestation proof (a JSON-encoded `CapabilityToken`)
+    /// presented as a HOST so requesters on the attested tier can verify residency.
+    pub region_token: Option<String>,
 }
 
 impl Default for MembershipConfig {
@@ -828,6 +843,10 @@ impl Default for MembershipConfig {
             region: None,
             group_enforcement: GroupEnforcement::Soft,
             region_trust: RegionTrust::Declared,
+            group_issuers: BTreeMap::new(),
+            region_issuers: BTreeMap::new(),
+            group_token: None,
+            region_token: None,
         }
     }
 }

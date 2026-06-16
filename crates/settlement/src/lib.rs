@@ -44,12 +44,13 @@ pub use ton::ToncenterRpc;
 pub use ton::{
     build_anchor_open_dispute, build_anchor_submit, build_anchor_upgrade_code, build_announce_code,
     build_cancel_code, build_escrow_claim, build_escrow_refund, build_escrow_settle,
-    build_escrow_terms, build_escrow_topup, build_merkle_proof_cell, build_stake_announce_upgrade,
-    build_stake_apply_upgrade, build_stake_cancel_upgrade, build_stake_claim, build_stake_deposit,
-    build_stake_slash, build_stake_unbond, build_update_admin, build_update_params,
-    build_upgrade_code, candidates_commitment, escrow_code_from_boc_base64, GlobalParams,
-    GlobalParamsClient, MessageBody, OnchainPolicy, ParamsSource, QueryIdGen, TonRecordAnchor,
-    TonRpc, TonSettlement, TonStakeRegistry, VaultInit,
+    build_escrow_terms, build_escrow_topup, build_merkle_proof_cell, build_slash_config,
+    build_stake_announce_upgrade, build_stake_apply_upgrade, build_stake_cancel_upgrade,
+    build_stake_claim, build_stake_deposit, build_stake_slash, build_stake_unbond,
+    build_update_admin, build_update_params, build_upgrade_code, build_vault_config,
+    candidates_commitment, escrow_code_from_boc_base64, GlobalParams, GlobalParamsClient,
+    MessageBody, OnchainPolicy, ParamsSource, QueryIdGen, SlashSplitConfig, TonRecordAnchor, TonRpc,
+    TonSettlement, TonStakeRegistry, VaultConfigParams, VaultInit,
 };
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
 pub use types::{

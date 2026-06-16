@@ -47,4 +47,7 @@ pub use reputation::{
 };
 pub use sealing::{decrypt_at_rest, encrypt_at_rest, seal_to, SealedBlob, SealingKeypair};
 pub use sybil::{make_vouch, mint_pow, verify_pow, verify_vouch, PowStamp, Vouch};
-pub use token::{AuthContext, CapabilityToken, Caveat, TokenError};
+pub use token::{
+    verify_group_membership, verify_region_attestation, AuthContext, CapabilityToken, Caveat,
+    TokenError,
+};

@@ -906,6 +906,7 @@ async fn export_console_snapshot() {
         network: None,
         groups: Vec::new(),
         regions: Vec::new(),
+        group_proof: None,
     };
     let bid = Bid {
         job_id: sample_job.clone(),
@@ -917,6 +918,7 @@ async fn export_console_snapshot() {
         recent_receipts: vec![],
         free_mem_bytes: 22 * 1024 * 1024 * 1024,
         free_threads: 14,
+        region_proof: None,
     };
     let dispatch = Dispatch {
         job_id: sample_job.clone(),

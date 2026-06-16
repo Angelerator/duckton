@@ -229,6 +229,17 @@ pub struct Coordinator {
     /// allowlisted measurement + this offer's nonce). Honest L0 hosts (all shipped
     /// hosts) are unaffected — L0 needs no evidence.
     attestation_verifier: Option<Arc<dyn AttestationVerifier>>,
+    /// Per-job scoped storage credential issuer (architecture §9.2). When wired
+    /// AND a storage provider is configured, the coordinator mints a short-lived,
+    /// prefix-scoped credential and attaches it to each [`Dispatch`]. `None`
+    /// (default) ⇒ `Dispatch.credential = None`, the unchanged local-data path.
+    credential_provider: Option<Arc<dyn crate::storage::StorageCredentialProvider>>,
+    /// Wallet↔node binding source (architecture §3.2 / G4). When wired, selection
+    /// reputation is AGGREGATED across every node id bound to the same collateral
+    /// wallet — so rotating the node key alone (re-binding the new id to the same
+    /// wallet) does NOT shed accumulated history. `None` (default) ⇒ per-node
+    /// reputation, exactly as before.
+    binding_store: Option<Arc<p2p_config::BindingStore>>,
 }
 
 /// Cached on-chain `GlobalParams` policy, shared between the periodic sync task
@@ -277,6 +288,9 @@ struct RequestScope {
     groups: Vec<String>,
     /// Regions the requester will accept a host in (empty ⇒ no constraint).
     regions: Vec<String>,
+    /// The requester's group-membership proof (JSON `CapabilityToken`), stamped
+    /// into the Offer so token-tier hosts can verify it. `None` under soft tier.
+    group_proof: Option<String>,
 }
 
 impl Coordinator {
@@ -297,6 +311,8 @@ impl Coordinator {
             local: None,
             planner: None,
             stake_registry: None,
+            credential_provider: None,
+            binding_store: None,
             settlement: None,
             record_anchor: None,
             wallet_resolver: None,
@@ -315,6 +331,86 @@ impl Coordinator {
     pub fn with_attestation_verifier(mut self, verifier: Arc<dyn AttestationVerifier>) -> Self {
         self.attestation_verifier = Some(verifier);
         self
+    }
+
+    /// Wire a per-job scoped-credential issuer (architecture §9.2). When set, each
+    /// [`Dispatch`] carries a short-lived credential scoped to the job's prefix so
+    /// the worker can mint a read-only `CREATE SECRET`. Off by default ⇒ no
+    /// credential is attached (unchanged local-data path).
+    pub fn with_credential_provider(
+        mut self,
+        provider: Arc<dyn crate::storage::StorageCredentialProvider>,
+    ) -> Self {
+        self.credential_provider = Some(provider);
+        self
+    }
+
+    /// Wire a wallet↔node binding source so reputation is aggregated by collateral
+    /// wallet (G4): a key rotation that re-binds to the same wallet inherits the
+    /// wallet's history. Off by default ⇒ per-node reputation (unchanged).
+    pub fn with_binding_store(mut self, store: Arc<p2p_config::BindingStore>) -> Self {
+        self.binding_store = Some(store);
+        self
+    }
+
+    /// Node ids that share `worker`'s collateral wallet (incl. `worker`). Empty
+    /// when no binding source is wired or `worker` has no recorded binding ⇒
+    /// callers fall back to per-node behavior.
+    fn wallet_siblings(&self, worker: &NodeId) -> Vec<NodeId> {
+        let Some(bs) = &self.binding_store else {
+            return Vec::new();
+        };
+        let Ok(Some(entry)) = bs.get(worker.as_str()) else {
+            return Vec::new();
+        };
+        match bs.list() {
+            Ok(all) => all
+                .into_iter()
+                .filter(|e| e.wallet == entry.wallet)
+                .map(|e| NodeId(e.node_id))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Confidence-aware reputation + observation count for selection, AGGREGATED
+    /// across the worker's collateral-wallet siblings when a binding source is
+    /// wired (observation-weighted mean + summed observations). Falls back to the
+    /// per-node values when there is no binding (unchanged behavior).
+    fn wallet_reputation(&self, worker: &NodeId, cfg: &GridConfig, now: u64) -> (f64, usize) {
+        let rep = &cfg.economics.reputation;
+        let confident = |id: &NodeId| {
+            self.trust_store.confident_reputation(
+                id,
+                now,
+                rep.prior_alpha,
+                rep.prior_beta,
+                rep.confidence_z,
+            )
+        };
+        let siblings = self.wallet_siblings(worker);
+        if siblings.len() <= 1 {
+            // No binding (or a lone id on the wallet): per-node, exactly as before.
+            let reputation = confident(worker).unwrap_or(cfg.trust.bootstrap_trust);
+            return (reputation, self.trust_store.observation_count(worker));
+        }
+        let mut weighted = 0.0;
+        let mut total = 0usize;
+        for sib in &siblings {
+            let obs = self.trust_store.observation_count(sib);
+            if obs == 0 {
+                continue;
+            }
+            if let Some(r) = confident(sib) {
+                weighted += r * obs as f64;
+                total += obs;
+            }
+        }
+        if total == 0 {
+            (cfg.trust.bootstrap_trust, 0)
+        } else {
+            (weighted / total as f64, total)
+        }
     }
 
     /// The **verified** attestation level to use for selection: a self-reported
@@ -339,6 +435,43 @@ impl Coordinator {
             }
             None => AttestationLevel::L0,
         }
+    }
+
+    /// Region attested tier: verify a bidder's `region_proof` against the trusted
+    /// region issuer for one of the requester's accepted regions, binding the
+    /// proven holder key to the worker's node id. Any parse/verify/binding failure
+    /// ⇒ not attested (fail closed).
+    fn region_proof_ok(
+        &self,
+        worker: &NodeId,
+        bid: &Bid,
+        regions: &[String],
+        issuers: &std::collections::BTreeMap<String, String>,
+    ) -> bool {
+        let Some(proof) = &bid.region_proof else {
+            return false;
+        };
+        let Ok(token) = serde_json::from_str::<p2p_trust::CapabilityToken>(proof) else {
+            return false;
+        };
+        let now = now_ts();
+        for region in regions {
+            let Some(issuer_hex) = issuers.get(region) else {
+                continue;
+            };
+            let Some(issuer) = hex::decode(issuer_hex)
+                .ok()
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+            else {
+                continue;
+            };
+            if let Ok(holder) = p2p_trust::verify_region_attestation(&token, &issuer, region, now) {
+                if NodeId::from_pubkey(&holder) == *worker {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Bind the on-chain `GlobalParams` version/seqno (BLOCKCHAIN_ECONOMICS §12)
@@ -569,6 +702,7 @@ impl Coordinator {
                 overrides.groups.clone()
             },
             regions: overrides.regions.clone(),
+            group_proof: cfg.membership.group_token.clone(),
         };
 
         self.run_resilient(
@@ -743,6 +877,15 @@ impl Coordinator {
             if !filter.admits_labels(c) {
                 return false;
             }
+            // TOFU fail-closed (anti-Sybil): the stake/sybil gates only trust a
+            // cryptographically attributable id (operator-pinned or signed-ad). A
+            // trust-on-first-use id — even one pinned for routing/dedup — is NOT
+            // gate-eligible, so learning-then-pinning an id can never relax these
+            // gates. With the gates off, provenance is irrelevant (unchanged).
+            let gates_on = cfg.scheduler.require_staked_hosts || cfg.sybil.min_stake > 0;
+            if gates_on && !c.id_provenance.is_verified() {
+                return false;
+            }
             match &c.node_id {
             Some(id) => {
                 // Anti-abuse deny-list (each node independently refuses flagged actors).
@@ -822,6 +965,7 @@ impl Coordinator {
             network: scope.network.clone(),
             groups: scope.groups.clone(),
             regions: scope.regions.clone(),
+            group_proof: scope.group_proof.clone(),
         };
 
         let offer_futures = candidates.into_iter().map(|cand| {
@@ -873,6 +1017,19 @@ impl Coordinator {
                     min_level,
                 )
             })
+            // Region attested tier: when the requester pins regions AND trusts
+            // regions only via attestation, a bidder must present a `region_proof`
+            // that verifies against the configured region issuer (bound to its id)
+            // for one of the accepted regions; otherwise it is excluded (fail
+            // closed). The declared default and no-region queries are unaffected.
+            .filter(|(worker, bid)| {
+                if cfg.membership.region_trust != p2p_config::RegionTrust::Attested
+                    || scope.regions.is_empty()
+                {
+                    return true;
+                }
+                self.region_proof_ok(worker, bid, &scope.regions, &cfg.membership.region_issuers)
+            })
             .map(|(worker, bid)| {
                 let score = self.effective_trust(&worker, cfg, now, paid);
                 if auto_block && score < ab.blocklist.auto_block_trust_floor {
@@ -890,10 +1047,26 @@ impl Coordinator {
             .filter(|(_, score, _)| *score >= cfg.trust.min_trust)
             .collect();
 
+        // Capacity routing hint (NEVER a trust input): when `capability_weight`
+        // is opted in (>0, default 0), break ties toward peers whose gossiped,
+        // signed self-capability profile proves a larger handled result size. At
+        // the default weight the hint is 0 for everyone ⇒ byte-identical ordering.
+        let cap_weight = cfg.economics.ranking.capability_weight;
+        let cap_hint = |id: &NodeId| -> u64 {
+            if cap_weight > 0.0 {
+                self.discovery
+                    .proven_capacity(id)
+                    .map(|p| p.max_result_rows)
+                    .unwrap_or(0)
+            } else {
+                0
+            }
+        };
         scored.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.2.cmp(&b.2))
+                .then_with(|| cap_hint(&b.0).cmp(&cap_hint(&a.0)))
         });
         scored.truncate(cfg.scheduler.replicas);
 
@@ -912,11 +1085,22 @@ impl Coordinator {
             VerifyModeCfg::Fast => VerifyMode::Fast,
             VerifyModeCfg::Quorum => VerifyMode::Quorum,
         };
+        // Per-job scoped storage credential (architecture §9.2): when a provider
+        // is wired, mint a short-lived, read-only credential and attach it so the
+        // worker can build a `CREATE SECRET`. Unwired (default) ⇒ `None`, the
+        // unchanged local-data path. NOTE: scoped to the provider root because the
+        // job's exact data prefix isn't extracted from the SQL here, and delivered
+        // UNSEALED (sealing needs the winner's attestation-bound sealing key, which
+        // L0 hosts don't ship) — see the report's sealing/prefix gap.
+        let credential = self
+            .credential_provider
+            .as_ref()
+            .map(|p| p.issue("", cfg.storage.credential_ttl_secs));
         let dispatch = Dispatch {
             job_id: job_id.clone(),
             sql: sql.to_string(),
             query_hash: query_hash.clone(),
-            credential: None,
+            credential,
             memory_limit_bytes: cfg.budget.per_job_memory_bytes,
             threads: cfg.budget.per_job_threads,
             verify_mode,
@@ -1515,17 +1699,10 @@ impl Coordinator {
         // node with thin history is not treated as fully trusted. Unknown nodes
         // (no history) still fall back to the bootstrap value, exactly as before.
         let rep = &cfg.economics.reputation;
-        let reputation = self
-            .trust_store
-            .confident_reputation(
-                worker,
-                now,
-                rep.prior_alpha,
-                rep.prior_beta,
-                rep.confidence_z,
-            )
-            .unwrap_or(cfg.trust.bootstrap_trust);
-        let obs = self.trust_store.observation_count(worker);
+        // Collateral-wallet aggregation (G4): when a binding source is wired, the
+        // reputation + observation count are summed across every node id bound to
+        // the same wallet, so a key rotation can't shed history. Off ⇒ per-node.
+        let (reputation, obs) = self.wallet_reputation(worker, cfg, now);
         let inputs = TrustInputs {
             reputation,
             age_factor: age_factor(obs, 20),
