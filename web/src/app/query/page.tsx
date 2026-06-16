@@ -668,16 +668,32 @@ export default function QueryConsolePage() {
 
               <Separator />
 
-              {/* Escrow */}
+              {/* Escrow — in live mode the grid derives free-vs-paid and the
+                  escrow amount from the data class, so these knobs only drive
+                  the offline/snapshot preview. */}
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <Label className="text-sm">Free public tier</Label>
+                    <Label className="text-sm">
+                      Free public tier
+                      {connected ? (
+                        <InfoHint
+                          text="In live mode the grid sets free-vs-paid from the data class (Public = free, Internal/Sensitive = paid), so this toggle doesn't affect the dispatch."
+                          className="ml-1"
+                        />
+                      ) : null}
+                    </Label>
                     <p className="text-muted-foreground text-xs">
-                      Off-chain path; no escrow, price = 0.
+                      {connected
+                        ? "Derived from data class in live mode."
+                        : "Off-chain path; no escrow, price = 0."}
                     </p>
                   </div>
-                  <Switch checked={freeTier} onCheckedChange={setFreeTier} />
+                  <Switch
+                    checked={freeTier}
+                    onCheckedChange={setFreeTier}
+                    disabled={connected}
+                  />
                 </div>
 
                 <div className="space-y-2">
@@ -694,9 +710,14 @@ export default function QueryConsolePage() {
                     step={0.5}
                     value={freeTier ? 0 : maxEscrow}
                     onChange={(e) => setMaxEscrow(Math.max(0, Number(e.target.value) || 0))}
-                    disabled={freeTier}
+                    disabled={freeTier || connected}
                     className="tabular-nums"
                   />
+                  {connected ? (
+                    <p className="text-muted-foreground text-xs">
+                      Set by the grid from the data class in live mode.
+                    </p>
+                  ) : null}
                 </div>
               </div>
 
