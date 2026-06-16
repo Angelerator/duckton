@@ -57,10 +57,12 @@ import { useLive, type QueryResult } from "@/lib/live";
 import { ms, num, ton } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type {
+  AttestationLevel,
   CandidateState,
   DataClass,
   JobCandidate,
   VerifyMode,
+  Worker,
 } from "@/lib/types";
 
 /* --------------------------------------------------------------- constants */
@@ -165,6 +167,29 @@ const RESULT_HASH = REAL_JOB.resultHash ?? fakeHash("result:" + REAL_JOB.id);
 const RESULT_ROWS = RESULT.rows.length;
 
 const TICK_MS = 850;
+
+const ATT_RANK: Record<AttestationLevel, number> = { L0: 0, L1: 1, L2: 2 };
+
+// The data-class selection policy the live backend enforces: a minimum
+// attestation tier (a hard gate) plus a trust floor. A host is eligible for a
+// class only if it clears BOTH — so the quorum can never exceed the number of
+// eligible hosts (else the grid rejects the dispatch with a policy error).
+const CLASS_POLICY: Record<
+  DataClass,
+  { tier: number; att: AttestationLevel; trust: number; paid: boolean }
+> = {
+  Public: { tier: 0, att: "L0", trust: 0.7, paid: false },
+  Internal: { tier: 1, att: "L1", trust: 0.85, paid: true },
+  Sensitive: { tier: 2, att: "L2", trust: 0.8, paid: true },
+};
+
+/** Honest hosts that clear both gates of a data class's policy. */
+function countEligibleHosts(list: Worker[], cls: DataClass): number {
+  const p = CLASS_POLICY[cls];
+  return list.filter(
+    (w) => w.behavior === "honest" && ATT_RANK[w.attestation] >= p.tier && w.trust >= p.trust
+  ).length;
+}
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -286,23 +311,34 @@ export default function QueryConsolePage() {
     // Data-class selection policy (§7.5): the minimum attestation tier gates who
     // is even eligible — Internal needs L1, Sensitive needs L2 — so free/L0 hosts
     // are excluded from those classes. (The grid also enforces a trust floor.)
-    const minTier = dataClass === "Sensitive" ? 2 : dataClass === "Internal" ? 1 : 0;
-    const rank = (a: string) => (a === "L2" ? 2 : a === "L1" ? 1 : 0);
+    const { tier } = CLASS_POLICY[dataClass];
     const pool = [...workers]
-      .filter((w) => w.behavior === "honest" && rank(w.attestation) >= minTier)
+      .filter((w) => w.behavior === "honest" && ATT_RANK[w.attestation] >= tier)
       .sort((a, b) => b.trust - a.trust)
       .slice(0, kClamped);
     return [...pool].sort((a, b) => a.p50LatencyMs - b.p50LatencyMs);
   }, [workers, kClamped, dataClass]);
 
-  const kBelowQuorum = hedgeK < quorum;
+  // Hosts that clear BOTH gates (attestation + trust) of the selected class —
+  // the live backend rejects a dispatch whose quorum exceeds this count, so we
+  // cap the quorum slider and guard Dispatch against it.
+  const eligibleHostCount = React.useMemo(
+    () => countEligibleHosts(workers, dataClass),
+    [workers, dataClass]
+  );
+  const quorumMax = Math.min(5, Math.max(1, eligibleHostCount));
+  const effQuorum = Math.min(quorum, quorumMax);
+  const noEligibleHosts = eligibleHostCount === 0;
+  const pol = CLASS_POLICY[dataClass];
+
+  const kBelowQuorum = hedgeK < effQuorum;
 
   function dispatch() {
     // Guard against rapid double-clicks: check the ref synchronously before any
     // state update so a second click that arrives before the React flush is ignored.
-    if (isRunningRef.current) return;
+    if (isRunningRef.current || noEligibleHosts) return;
     isRunningRef.current = true;
-    const qEff = Math.min(quorum, hedgeK);
+    const qEff = Math.min(effQuorum, hedgeK);
     const seed = `${fn}:${dataClass}:${verifyMode}:${quorum}:${hedgeK}`;
     const snap = {
       fn,
@@ -381,7 +417,7 @@ export default function QueryConsolePage() {
     fn,
     dataClass,
     verifyMode,
-    quorum: Math.min(quorum, hedgeK),
+    quorum: Math.min(effQuorum, hedgeK),
     k: kClamped,
     free: freeTier,
     escrow: freeTier ? 0 : maxEscrow,
@@ -403,6 +439,17 @@ export default function QueryConsolePage() {
   // ---- REAL outcome view (when a live dispatch has resolved) --------------
   const real = liveResult; // alias for brevity in JSX
   const realError = real?.error ?? null;
+  // Translate the backend's raw data-class policy rejection into an actionable
+  // message that names how many hosts qualify and what to do about it.
+  const friendlyError = React.useMemo(() => {
+    if (!realError) return null;
+    if (!/policy|no hosts|attestation|trust|eligible/i.test(realError)) return realError;
+    const errClass = run?.dataClass ?? dataClass;
+    const p = CLASS_POLICY[errClass];
+    const n = countEligibleHosts(workers, errClass);
+    const alt = errClass === "Sensitive" ? "Internal or Public" : "Public";
+    return `Only ${n} host${n === 1 ? "" : "s"} meet the ${errClass} policy (≥ ${p.att}, trust ≥ ${p.trust.toFixed(2)}) — lower the quorum or choose ${alt}.`;
+  }, [realError, run, dataClass, workers]);
   const realOk = real != null && !realError;
   // Real candidates straight from the grid (alias/attestation/state/verdict/…).
   const realCandidates: JobCandidate[] = real?.candidates ?? [];
@@ -428,7 +475,7 @@ export default function QueryConsolePage() {
         title="Query Console"
         description="Compose p2p_query / p2p_join / p2p_share over data in S3/ADLS/GCS. Several hosts run it redundantly; the first correct result that reaches quorum wins."
       >
-        <Button onClick={dispatch} disabled={running}>
+        <Button onClick={dispatch} disabled={running || noEligibleHosts}>
           <Send /> Dispatch
         </Button>
       </PageHeader>
@@ -528,31 +575,25 @@ export default function QueryConsolePage() {
                 </div>
               </div>
 
-              {/* Active selection policy (§7.5 + §8.2.1): the attestation tier is a
-                  HARD gate, so free/L0 hosts are refused Internal/Sensitive. */}
-              {(() => {
-                const pol =
-                  dataClass === "Sensitive"
-                    ? { att: "L2", trust: "0.80", paid: true }
-                    : dataClass === "Internal"
-                      ? { att: "L1", trust: "0.85", paid: true }
-                      : { att: "L0", trust: "0.70", paid: false };
-                return (
-                  <div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3 text-xs">
-                    <span className="text-foreground font-medium">{dataClass} selection policy</span>
-                    <Badge variant="muted" className="font-mono">≥ {pol.att} attestation</Badge>
-                    <Badge variant="muted" className="font-mono">trust ≥ {pol.trust}</Badge>
-                    <Badge variant={pol.paid ? "warn" : "ok"}>
-                      {pol.paid ? "paid · stake counts" : "free · off-chain"}
-                    </Badge>
-                    <span className="text-muted-foreground">
-                      {pol.att === "L0"
-                        ? "open to every host, including free/anonymous L0 nodes."
-                        : `free / L0 hosts are excluded — only ${pol.att}-attested hosts above the trust floor qualify.`}
-                    </span>
-                  </div>
-                );
-              })()}
+              {/* Active selection policy + live eligibility (§7.5 + §8.2.1): the
+                  attestation tier is a HARD gate and the grid enforces a trust
+                  floor, so the quorum can't exceed how many hosts clear both. */}
+              <div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3 text-xs">
+                <span className="text-foreground font-medium">{dataClass} selection policy</span>
+                <Badge variant="muted" className="font-mono">≥ {pol.att} attestation</Badge>
+                <Badge variant="muted" className="font-mono">trust ≥ {pol.trust.toFixed(2)}</Badge>
+                <Badge variant={pol.paid ? "warn" : "ok"}>
+                  {pol.paid ? "paid · stake counts" : "free · off-chain"}
+                </Badge>
+                <Badge variant={noEligibleHosts ? "destructive" : "info"} className="font-mono">
+                  {eligibleHostCount} eligible
+                </Badge>
+                <span className="text-muted-foreground">
+                  {noEligibleHosts
+                    ? `no hosts meet this policy — choose ${dataClass === "Sensitive" ? "Internal or Public" : "Public"}.`
+                    : `${eligibleHostCount} host${eligibleHostCount === 1 ? "" : "s"} eligible for ${dataClass} (≥ ${pol.att}, trust ≥ ${pol.trust.toFixed(2)}) — quorum capped at ${quorumMax}.`}
+                </span>
+              </div>
 
               {dataClass === "Sensitive" ? (
                 <div className="flex items-start gap-2 rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/10 p-3 text-xs text-[var(--warn)]">
@@ -573,18 +614,26 @@ export default function QueryConsolePage() {
                       className="ml-1"
                     />
                   </Label>
-                  <span className="text-sm font-medium tabular-nums">{quorum}</span>
+                  <span className="text-sm font-medium tabular-nums">{effQuorum}</span>
                 </div>
                 <Slider
                   min={1}
-                  max={5}
+                  max={quorumMax}
                   step={1}
-                  value={[quorum]}
+                  value={[effQuorum]}
                   onValueChange={(v) => setQuorum(v[0])}
                 />
-                <p className="text-muted-foreground text-xs">
-                  Matching result hashes required before a result is accepted.
-                </p>
+                {quorum > quorumMax ? (
+                  <p className="flex items-center gap-1 text-xs text-[var(--warn)]">
+                    <AlertTriangle className="size-3" /> capped at {quorumMax} — only{" "}
+                    {eligibleHostCount} host{eligibleHostCount === 1 ? "" : "s"} eligible for{" "}
+                    {dataClass}
+                  </p>
+                ) : (
+                  <p className="text-muted-foreground text-xs">
+                    Matching result hashes required before a result is accepted.
+                  </p>
+                )}
               </div>
 
               {/* Hedge k slider */}
@@ -644,7 +693,7 @@ export default function QueryConsolePage() {
                     min={0}
                     step={0.5}
                     value={freeTier ? 0 : maxEscrow}
-                    onChange={(e) => setMaxEscrow(Number(e.target.value) || 0)}
+                    onChange={(e) => setMaxEscrow(Math.max(0, Number(e.target.value) || 0))}
                     disabled={freeTier}
                     className="tabular-nums"
                   />
@@ -652,7 +701,7 @@ export default function QueryConsolePage() {
               </div>
 
               <div className="flex items-center gap-2 pt-1">
-                <Button onClick={dispatch} disabled={running} className="flex-1">
+                <Button onClick={dispatch} disabled={running || noEligibleHosts} className="flex-1">
                   <Send /> Dispatch query
                 </Button>
                 <Button variant="ghost" onClick={reset} disabled={running}>
@@ -730,7 +779,7 @@ export default function QueryConsolePage() {
                   {realError ? (
                     <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                       <AlertTriangle className="mt-px size-4 shrink-0" />
-                      <span>Dispatch failed: {realError}</span>
+                      <span>Dispatch failed: {friendlyError}</span>
                     </div>
                   ) : (
                     /* Dispatched-to-grid banner */
@@ -1114,14 +1163,22 @@ export default function QueryConsolePage() {
                 ) : null}
                 <div className="text-muted-foreground flex items-center gap-2 text-xs">
                   <Coins className="size-3.5 text-[var(--warn)]" />
-                  {view.free ? (
-                    <span>Free public tier — no settlement, receipts gossiped.</span>
-                  ) : (
-                    <span>
-                      Settled from escrow ≤ {ton(view.escrow)} · losers RESET, unspent
-                      escrow refunded.
-                    </span>
-                  )}
+                  {(() => {
+                    // For a live dispatch, the grid decides free vs paid from the
+                    // data class (Public = free/off-chain; Internal/Sensitive = paid,
+                    // escrow opened + settled). Reflect that real outcome rather than
+                    // the editor's escrow knobs. Offline preview falls back to them.
+                    const paid = realOk ? !!real!.paid : !view.free;
+                    const escrow = realOk ? (real!.escrowTon ?? 0) : view.escrow;
+                    return paid ? (
+                      <span>
+                        Settled from escrow ≤ {ton(escrow)} · losers RESET, unspent
+                        escrow refunded.
+                      </span>
+                    ) : (
+                      <span>Free public tier — no settlement, receipts gossiped.</span>
+                    );
+                  })()}
                 </div>
               </CardContent>
             </Card>

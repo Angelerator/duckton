@@ -55,6 +55,7 @@
 
 /* Light theme (rarely used — the console is dark-first) */
 :root {
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(0.99 0 0);
   --foreground: oklch(0.18 0.02 260);
@@ -95,6 +96,7 @@
 
 /* Dark theme — default for the console */
 .dark {
+  color-scheme: dark;
   --background: oklch(0.16 0.012 257);
   --foreground: oklch(0.95 0.005 250);
   --card: oklch(0.2 0.014 257);

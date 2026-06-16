@@ -15,9 +15,9 @@ import {
 import { TonConnectProvider, WalletButton } from "@/lib/ton-connect";
 import { LiveProvider, LiveStatus } from "@/lib/live";
 
-function Brand() {
+function Brand({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <Link href="/" className="flex items-center gap-2.5 px-2">
+    <Link href="/" onClick={onNavigate} className="flex items-center gap-2.5 px-2">
       <div className="bg-primary text-primary-foreground grid size-8 place-items-center rounded-lg font-bold shadow-sm">
         <svg viewBox="0 0 24 24" className="size-5" fill="none">
           <path
@@ -69,6 +69,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <TonConnectProvider>
     <NetworkModeProvider>
     <LiveProvider>
+      <a
+        href="#main-content"
+        className="bg-primary text-primary-foreground sr-only z-50 rounded-md px-3 py-2 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3"
+      >
+        Skip to content
+      </a>
       <div className="flex min-h-svh">
       {/* Desktop sidebar */}
       <aside className="bg-sidebar fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r lg:flex">
@@ -87,14 +93,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           {/* Mobile menu */}
           <Sheet open={open} onOpenChange={setOpen}>
             <SheetTrigger asChild>
-              <Button variant="ghost" size="icon" className="lg:hidden">
+              <Button variant="ghost" size="icon" className="lg:hidden" aria-label="Open navigation menu">
                 <Menu />
               </Button>
             </SheetTrigger>
             <SheetContent side="left" className="w-72 p-0">
               <SheetTitle className="sr-only">Navigation</SheetTitle>
               <div className="flex h-14 items-center border-b">
-                <Brand />
+                <Brand onNavigate={() => setOpen(false)} />
               </div>
               <div className="overflow-y-auto">
                 <SidebarNav onNavigate={() => setOpen(false)} />
@@ -122,7 +128,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <MainnetWarningBar />
 
-        <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 md:px-6 lg:py-8">
+        <main
+          id="main-content"
+          className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 md:px-6 lg:py-8"
+        >
           {children}
         </main>
       </div>

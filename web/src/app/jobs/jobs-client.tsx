@@ -454,9 +454,19 @@ export function JobsClient() {
                       <TableRow
                         key={j.id}
                         data-state={isSel ? "selected" : undefined}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={isSel}
+                        aria-label={`Inspect job ${j.id}`}
                         onClick={() => setSelectedId(j.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            setSelectedId(j.id);
+                          }
+                        }}
                         className={cn(
-                          "cursor-pointer",
+                          "cursor-pointer focus-visible:ring-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset",
                           isSel && "border-l-primary border-l-2 bg-muted/60"
                         )}
                       >

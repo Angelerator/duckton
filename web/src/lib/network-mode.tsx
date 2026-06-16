@@ -66,27 +66,44 @@ interface Ctx {
 const NetworkModeContext = React.createContext<Ctx | null>(null);
 const STORAGE_KEY = "duckgrid-net-mode";
 
+// localStorage-backed external store for the selected network mode. Using
+// useSyncExternalStore (rather than a mount effect that calls setState) keeps
+// SSR deterministic — the server snapshot is always "testnet" so first paint
+// matches — while the client reads the persisted value on hydration.
+const modeListeners = new Set<() => void>();
+
+function readMode(): NetMode {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (saved === "mainnet" || saved === "testnet") return saved;
+  } catch {
+    /* ignore */
+  }
+  return "testnet";
+}
+
+function subscribeMode(onChange: () => void): () => void {
+  modeListeners.add(onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    modeListeners.delete(onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+function writeMode(m: NetMode): void {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, m);
+  } catch {
+    /* ignore */
+  }
+  // Notify same-tab subscribers (the native `storage` event only fires cross-tab).
+  modeListeners.forEach((l) => l());
+}
+
 export function NetworkModeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setModeState] = React.useState<NetMode>("testnet");
-
-  // Hydrate from localStorage after mount (keeps SSR deterministic: always testnet first paint).
-  React.useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved === "mainnet" || saved === "testnet") setModeState(saved);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const setMode = React.useCallback((m: NetMode) => {
-    setModeState(m);
-    try {
-      window.localStorage.setItem(STORAGE_KEY, m);
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const mode = React.useSyncExternalStore(subscribeMode, readMode, (): NetMode => "testnet");
+  const setMode = React.useCallback((m: NetMode) => writeMode(m), []);
 
   const value = React.useMemo<Ctx>(() => ({ mode, net: NETWORKS[mode], setMode }), [mode, setMode]);
   return <NetworkModeContext.Provider value={value}>{children}</NetworkModeContext.Provider>;

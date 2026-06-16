@@ -409,8 +409,17 @@ export function WorkersClient() {
                   return (
                     <TableRow
                       key={w.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Open details for ${w.alias}`}
                       onClick={() => setSelectedId(w.id)}
-                      className="cursor-pointer"
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setSelectedId(w.id);
+                        }
+                      }}
+                      className="cursor-pointer focus-visible:ring-ring/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset"
                     >
                       <TableCell className="pl-6">
                         <span className="flex items-center gap-1.5 text-sm font-medium">
@@ -423,7 +432,7 @@ export function WorkersClient() {
                           ) : null}
                         </span>
                       </TableCell>
-                      <TableCell>
+                      <TableCell onClick={(e) => e.stopPropagation()}>
                         <CopyId value={w.id} />
                       </TableCell>
                       <TableCell>

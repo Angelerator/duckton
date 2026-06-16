@@ -162,13 +162,15 @@ export default function DeployPage() {
   const [status, setStatus] = React.useState<string | null>(null);
   const [escrowTon, setEscrowTon] = React.useState(100);
 
-  // Prefill admin / fee recipient with the connected wallet.
-  React.useEffect(() => {
-    if (wallet) {
-      setAdmin((a) => a || wallet);
-      setFeeRecipient((a) => a || wallet);
-    }
-  }, [wallet]);
+  // Prefill admin / fee recipient with the connected wallet. Adjusting state
+  // while the wallet address changes (instead of in an effect) avoids an extra
+  // render pass and the react-hooks/set-state-in-effect cascade.
+  const [prevWallet, setPrevWallet] = React.useState(wallet);
+  if (wallet && wallet !== prevWallet) {
+    setPrevWallet(wallet);
+    setAdmin((a) => a || wallet);
+    setFeeRecipient((a) => a || wallet);
+  }
 
   const set = <K extends keyof GpConfig>(k: K, v: number) => setCfg((c) => ({ ...c, [k]: v }));
   const errs = validateGp(cfg);
