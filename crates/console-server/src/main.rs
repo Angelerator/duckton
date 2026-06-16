@@ -35,9 +35,12 @@ use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
 use p2p_settlement::types::Amount;
 use p2p_settlement::{InMemoryRecordAnchor, InMemoryStakeRegistry, MockSettlement, StakeRegistry};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
+use ed25519_dalek::SigningKey;
+use rand::rngs::OsRng;
+
 use p2p_trust::{
-    age_factor, exploration_bonus, now_ts, soft_trust_score, InMemoryTrustStore, TrustInputs,
-    TrustStore,
+    age_factor, exploration_bonus, now_ts, soft_trust_score, AllowlistVerifier, InMemoryTrustStore,
+    MockAttestor, TrustInputs, TrustStore,
 };
 
 const TON: Amount = 1_000_000_000;
@@ -97,7 +100,22 @@ fn attest(level: AttestationLevel) -> Attestation {
     }
 }
 
-async fn spawn_worker(spec: &Spec) -> WorkerHandle {
+/// Demo attestation key binding (console-server DEMO only): the mock attestor
+/// binds this fixed key into its per-offer evidence and the verifier checks it
+/// matches. Production nodes ship no attestor/verifier.
+const DEMO_BOUND_PUB: [u8; 32] = [0xBD; 32];
+
+/// The allowlisted measurement a demo host at `level` attests to (matches the
+/// `attest()` stub measurements). L0 has none (anonymous, no attestor).
+fn demo_measurement(level: AttestationLevel) -> &'static str {
+    match level {
+        AttestationLevel::L2 => "allowlisted-enclave-v1",
+        AttestationLevel::L1 => "known-good-boot-image",
+        AttestationLevel::L0 => "",
+    }
+}
+
+async fn spawn_worker(spec: &Spec, attestor_authority: &SigningKey) -> WorkerHandle {
     let net = GridConfig::default().network;
     let transport =
         Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
@@ -118,13 +136,26 @@ async fn spawn_worker(spec: &Spec) -> WorkerHandle {
         Arc::new(base.with_delay(Duration::from_millis(spec.delay_ms)));
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(
+    let mut worker = Worker::new(
         transport.clone(),
         engine,
         admission,
         attest(spec.level),
         params,
     );
+    // Demo honor-path (console-server DEMO only): L1/L2 hosts carry a MockAttestor
+    // signed by the shared demo authority, so they emit REAL per-offer, nonce-bound
+    // evidence that the coordinator's AllowlistVerifier checks — making the
+    // attestation gate genuine rather than a spoofable integer compare. L0 hosts
+    // stay anonymous (no attestor). Production nodes ship NO attestor.
+    if spec.level != AttestationLevel::L0 {
+        let attestor = Arc::new(MockAttestor::new(
+            attestor_authority.clone(),
+            demo_measurement(spec.level),
+            spec.level,
+        ));
+        worker = worker.with_attestor(attestor, DEMO_BOUND_PUB);
+    }
     let task = worker.spawn();
     WorkerHandle {
         alias: spec.alias.to_string(),
@@ -816,9 +847,14 @@ async fn main() {
             behavior: "fail",
         },
     ];
+    // Shared demo attestation authority (console-server DEMO only): every L1/L2
+    // host's MockAttestor signs with this key, and the coordinator's
+    // AllowlistVerifier below trusts exactly this authority. Generated per process.
+    let demo_authority = SigningKey::generate(&mut OsRng);
+    let demo_authority_pub = demo_authority.verifying_key().to_bytes();
     let mut workers = Vec::new();
     for s in &specs {
-        workers.push(spawn_worker(s).await);
+        workers.push(spawn_worker(s, &demo_authority).await);
     }
     let store = Arc::new(InMemoryTrustStore::new(
         &GridConfig::default().trust,
@@ -886,10 +922,24 @@ async fn main() {
         candidates,
         cfg.discovery.candidate_sample_size,
     ));
+    // Verify L1/L2 evidence against the shared demo authority + allowlisted
+    // measurements (required_level L0 ⇒ the per-class min-attestation floor does
+    // the gating; the verifier just proves the evidence is genuine + nonce-bound).
+    // Without this, the honest-default fail-closed gate would downgrade every
+    // demo L1/L2 host to L0 and Internal/Sensitive jobs would find no hosts.
+    let attestation_verifier = Arc::new(AllowlistVerifier::new(
+        demo_authority_pub,
+        [
+            demo_measurement(AttestationLevel::L1).to_string(),
+            demo_measurement(AttestationLevel::L2).to_string(),
+        ],
+        AttestationLevel::L0,
+    ));
     let coord = Coordinator::new(req, disc, store.clone(), cfg, "mock-1")
         .with_stake_registry(reg.clone())
         .with_settlement(Arc::new(MockSettlement::new()))
-        .with_record_anchor(Arc::new(InMemoryRecordAnchor::new()));
+        .with_record_anchor(Arc::new(InMemoryRecordAnchor::new()))
+        .with_attestation_verifier(attestation_verifier);
 
     let mut grid = Grid {
         workers,

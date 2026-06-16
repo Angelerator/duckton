@@ -41,10 +41,16 @@ self-reported level — a bid claiming **> L0** is honored only if its evidence
 verifies against a wired `AttestationVerifier` (trusted-authority signature over an
 allowlisted measurement + the offer nonce); absent/invalid evidence is treated as
 **L0** (the `> L0` gate fails closed, so a spoofed level can't reach sensitive data).
-However, **real L1/L2 attestation needs TPM/TEE hardware that is not yet shipped** —
-**all current hosts emit L0**, and no production `AttestationVerifier` is wired by
-default, so today an L2 (sensitive) policy admits *nobody*. See the architecture doc
-for the full reasoning and what remains (per-offer evidence production + a
+**Production nodes ship NO attestor and NO verifier by default** — real L1/L2
+attestation needs TPM/TEE hardware that is not yet shipped, so a production node
+emits L0 and an L2 (sensitive) policy admits *nobody* until that hardware lands.
+The **`console-server` demo** exercises the gate end-to-end *honestly*: its L1/L2
+hosts carry a software `MockAttestor` that emits real per-offer, nonce-bound
+evidence, and the demo coordinator wires the matching `AllowlistVerifier` — so the
+gate is genuine (mock attestor + real verification), not a spoofable integer
+compare. That wiring is demo-only and never enabled on a production `Node`. See the
+architecture doc for the full reasoning and what remains (per-offer evidence
+production + a
 network-identity-bound key handshake).
 
 ## Documentation

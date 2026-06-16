@@ -1221,6 +1221,68 @@ async fn attestation_honor_path_admits_verified_l2_host() {
     assert_eq!(outcome.winner.as_ref(), Some(&w.node_id));
 }
 
+/// Regression (console-server demo): with the `AttestationVerifier` wired and
+/// L1/L2 hosts presenting real per-offer evidence (via `MockAttestor`), Internal
+/// (L1, quorum 2) AND Sensitive (L2, quorum 4) jobs succeed — they MUST NOT all
+/// collapse to `InsufficientWorkers` the way they did once the gate became
+/// fail-closed but the demo forgot to wire the attestor/verifier. Mirrors the
+/// demo's "Sensitive succeeds at quorum ≤ 4" with its 4 L2 hosts.
+#[tokio::test]
+async fn attestation_gate_admits_internal_and_sensitive_with_verifier() {
+    use ed25519_dalek::SigningKey;
+    use p2p_proto::AttestationLevel;
+    use p2p_trust::{AllowlistVerifier, MockAttestor};
+    use rand::rngs::OsRng;
+
+    let authority = SigningKey::generate(&mut OsRng);
+    let authority_pub = authority.verifying_key().to_bytes();
+    let bound = [0xBD; 32];
+
+    // 2 L1 hosts + 4 L2 hosts, each emitting real nonce-bound evidence.
+    let mut hosts = Vec::new();
+    for (level, meas) in [
+        (AttestationLevel::L1, "img-l1"),
+        (AttestationLevel::L1, "img-l1"),
+        (AttestationLevel::L2, "img-l2"),
+        (AttestationLevel::L2, "img-l2"),
+        (AttestationLevel::L2, "img-l2"),
+        (AttestationLevel::L2, "img-l2"),
+    ] {
+        let attestor = Arc::new(MockAttestor::new(authority.clone(), meas, level));
+        hosts.push(spawn_worker_attestor(Arc::new(MockEngine::deterministic()), attestor, bound).await);
+    }
+    let refs: Vec<&WorkerHandle> = hosts.iter().collect();
+    let st = store();
+    let verifier = Arc::new(AllowlistVerifier::new(
+        authority_pub,
+        ["img-l1".to_string(), "img-l2".to_string()],
+        AttestationLevel::L0,
+    ));
+    let coord = coordinator(&refs, base_cfg(6, 1), st as Arc<dyn TrustStore>)
+        .await
+        .with_attestation_verifier(verifier);
+
+    // Internal (L1) at quorum 2: every attested host (≥ L1) qualifies.
+    let internal = QueryOverrides {
+        quorum: Some(2),
+        min_attestation: Some("L1".into()),
+        ..Default::default()
+    };
+    let o = coord.run_query("SELECT 1", internal).await.unwrap();
+    assert!(o.verified, "Internal must verify with attested L1+ hosts");
+    assert!(o.agreement >= 2, "agreement {} < quorum 2", o.agreement);
+
+    // Sensitive (L2) at quorum 4: only the 4 L2 hosts qualify, and that's enough.
+    let sensitive = QueryOverrides {
+        quorum: Some(4),
+        min_attestation: Some("L2".into()),
+        ..Default::default()
+    };
+    let o = coord.run_query("SELECT 1", sensitive).await.unwrap();
+    assert!(o.verified, "Sensitive must verify with 4 attested L2 hosts");
+    assert!(o.agreement >= 4, "agreement {} < quorum 4", o.agreement);
+}
+
 // --------------------------------------------------------------------------
 // Request-scoping / routing constraints (§7.5) — coordinator selection
 // --------------------------------------------------------------------------

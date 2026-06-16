@@ -259,14 +259,20 @@ only when its evidence verifies against a wired `AttestationVerifier`
 absent/invalid evidence is treated as **L0**, so the `> L0` gate fails closed and a
 spoofed level can't reach sensitive data.
 
-> **Honest status (be precise):** the verifier seam is wired into the coordinator,
-> but **no production `AttestationVerifier` is installed by default and all shipped
-> hosts emit L0** (real L1/L2 needs TPM/TEE hardware not yet shipped). So today an
-> L2 (sensitive) policy admits *nobody* (fail-closed), and the verified-honor path
-> still needs two pieces: the worker producing **per-offer** evidence bound to the
-> offer nonce, and binding the attested key to the host's **network identity** (the
-> transport exposes only the node-id hash today). The `AllowlistVerifier` +
-> `MockAttestor` exercise the verification logic in tests.
+> **Honest status (be precise):** the full honor-path is implemented — a worker
+> wired with `Worker::with_attestor(...)` produces **per-offer, nonce-bound**
+> evidence, and a coordinator wired with `Coordinator::with_attestation_verifier(...)`
+> (an `AllowlistVerifier`) honors a verified `> L0` level. **Production `Node`s ship
+> NO attestor and NO verifier by default** (the honest default): a production host
+> emits L0, so an L2 (sensitive) policy admits *nobody* until real TPM/TEE hardware
+> lands. The **`console-server` demo** wires a software `MockAttestor` on its L1/L2
+> hosts + the matching `AllowlistVerifier` on the coordinator, so the demo's
+> Internal/Sensitive jobs are gated by **genuine** per-offer attestation
+> verification (not a spoofable integer compare) — demo-only, never on a production
+> node. What still requires hardware: a real TEE quote (Intel TDX / AMD SEV-SNP /
+> AWS Nitro) verified against vendor certificate chains, and binding the attested
+> key to the host's **network identity** (the transport exposes only the node-id
+> hash today). Both plug in behind the same `Attestor`/`AttestationVerifier` traits.
 
 | Level | Evidence | What it proves | Typical hardware |
 |---|---|---|---|
