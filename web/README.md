@@ -96,22 +96,40 @@ mainnet — your wallet signs and broadcasts. Highlights:
 
 ### TonConnect manifest (QR / real-device connect)
 
-When you connect a wallet, the wallet **fetches** `tonconnect-manifest.json` and validates
-it — a phone scanning the Tonkeeper QR cannot reach `http://localhost`, and a manifest whose
-`url`/`iconUrl` don't resolve is rejected with **"wrong manifest"**. So:
+Before showing the connect prompt, the wallet **fetches** `tonconnect-manifest.json` and
+validates it. Per the [TON Connect docs](https://docs.ton.org/applications/ton-connect/troubleshooting)
+it must be served over **HTTPS**, be reachable **from any origin with permissive CORS**
+(`Access-Control-Allow-Origin: *`), be `application/json`, and its **`url` must match the
+actual serving origin** (the wallet validates the host). A phone scanning the QR also can't
+reach `localhost`. A static file with a hardcoded `url` fails the origin-match rule the moment
+you serve it from a tunnel/prod domain → **"manifest error"** (`MANIFEST_CONTENT_ERROR`).
 
-- The manifest lives at `public/tonconnect-manifest.json` (`url`, `name: "Duckton"`, and an
-  absolute `iconUrl` → `public/duckton-icon.png`, a 512×512 PNG). Required fields are `url`,
-  `name`, `iconUrl`; the icon must be an absolute URL the wallet can fetch.
-- The `manifestUrl` passed to `TonConnectUIProvider` is resolved from
-  `NEXT_PUBLIC_TONCONNECT_MANIFEST_URL` if set, otherwise from the current origin at runtime —
-  never a bare relative/localhost path.
-- **Testing wallet-connect on a real phone locally:** `localhost` is unreachable from the
-  phone. Either expose the dev app via a public tunnel (`cloudflared tunnel --url
-  http://localhost:3000`, or `ngrok http 3000`) or deploy it, then set
-  `NEXT_PUBLIC_TONCONNECT_MANIFEST_URL` **and** the manifest's `url`/`iconUrl` to that public
-  origin. The simplest no-tunnel path is the **Tonkeeper browser extension** on the same
-  machine, which can reach `http://localhost:3000`.
+So the manifest is served by a **dynamic route**, not a static file:
+
+- `src/app/tonconnect-manifest.json/route.ts` returns the manifest with `url` and `iconUrl`
+  derived from the **request origin** (honoring `x-forwarded-host` / `x-forwarded-proto`, so it
+  auto-matches whatever tunnel/host serves it), with `Content-Type: application/json` and
+  `Access-Control-Allow-Origin: *`. The icon is the 180×180+ PNG at `public/duckton-icon.png`.
+- Override the advertised origin with `NEXT_PUBLIC_TONCONNECT_URL` (the dApp origin in the
+  manifest body) and/or `NEXT_PUBLIC_TONCONNECT_MANIFEST_URL` (the manifest URL the SDK passes
+  to wallets). With neither set, both auto-resolve from the current origin.
+
+**Exact Tonkeeper test recipe (real phone, local machine):**
+
+1. Start the app: `npm run dev` (or `npm run build && npm run start`) on `:3000`.
+2. Start an HTTPS tunnel to it:
+   - `cloudflared tunnel --url http://localhost:3000`  (prints a `https://<name>.trycloudflare.com` URL), or
+   - `ngrok http 3000`  (prints a `https://<id>.ngrok-free.app` URL).
+3. Open the **tunnel URL** (not `localhost`) in your browser — the dynamic manifest auto-matches
+   that origin, so no env vars are needed.
+4. Click **Connect wallet** → scan the QR with **Tonkeeper** on your phone → it fetches
+   `https://<tunnel>/tonconnect-manifest.json` (origin-matched, CORS-open) and connects.
+
+> HTTPS is required and a phone **cannot** use `localhost`. The simplest no-tunnel path is the
+> **Tonkeeper browser extension** on the same machine, which reaches `http://localhost:3000`
+> directly. Verify any host with:
+> `curl -i http://127.0.0.1:3000/tonconnect-manifest.json` → `200`, `application/json`,
+> `access-control-allow-origin: *`, and a `url` equal to the request origin.
 
 ## Explanations
 
