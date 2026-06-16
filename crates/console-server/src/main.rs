@@ -25,7 +25,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
 use p2p_config::{
-    GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, VerifyModeCfg,
+    GridConfig, IdentityConfig, PaymentPref, PinningMode, PreferMode, QueryOverrides, VerifyModeCfg,
 };
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, CoordinatorError, DuckDbEngine, MockEngine,
@@ -296,23 +296,57 @@ impl Grid {
         verify: VerifyModeCfg,
         gated: bool,
         requester: &str,
+        extras: QueryExtras,
     ) -> J {
         let (min_att, min_trust) = class_policy(data_class);
         let mut ov = QueryOverrides::default();
         ov.replicas = Some(replicas);
         ov.quorum = Some(quorum);
         ov.verify = Some(verify);
-        let paid = gated && matches!(class_payment(data_class), PaymentPref::Paid);
         if gated {
             ov.min_attestation = Some(min_att.to_string());
             ov.min_trust = Some(min_trust);
             ov.payment = Some(class_payment(data_class));
         }
+        // Explicit per-call overrides (highest precedence) — set when provided,
+        // mirroring how `QueryOverrides::apply` lets per-call values win. Omitted
+        // fields keep the data-class policy floor / current behavior.
+        if let Some(p) = extras.prefer {
+            ov.prefer = Some(p);
+        }
+        if let Some(p) = extras.payment {
+            ov.payment = Some(p);
+        }
+        if let Some(t) = extras.min_trust {
+            ov.min_trust = Some(t);
+        }
+        if let Some(a) = &extras.min_attestation {
+            ov.min_attestation = Some(a.clone());
+        }
+        if let Some(n) = &extras.network {
+            ov.network = Some(n.clone());
+        }
+        if let Some(g) = &extras.groups {
+            ov.groups = g.clone();
+        }
+        if let Some(r) = &extras.regions {
+            ov.regions = r.clone();
+        }
+        if let Some(b) = extras.require_staked_hosts {
+            ov.require_staked_hosts = Some(b);
+        }
+        let paid = matches!(ov.payment, Some(PaymentPref::Paid));
+        // Effective policy actually applied to selection (floor or override).
+        let eff_min_att = ov
+            .min_attestation
+            .clone()
+            .unwrap_or_else(|| min_att.to_string());
+        let eff_min_trust = ov.min_trust.unwrap_or(min_trust);
         let verify_label = match verify {
             VerifyModeCfg::Fast => "Fast",
             _ => "Quorum",
         };
-        let policy_json = json!({ "minAttestation": min_att, "minTrust": min_trust });
+        let policy_json = json!({ "minAttestation": eff_min_att, "minTrust": eff_min_trust });
         let t0 = Instant::now();
         let created = unix_ms();
         let outcome = self.coord.run_query(sql, ov).await;
@@ -467,12 +501,16 @@ impl Grid {
                 let error_msg = match &e {
                     CoordinatorError::InsufficientWorkers { have, quorum } => {
                         if *have == 0 {
-                            format!("No hosts meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust})")
+                            format!("No hosts meet the {data_class} policy (≥ {eff_min_att} attestation, trust ≥ {eff_min_trust})")
                         } else {
-                            format!("Only {have} host(s) meet the {data_class} policy (≥ {min_att} attestation, trust ≥ {min_trust}), but quorum is {quorum}")
+                            format!("Only {have} host(s) meet the {data_class} policy (≥ {eff_min_att} attestation, trust ≥ {eff_min_trust}), but quorum is {quorum}")
                         }
                     }
-                    other => format!("{other:?}"),
+                    // Use the human Display text (thiserror `#[error(...)]`), not
+                    // the Rust `{:?}` Debug wrapper — so the requester sees a clean
+                    // reason (now carrying the real underlying engine message, e.g.
+                    // `… : Binder Error: Referenced column "alireza" not found`).
+                    other => other.to_string(),
                 };
                 json!({
                     "id": format!("job_err_{}", created), "sql": sql, "fn": "p2p_query",
@@ -719,7 +757,23 @@ struct QueryReq {
     verify: VerifyModeCfg,
     gated: bool,
     requester: String,
+    extras: QueryExtras,
     resp: Option<oneshot::Sender<J>>,
+}
+
+/// Optional per-call overrides from `/api/query` (all default to None ⇒ current
+/// behavior). These map onto the corresponding [`QueryOverrides`] fields and are
+/// applied with HIGHEST precedence (after the data-class policy floor).
+#[derive(Default)]
+struct QueryExtras {
+    prefer: Option<PreferMode>,
+    payment: Option<PaymentPref>,
+    min_trust: Option<f64>,
+    min_attestation: Option<String>,
+    network: Option<String>,
+    groups: Option<Vec<String>>,
+    regions: Option<Vec<String>>,
+    require_staked_hosts: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -734,6 +788,75 @@ struct QueryBody {
     quorum: Option<usize>,
     #[serde(default)]
     k: Option<usize>,
+    // --- Full override set (camelCase). All optional. ---
+    #[serde(default)]
+    prefer: Option<String>,
+    #[serde(default)]
+    payment: Option<String>,
+    #[serde(default, rename = "minTrust")]
+    min_trust: Option<f64>,
+    #[serde(default, rename = "minAttestation")]
+    min_attestation: Option<String>,
+    #[serde(default)]
+    network: Option<String>,
+    #[serde(default)]
+    groups: Option<Vec<String>>,
+    #[serde(default)]
+    regions: Option<Vec<String>>,
+    #[serde(default, rename = "requireStakedHosts")]
+    require_staked_hosts: Option<bool>,
+}
+
+/// Parse the loose camelCase override strings into the typed [`QueryExtras`].
+/// Unrecognized enum strings are ignored (treated as "not provided") so a bad
+/// value degrades to current behavior rather than 400-ing.
+fn parse_extras(body: &QueryBody) -> QueryExtras {
+    let prefer = body
+        .prefer
+        .as_deref()
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "local" => Some(PreferMode::Local),
+            "remote" => Some(PreferMode::Remote),
+            "auto" => Some(PreferMode::Auto),
+            _ => None,
+        });
+    let payment = body
+        .payment
+        .as_deref()
+        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+            "free" => Some(PaymentPref::Free),
+            "paid" => Some(PaymentPref::Paid),
+            "auto" => Some(PaymentPref::Auto),
+            _ => None,
+        });
+    let min_attestation = body.min_attestation.as_deref().and_then(|s| {
+        match s.trim().to_ascii_uppercase().as_str() {
+            "L0" | "L1" | "L2" => Some(s.trim().to_ascii_uppercase()),
+            _ => None,
+        }
+    });
+    let clean = |v: &Option<Vec<String>>| {
+        v.as_ref().map(|xs| {
+            xs.iter()
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+        })
+    };
+    QueryExtras {
+        prefer,
+        payment,
+        min_trust: body.min_trust,
+        min_attestation,
+        network: body
+            .network
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        groups: clean(&body.groups),
+        regions: clean(&body.regions),
+        require_staked_hosts: body.require_staked_hosts,
+    }
 }
 
 async fn state_handler(State(s): State<AppState>) -> Json<J> {
@@ -752,6 +875,8 @@ async fn stream_handler(
 }
 
 async fn query_handler(State(s): State<AppState>, Json(body): Json<QueryBody>) -> Json<J> {
+    // Parse the optional override set BEFORE moving owned fields out of `body`.
+    let extras = parse_extras(&body);
     let sql = body
         .sql
         .unwrap_or_else(|| "SELECT region, count(*) FROM orders GROUP BY region".into());
@@ -770,6 +895,7 @@ async fn query_handler(State(s): State<AppState>, Json(body): Json<QueryBody>) -
         verify,
         gated: true,
         requester: "you".into(),
+        extras,
         resp: Some(tx),
     };
     if s.q_tx.send(req).await.is_err() {
@@ -1007,6 +1133,7 @@ async fn main() {
             VerifyModeCfg::Quorum,
             false,
             "warmup",
+            QueryExtras::default(),
         )
         .await;
     }
@@ -1030,6 +1157,7 @@ async fn main() {
                         reqq.verify,
                         reqq.gated,
                         &reqq.requester,
+                        reqq.extras,
                     )
                     .await;
                 let state = grid.live_json();
@@ -1061,6 +1189,7 @@ async fn main() {
                         verify: VerifyModeCfg::Quorum,
                         gated: true,
                         requester: "ambient".into(),
+                        extras: QueryExtras::default(),
                         resp: None,
                     })
                     .await;

@@ -1145,12 +1145,19 @@ impl Coordinator {
         });
 
         let mut inflight: Vec<InFlight> = Vec::new();
-        let mut failed: Vec<(NodeId, Verdict)> = Vec::new();
+        // (node, classified verdict, RAW failure detail). The detail (e.g. the
+        // real DuckDB "Binder Error: …" text) is retained so a consensus failure
+        // can surface the actual underlying cause to the requester, not just the
+        // generic classification.
+        let mut failed: Vec<(NodeId, Verdict, String)> = Vec::new();
         let mut silent: Vec<NodeId> = Vec::new();
         for c in futures_util::future::join_all(collect_futs).await {
             match c {
                 Collected::Committed(f) => inflight.push(f),
-                Collected::Failed(node, detail) => failed.push((node, classify_failure(&detail))),
+                Collected::Failed(node, detail) => {
+                    let verdict = classify_failure(&detail);
+                    failed.push((node, verdict, detail));
+                }
                 Collected::Silent(node) => silent.push(node),
             }
         }
@@ -1169,7 +1176,7 @@ impl Coordinator {
         for _ in &inflight {
             tally.record_committed();
         }
-        for (_, v) in &failed {
+        for (_, v, _) in &failed {
             tally.record(*v);
         }
         for _ in &silent {
@@ -1215,10 +1222,16 @@ impl Coordinator {
                     && tally.is_consensus_infeasible(frac)
                 {
                     // Consensus-infeasible query → job fault. Neutral receipts, no
-                    // penalty, refund, and STOP re-dispatching.
-                    let reason = tally
+                    // penalty, refund, and STOP re-dispatching. Surface the REAL
+                    // underlying error (e.g. the DuckDB "Binder Error: …" text) the
+                    // providers reported, not just the generic classification — so
+                    // the requester can see WHAT was wrong with the query.
+                    let mut reason = tally
                         .consensus_reason(frac)
                         .unwrap_or_else(|| "consensus-infeasible query".to_string());
+                    if let Some(detail) = consensus_failure_detail(&failed) {
+                        reason = format!("{reason}: {detail}");
+                    }
                     self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
                     return Ok(AttemptResult::Infeasible { reason });
                 } else if inflight.len() >= cfg.scheduler.quorum {
@@ -1476,7 +1489,7 @@ impl Coordinator {
                 }
                 commitment_failers.push(node.clone());
             }
-            for (node, verdict) in &failed {
+            for (node, verdict, _) in &failed {
                 // Use the classified verdict (neutral for an "at capacity" decline,
                 // resource/infeasible for a job fault). Only an actual provider
                 // fault penalizes / counts as a broken commitment.
@@ -1944,6 +1957,53 @@ fn mul_frac(amount: Amount, frac: f64) -> Amount {
         return 0;
     }
     ((amount as f64) * frac).floor() as Amount
+}
+
+/// Pick a representative RAW failure detail from a consensus failure (preferring
+/// an `Infeasible` verdict, the deterministic class), cleaned of the internal
+/// wrapper prefixes so the requester sees the core engine message (e.g.
+/// `Binder Error: …`) instead of `exec error: execution failed: query: …`.
+fn consensus_failure_detail(failed: &[(NodeId, Verdict, String)]) -> Option<String> {
+    let raw = failed
+        .iter()
+        .find(|(_, v, _)| matches!(v, Verdict::Infeasible))
+        .or_else(|| failed.first())
+        .map(|(_, _, d)| d.as_str())?;
+    let cleaned = clean_engine_detail(raw);
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(cleaned)
+    }
+}
+
+/// Strip the internal error-wrapper prefixes (`exec error:` → `execution failed:`
+/// → `query:`/`prepare:`/…) that accrete as an engine error travels worker →
+/// requester, leaving the underlying engine message.
+fn clean_engine_detail(detail: &str) -> String {
+    const PREFIXES: &[&str] = &[
+        "exec error: ",
+        "execution failed: ",
+        "query rejected by lockdown policy: ",
+        "query: ",
+        "prepare: ",
+        "fetch: ",
+    ];
+    let mut s = detail.trim();
+    loop {
+        let mut stripped = false;
+        for p in PREFIXES {
+            if let Some(rest) = s.strip_prefix(p) {
+                s = rest.trim_start();
+                stripped = true;
+                break;
+            }
+        }
+        if !stripped {
+            break;
+        }
+    }
+    s.to_string()
 }
 
 fn parse_level(s: &str) -> AttestationLevel {

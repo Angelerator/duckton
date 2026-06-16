@@ -1163,6 +1163,45 @@ async fn spoofed_attestation_level_is_downgraded_and_excluded() {
     assert!(outcome.verified);
 }
 
+/// Error propagation: a consensus-infeasible failure must carry the REAL
+/// underlying engine error (e.g. the DuckDB `Binder Error: …` text) into the
+/// `Infeasible` reason — not just the generic "N/N providers reported infeasible"
+/// classification — so the requester can see WHAT was wrong with the query.
+#[tokio::test]
+async fn infeasible_reason_carries_real_engine_error() {
+    let msg = "Binder Error: Referenced column \"alireza\" not found";
+    let a = spawn_worker(Arc::new(MockEngine::failing(msg))).await;
+    let b = spawn_worker(Arc::new(MockEngine::failing(msg))).await;
+    let c = spawn_worker(Arc::new(MockEngine::failing(msg))).await;
+    let st = store();
+    let coord = coordinator(&[&a, &b, &c], base_cfg(3, 2), st as Arc<dyn TrustStore>).await;
+
+    let err = coord
+        .run_query("SELECT 45, \"alireza\"", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    match err {
+        p2p_node::CoordinatorError::Infeasible { reason } => {
+            // The generic classification is still present (job-fault distinction)…
+            assert!(
+                reason.contains("infeasible"),
+                "should keep the job-fault classification: {reason}"
+            );
+            // …AND it now carries the real binder error, cleaned of wrappers.
+            assert!(
+                reason.contains("Binder Error: Referenced column \"alireza\" not found"),
+                "reason must include the real engine error: {reason}"
+            );
+            // The internal wrapper prefixes are stripped.
+            assert!(
+                !reason.contains("exec error:") && !reason.contains("execution failed:"),
+                "wrapper prefixes must be stripped: {reason}"
+            );
+        }
+        other => panic!("expected Infeasible, got {other:?}"),
+    }
+}
+
 /// Attestation honor-path (§7.2/§9.3): a host wired with a (software) attestor
 /// emits per-offer, nonce-bound L2 evidence; a requester with the matching
 /// `AttestationVerifier` HONORS the L2 level and admits it under an L2 gate.
