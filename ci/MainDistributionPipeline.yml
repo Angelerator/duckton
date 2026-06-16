@@ -1,0 +1,37 @@
+#
+# DuckDB Community-Extensions distribution pipeline for the `duckton` extension.
+#
+# NOTE: this file lives under `ci/` rather than `.github/workflows/` because the
+# token used to push this repo lacks the GitHub `workflow` OAuth scope. To enable
+# the repo's own mirror of the registry build, copy it to
+# `.github/workflows/MainDistributionPipeline.yml` with a `workflow`-scoped token:
+#
+#   mkdir -p .github/workflows
+#   cp ci/MainDistributionPipeline.yml .github/workflows/
+#   git add .github/workflows/MainDistributionPipeline.yml && git commit && git push
+#
+# The DuckDB Community-Extensions registry build does NOT depend on this file —
+# it builds `duckton` from `extensions/duckton/description.yml` in
+# duckdb/community-extensions. This workflow only mirrors that build in-repo.
+#
+name: Main Extension Distribution Pipeline
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || '' }}-${{ github.base_ref || '' }}-${{ github.ref != 'refs/heads/main' || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  duckdb-stable-build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
+    with:
+      duckdb_version: v1.5.3
+      ci_tools_version: v1.5-variegata
+      extension_name: duckton
+      extra_toolchains: rust;python3
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;linux_amd64_musl;linux_arm64_musl;windows_amd64_mingw;windows_amd64_rtools'

@@ -3,6 +3,12 @@
 **/target/
 /dist
 
+# DuckDB Community-Extensions build flow (extension-ci-tools / `make release`)
+/build
+/configure
+duckdb_unittest_tempdir
+/test/bin
+
 # Node / Acton / TON tooling
 node_modules/
 **/node_modules/

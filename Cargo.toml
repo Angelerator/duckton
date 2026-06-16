@@ -10,9 +10,18 @@ members = [
     "crates/extension",
     "crates/console-server",
 ]
+# The published deliverable of this workspace is the `duckton` loadable DuckDB
+# extension (`crates/extension`). The DuckDB Community Extensions registry build
+# (`extension-ci-tools`) runs a bare `cargo build` at the repo root, so scope the
+# DEFAULT build set to just the extension and its path-deps. This keeps the
+# registry build from pulling `console-server`'s `duckdb-engine` feature into the
+# cdylib via feature unification (which would bundle a SECOND DuckDB and break the
+# loadable-extension bindings). Explicit `cargo build --workspace` / `-p` (used by
+# docker + scripts/build_extension.sh + CI) are unaffected and still build all.
+default-members = ["crates/extension"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 # Duckton — a peer-to-peer DuckDB query grid with TON-settled economics. The
 # published loadable extension is `duckton`; internal crate names stay `p2p-*`.

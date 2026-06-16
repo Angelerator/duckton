@@ -1,0 +1,5 @@
+# Statically link the C runtime on Windows (MSVC) so the loadable extension does
+# not depend on a separately-installed vcruntime. Mirrors the DuckDB
+# extension-template-rs setup. No effect on non-Windows targets.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-Ctarget-feature=+crt-static"]

@@ -1,0 +1,28 @@
+# name: test/sql/duckton.test
+# description: Smoke-test the duckton extension's read-only identity surface
+# group: [duckton]
+
+# Require the extension to be loaded before running the rest of the tests.
+require duckton
+
+# p2p_info() is a zero-arg table function (key VARCHAR, value VARCHAR) that
+# exposes the protocol identity. The protocol name is stable across releases and
+# proves the extension loaded and registered its table functions.
+query I
+SELECT value FROM p2p_info() WHERE key = 'protocol_name';
+----
+duckdb-p2p
+
+# The identity block exposes name, protocol/min/schema versions, the extension
+# version, and the negotiated ALPN — six rows.
+query I
+SELECT count(*) FROM p2p_info();
+----
+6
+
+# The configured-peers surface is callable and reports the default discovery mode
+# when no P2P_CONFIG is set. (p2p_peers() returns columns: kind, value.)
+query I
+SELECT count(*) >= 1 FROM p2p_peers() WHERE kind = 'discovery_mode';
+----
+true
