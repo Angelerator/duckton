@@ -397,6 +397,9 @@ mod tests {
                 CandidateFilter {
                     data_class: DataClass::Public,
                     min_attestation: AttestationLevel::L0,
+                    network: None,
+                    groups: vec![],
+                    regions: vec![],
                 },
             )
             .await;

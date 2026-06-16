@@ -81,6 +81,10 @@ fn signed_ad(addr: &str, ts: u64) -> CapabilityAd {
         recent_receipts_root: None,
         pow: mint_pow(&pk, pow_epoch(ts), POW_BITS, 5_000_000).unwrap(),
         ts,
+        enabled: true,
+        networks: vec!["default".into()],
+        groups: vec![],
+        region: None,
     };
     sign_capability_ad(draft, &IdentitySigner(&id))
 }
@@ -89,6 +93,9 @@ fn filter() -> CandidateFilter {
     CandidateFilter {
         data_class: DataClass::Public,
         min_attestation: AttestationLevel::L0,
+        network: None,
+        groups: vec![],
+        regions: vec![],
     }
 }
 
@@ -329,6 +336,10 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
         recent_receipts_root: None,
         pow: mint_pow(&pk, pow_epoch(ts), POW_BITS, 5_000_000).unwrap(),
         ts,
+        enabled: true,
+        networks: vec!["default".into()],
+        groups: vec![],
+        region: None,
     };
     let ad = sign_capability_ad(draft, &IdentitySigner(&worker_identity));
     worker_disc.publish_ad(&ad).await.unwrap();

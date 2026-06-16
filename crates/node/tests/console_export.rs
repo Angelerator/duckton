@@ -903,6 +903,9 @@ async fn export_console_snapshot() {
         cost_hint_rows: Some(184_000_000),
         data_class: DataClass::Internal,
         nonce: 0x9f2a_1c9e_b41d_77a0,
+        network: None,
+        groups: Vec::new(),
+        regions: Vec::new(),
     };
     let bid = Bid {
         job_id: sample_job.clone(),

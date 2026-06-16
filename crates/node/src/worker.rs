@@ -66,6 +66,16 @@ pub struct WorkerParams {
     /// How often the host streams a progress/heartbeat update to the requester
     /// while a job executes. `Duration::ZERO` disables progress streaming.
     pub progress_interval: Duration,
+    // --- Request-scoping / routing labels (from `[membership]` + `[worker]`). ---
+    /// Whether this host accepts NEW offers. `false` = graceful standby/drain
+    /// (declines new offers in `make_bid`; in-flight leases finish).
+    pub enabled: bool,
+    /// Logical grid partitions this host serves (empty ⇒ the `"default"` one).
+    pub networks: Vec<String>,
+    /// Group memberships this host serves (empty ⇒ ungrouped / public).
+    pub groups: Vec<String>,
+    /// Declared region of this host (`None` ⇒ unspecified).
+    pub region: Option<String>,
 }
 
 impl WorkerParams {
@@ -87,6 +97,10 @@ impl WorkerParams {
             max_uni_streams: cfg.transport.quic.max_concurrent_uni_streams as usize,
             job_timeout: Duration::from_millis(cfg.worker.job_timeout_ms),
             progress_interval: Duration::from_millis(cfg.worker.progress_interval_ms),
+            enabled: cfg.worker.enabled,
+            networks: cfg.membership.networks.clone(),
+            groups: cfg.membership.groups.clone(),
+            region: cfg.membership.region.clone(),
         }
     }
 
@@ -396,8 +410,59 @@ impl Worker {
         self.make_bid(offer)
     }
 
+    /// Request-scoping admission gate (architecture §7.5): reject an offer this
+    /// host should not serve — it is on standby (graceful drain), the offer targets
+    /// a logical network this host isn't in, the host is grouped and the requester
+    /// shares none of its groups, or the offer pins regions and this host isn't in
+    /// one. All checks are no-ops when unset (zero-config host serves everything).
+    /// A rejection is an honest decline (no receipt, no score effect).
+    fn membership_reject(&self, offer: &Offer) -> Option<Bid> {
+        let p = &self.params;
+        // 1. Standby / graceful drain: decline NEW offers; in-flight leases finish.
+        if !p.enabled {
+            return Some(self.reject_bid(offer, "host is on standby (draining)"));
+        }
+        // 2. Network partition: the offer targets a partition this host doesn't
+        //    serve. An unlabeled host is in the implicit "default" partition.
+        if let Some(net) = &offer.network {
+            let in_net = if p.networks.is_empty() {
+                net == "default"
+            } else {
+                p.networks.iter().any(|n| n == net)
+            };
+            if !in_net {
+                return Some(self.reject_bid(offer, "host is not in the requested network"));
+            }
+        }
+        // 3. Group membership (soft tier): a grouped host serves a requester only
+        //    if they share ≥1 group. An ungrouped (public) host ignores this.
+        if !p.groups.is_empty() {
+            let shares = offer.groups.iter().any(|g| p.groups.contains(g));
+            if !shares {
+                return Some(
+                    self.reject_bid(offer, "requester shares none of the host's groups"),
+                );
+            }
+        }
+        // 4. Region pin: only hosts in a requested region qualify; a host with no
+        //    declared region fails closed (a region-pinned query needs certainty).
+        if !offer.regions.is_empty() {
+            let in_region = match &p.region {
+                Some(r) => offer.regions.iter().any(|x| x == r),
+                None => false,
+            };
+            if !in_region {
+                return Some(self.reject_bid(offer, "host region not in the requested set"));
+            }
+        }
+        None
+    }
+
     /// Admission-control decision for an offer.
     fn make_bid(&self, offer: &Offer) -> Bid {
+        if let Some(rejection) = self.membership_reject(offer) {
+            return rejection;
+        }
         if let Some(rejection) = self.antiabuse_reject(offer) {
             return rejection;
         }

@@ -1446,6 +1446,18 @@ fn query_overrides(bind: &BindInfo) -> QueryOverrides {
             "true" | "1" | "yes" | "on"
         ));
     }
+    // Request-scoping constraints (§7.5). `network` targets a logical partition;
+    // `groups` are the requester's claims; `regions` pins accepted host regions.
+    if let Some(v) = bind.get_named_parameter("network") {
+        let n = v.to_string().trim().to_string();
+        ov.network = if n.is_empty() { None } else { Some(n) };
+    }
+    if let Some(g) = list_param(bind, "groups") {
+        ov.groups = g;
+    }
+    if let Some(r) = list_param(bind, "regions") {
+        ov.regions = r;
+    }
     ov
 }
 
@@ -1552,6 +1564,15 @@ fn query_named_params() -> Vec<(String, LogicalTypeHandle)> {
         ("payment".to_string(), v(LogicalTypeId::Varchar)),
         ("data_class".to_string(), v(LogicalTypeId::Varchar)),
         ("require_staked_hosts".to_string(), v(LogicalTypeId::Boolean)),
+        ("network".to_string(), v(LogicalTypeId::Varchar)),
+        (
+            "groups".to_string(),
+            LogicalTypeHandle::list(&v(LogicalTypeId::Varchar)),
+        ),
+        (
+            "regions".to_string(),
+            LogicalTypeHandle::list(&v(LogicalTypeId::Varchar)),
+        ),
     ]
 }
 
@@ -1708,6 +1729,29 @@ impl VTab for ShareVTab {
                 .collect();
             pairs.push(("budget.data_classes".into(), toml::Value::Array(arr)));
         }
+        // Request-scoping labels (§7.5): the host's serving state + partition /
+        // groups / region. All optional — omitting them leaves today's posture.
+        if let Some(v) = bind.get_named_parameter("enabled") {
+            let on = matches!(
+                v.to_string().trim().to_ascii_lowercase().as_str(),
+                "true" | "1" | "yes" | "on"
+            );
+            pairs.push(("worker.enabled".into(), toml::Value::Boolean(on)));
+        }
+        if let Some(nets) = list_param(bind, "networks") {
+            let arr = nets.iter().cloned().map(toml::Value::String).collect();
+            pairs.push(("membership.networks".into(), toml::Value::Array(arr)));
+        }
+        if let Some(groups) = list_param(bind, "groups") {
+            let arr = groups.iter().cloned().map(toml::Value::String).collect();
+            pairs.push(("membership.groups".into(), toml::Value::Array(arr)));
+        }
+        if let Some(v) = bind.get_named_parameter("region") {
+            let r = v.to_string().trim().to_string();
+            if !r.is_empty() {
+                pairs.push(("membership.region".into(), toml::Value::String(r)));
+            }
+        }
         if !pairs.is_empty() {
             store.set(&pairs).map_err(boxed)?;
         }
@@ -1762,6 +1806,26 @@ impl VTab for ShareVTab {
                     .collect::<Vec<_>>()
                     .join(","),
             ],
+            [
+                "share".into(),
+                "enabled".into(),
+                cfg.worker.enabled.to_string(),
+            ],
+            [
+                "share".into(),
+                "networks".into(),
+                cfg.membership.networks.join(","),
+            ],
+            [
+                "share".into(),
+                "groups".into(),
+                cfg.membership.groups.join(","),
+            ],
+            [
+                "share".into(),
+                "region".into(),
+                cfg.membership.region.clone().unwrap_or_default(),
+            ],
         ];
         Ok(Rows3 { rows })
     }
@@ -1779,7 +1843,7 @@ impl VTab for ShareVTab {
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         let list_varchar =
-            LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
+            || LogicalTypeHandle::list(&LogicalTypeHandle::from(LogicalTypeId::Varchar));
         Some(vec![
             (
                 "memory".to_string(),
@@ -1793,8 +1857,100 @@ impl VTab for ShareVTab {
                 "max_jobs".to_string(),
                 LogicalTypeHandle::from(LogicalTypeId::Bigint),
             ),
-            ("data_classes".to_string(), list_varchar),
+            ("data_classes".to_string(), list_varchar()),
+            (
+                "enabled".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Boolean),
+            ),
+            ("networks".to_string(), list_varchar()),
+            ("groups".to_string(), list_varchar()),
+            (
+                "region".to_string(),
+                LogicalTypeHandle::from(LogicalTypeId::Varchar),
+            ),
         ])
+    }
+}
+
+/// Flip this host's serving state and (re)build so it takes effect. Shared by
+/// `p2p_pause` (`enabled=false`) and `p2p_resume` (`enabled=true`). A standby host
+/// declines NEW offers at admission; an executing job is never interrupted by the
+/// flag (the graceful-drain guarantee lives in the worker's `make_bid`).
+fn set_serving(enabled: bool) -> std::result::Result<Vec<[String; 3]>, String> {
+    ConfigStore::open()
+        .set(&[("worker.enabled".into(), toml::Value::Boolean(enabled))])
+        .map_err(|e| e.to_string())?;
+    let node = rebuild_node()?;
+    let handle = {
+        let _g = runtime().enter();
+        node.spawn_host()
+    };
+    let mut host = host_cell().lock().unwrap();
+    if let Some(old) = host.take() {
+        old.abort();
+    }
+    *host = Some(handle);
+    let state = if enabled { "serving" } else { "standby" };
+    Ok(vec![
+        ["membership".into(), "status".into(), state.into()],
+        ["membership".into(), "enabled".into(), enabled.to_string()],
+        [
+            "membership".into(),
+            "node_id".into(),
+            node.node_id().as_str().to_string(),
+        ],
+    ])
+}
+
+/// `CALL p2p_pause()` — graceful standby: stop accepting NEW offers (in-flight
+/// jobs finish). Sugar over `p2p_share(enabled => false)`.
+struct PauseVTab;
+impl VTab for PauseVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let rows = set_serving(false).map_err(boxed)?;
+        Ok(Rows3 { rows })
+    }
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![])
+    }
+}
+
+/// `CALL p2p_resume()` — resume serving after a `p2p_pause`. Sugar over
+/// `p2p_share(enabled => true)`.
+struct ResumeVTab;
+impl VTab for ResumeVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let rows = set_serving(true).map_err(boxed)?;
+        Ok(Rows3 { rows })
+    }
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![])
     }
 }
 
@@ -1897,6 +2053,8 @@ pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
     con.register_table_function::<QueryVTab>("p2p_query")?;
     con.register_table_function::<QueryMetaVTab>("p2p_query_meta")?;
     con.register_table_function::<ShareVTab>("p2p_share")?;
+    con.register_table_function::<PauseVTab>("p2p_pause")?;
+    con.register_table_function::<ResumeVTab>("p2p_resume")?;
     con.register_table_function::<JoinVTab>("p2p_join")?;
     Ok(())
 }

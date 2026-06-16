@@ -511,6 +511,9 @@ mod tests {
             cost_hint_rows: Some(rows),
             data_class: DataClass::Public,
             nonce: 0,
+            network: None,
+            groups: Vec::new(),
+            regions: Vec::new(),
         };
         assert!(
             matches!(worker.bid_for(&mk(1_000)).decision, BidDecision::Reject { .. }),
@@ -520,6 +523,68 @@ mod tests {
             matches!(worker.bid_for(&mk(5)).decision, BidDecision::Accept),
             "within-budget offer must still be admitted"
         );
+    }
+
+    #[tokio::test]
+    async fn host_worker_enforces_request_scoping_admission() {
+        // The worker is the always-correct enforcement point (§7.5): standby,
+        // network, group and region constraints are checked in `make_bid` BEFORE
+        // any acceptance. A zero-config host (default network, ungrouped, no
+        // region) is unaffected unless the offer carries a constraint it can't
+        // satisfy. Mirrors the `data_class`/`require_staked_hosts` admission tests.
+        let mk = |network: Option<&str>, groups: Vec<&str>, regions: Vec<&str>| Offer {
+            job_id: JobId::new(),
+            requester_id: NodeId("b3:req".into()),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(1),
+            data_class: DataClass::Public,
+            nonce: 0,
+            network: network.map(String::from),
+            groups: groups.into_iter().map(String::from).collect(),
+            regions: regions.into_iter().map(String::from).collect(),
+        };
+        let build = |f: &dyn Fn(&mut GridConfig)| {
+            let mut cfg = GridConfig::default();
+            f(&mut cfg);
+            cfg.validate().unwrap();
+            Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap()
+        };
+        let accept = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Accept);
+        let reject = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Reject { .. });
+
+        // Zero-config host serves an unconstrained offer (no behavior change).
+        let n = build(&|_| {});
+        assert!(accept(&n.host_worker().bid_for(&mk(None, vec![], vec![]))));
+
+        // Standby (enabled=false): decline EVERY new offer (graceful drain — the
+        // gate is only in `make_bid`, so an executing lease is never interrupted).
+        let n = build(&|c| c.worker.enabled = false);
+        assert!(reject(&n.host_worker().bid_for(&mk(None, vec![], vec![]))));
+
+        // Network: a host on ["eu"] rejects a "us"-targeted offer, serves "eu",
+        // and (no network constraint) serves an untargeted offer.
+        let n = build(&|c| c.membership.networks = vec!["eu".into()]);
+        let w = n.host_worker();
+        assert!(reject(&w.bid_for(&mk(Some("us"), vec![], vec![]))));
+        assert!(accept(&w.bid_for(&mk(Some("eu"), vec![], vec![]))));
+        assert!(accept(&w.bid_for(&mk(None, vec![], vec![]))));
+
+        // Groups: a grouped host serves only requesters sharing a group; a
+        // requester claiming none is rejected.
+        let n = build(&|c| c.membership.groups = vec!["finance".into()]);
+        let w = n.host_worker();
+        assert!(reject(&w.bid_for(&mk(None, vec!["ops"], vec![]))));
+        assert!(accept(&w.bid_for(&mk(None, vec!["finance"], vec![]))));
+        assert!(reject(&w.bid_for(&mk(None, vec![], vec![]))));
+
+        // Region: a host in "eu" rejects a ["us"] pin and serves an ["eu"] pin.
+        let n = build(&|c| c.membership.region = Some("eu".into()));
+        let w = n.host_worker();
+        assert!(reject(&w.bid_for(&mk(None, vec![], vec!["us"]))));
+        assert!(accept(&w.bid_for(&mk(None, vec![], vec!["eu"]))));
+        // A host with NO declared region fails closed under a region pin.
+        let n = build(&|_| {});
+        assert!(reject(&n.host_worker().bid_for(&mk(None, vec![], vec!["eu"]))));
     }
 
     #[test]

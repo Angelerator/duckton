@@ -25,6 +25,9 @@ fn make_offer(requester: &NodeId) -> Offer {
         cost_hint_rows: Some(1),
         data_class: DataClass::Public,
         nonce: 7,
+        network: None,
+        groups: Vec::new(),
+        regions: Vec::new(),
     }
 }
 

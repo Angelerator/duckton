@@ -48,6 +48,22 @@ pub struct Offer {
     pub data_class: DataClass,
     /// Fresh random nonce to bind the exchange and prevent replay.
     pub nonce: u64,
+    // --- Request-scoping / routing constraints (additive; `#[serde(default)]` so an
+    //     Offer from an older peer parses with no constraints = today's behavior). ---
+    /// Logical grid partition this query targets (NOT the TON chain). `None` ⇒ the
+    /// requester does not constrain by network (matches any host).
+    #[serde(default)]
+    pub network: Option<String>,
+    /// The requester's claimed group memberships. A host that has groups
+    /// configured admits the offer only if `host.groups ∩ this != ∅`; an ungrouped
+    /// (public) host ignores it. Empty ⇒ the requester claims no groups.
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// Regions the requester will accept a host in. Non-empty ⇒ the host's region
+    /// must be one of these (fail-closed for a host with no region). Empty ⇒ no
+    /// region constraint.
+    #[serde(default)]
+    pub regions: Vec<String>,
 }
 
 /// A worker's decision on an [`Offer`].
@@ -452,6 +468,9 @@ mod tests {
             cost_hint_rows: Some(100),
             data_class: DataClass::Public,
             nonce: 42,
+            network: None,
+            groups: vec![],
+            regions: vec![],
         });
         let bytes = crate::to_bytes(&offer).unwrap();
         let back: Wire = crate::from_bytes(&bytes).unwrap();

@@ -138,14 +138,25 @@ impl Discovery for MembershipTable {
         let mut eligible: Vec<Candidate> = inner
             .ads
             .values()
+            // A host on standby (graceful drain) advertises `enabled = false`;
+            // skip it (it declines new offers anyway).
+            .filter(|ad| ad.enabled)
             .filter(|ad| self.fresh(ad, now))
             .filter(|ad| ad.attestation_level >= filter.min_attestation)
             .filter_map(|ad| {
                 let addr = ad.addr.parse().ok()?;
                 let mut c = Candidate::new(Some(ad.node_id.clone()), addr);
                 c.advertised_level = Some(ad.attestation_level);
+                // Carry the advertised request-scoping labels so the filter can
+                // prune by them (and the coordinator can re-check).
+                c.advertised_networks = ad.networks.clone();
+                c.advertised_groups = ad.groups.clone();
+                c.advertised_region = ad.region.clone();
                 Some(c)
             })
+            // Request-scoping prune by advertised labels (network/group soft,
+            // region fail-closed).
+            .filter(|c| filter.admits_labels(c))
             .collect();
         drop(inner);
 
@@ -182,6 +193,38 @@ mod tests {
             // (which derives the epoch from `ad.ts`) rejects the ad.
             pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
             ts,
+            enabled: true,
+            networks: vec!["default".into()],
+            groups: vec![],
+            region: None,
+        };
+        sign_capability_ad(draft, &IdentitySigner(&id))
+    }
+
+    fn labeled_ad(
+        port: u16,
+        ts: u64,
+        enabled: bool,
+        networks: Vec<&str>,
+        groups: Vec<&str>,
+        region: Option<&str>,
+    ) -> CapabilityAd {
+        let id = NodeIdentity::generate().unwrap();
+        let pk = id.public_key_bytes();
+        let draft = CapabilityDraft {
+            addr: format!("127.0.0.1:{port}"),
+            free_mem_bytes: 1 << 30,
+            free_threads: 4,
+            max_jobs: 3,
+            attestation_level: AttestationLevel::L0,
+            price: 0,
+            recent_receipts_root: None,
+            pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
+            ts,
+            enabled,
+            networks: networks.into_iter().map(String::from).collect(),
+            groups: groups.into_iter().map(String::from).collect(),
+            region: region.map(String::from),
         };
         sign_capability_ad(draft, &IdentitySigner(&id))
     }
@@ -190,7 +233,56 @@ mod tests {
         CandidateFilter {
             data_class: p2p_proto::DataClass::Public,
             min_attestation: AttestationLevel::L0,
+            network: None,
+            groups: vec![],
+            regions: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn find_candidates_prunes_standby_network_and_region() {
+        let table = MembershipTable::new(50, 8, 3600);
+        let now = now_ts();
+        // A serving, ungrouped EU host.
+        assert!(table.ingest(labeled_ad(41_000, now, true, vec!["eu"], vec![], Some("eu"))));
+        // A standby host (advertises enabled=false) — must never be a candidate.
+        assert!(table.ingest(labeled_ad(41_001, now, false, vec!["eu"], vec![], Some("eu"))));
+
+        // Standby is pruned even with no constraint; the serving host remains.
+        assert_eq!(
+            table.find_candidates(10, filter()).await.len(),
+            1,
+            "standby ad must be excluded"
+        );
+
+        // Network prune: targeting "us" drops the EU host (known, non-matching).
+        let mut us = filter();
+        us.network = Some("us".into());
+        assert!(table.find_candidates(10, us).await.is_empty());
+
+        // Region fail-closed: a ["us"] pin drops the EU host; an ["eu"] pin keeps it.
+        let mut us_region = filter();
+        us_region.regions = vec!["us".into()];
+        assert!(table.find_candidates(10, us_region).await.is_empty());
+        let mut eu_region = filter();
+        eu_region.regions = vec!["eu".into()];
+        assert_eq!(table.find_candidates(10, eu_region).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn find_candidates_group_is_a_private_pool() {
+        let table = MembershipTable::new(50, 8, 3600);
+        let now = now_ts();
+        // A grouped (finance) host + an ungrouped public host.
+        assert!(table.ingest(labeled_ad(42_000, now, true, vec!["default"], vec!["finance"], None)));
+        assert!(table.ingest(labeled_ad(42_001, now, true, vec!["default"], vec![], None)));
+
+        // An ungrouped requester reaches only the public host (groups are private).
+        assert_eq!(table.find_candidates(10, filter()).await.len(), 1);
+        // A finance requester reaches both (its claim matches the grouped host).
+        let mut fin = filter();
+        fin.groups = vec!["finance".into()];
+        assert_eq!(table.find_candidates(10, fin).await.len(), 2);
     }
 
     #[tokio::test]
@@ -267,6 +359,10 @@ mod tests {
             recent_receipts_root: None,
             pow: mint_pow(&pk, pow_epoch(now), 8, 1_000_000).unwrap(),
             ts: now,
+            enabled: true,
+            networks: vec!["default".into()],
+            groups: vec![],
+            region: None,
         };
         assert!(table.ingest(sign_capability_ad(draft, &signer)));
         assert!(table.ingest_profile(mk(2, 100)));

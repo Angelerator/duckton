@@ -23,6 +23,11 @@ pub struct CapabilityDraft {
     pub recent_receipts_root: Option<String>,
     pub pow: PowStamp,
     pub ts: u64,
+    /// Request-scoping labels (additive). `enabled=false` ⇒ standby/drain.
+    pub enabled: bool,
+    pub networks: Vec<String>,
+    pub groups: Vec<String>,
+    pub region: Option<String>,
 }
 
 fn signing_bytes(ad: &CapabilityAd) -> Vec<u8> {
@@ -46,6 +51,18 @@ fn signing_bytes(ad: &CapabilityAd) -> Vec<u8> {
     field(&ad.pow_nonce.to_le_bytes());
     field(&ad.pow_bits.to_le_bytes());
     field(&ad.ts.to_le_bytes());
+    // Request-scoping labels, appended in append-only order (signature-covered so
+    // a host can't lie about its partition/groups/region/standby state).
+    field(&[ad.enabled as u8]);
+    field(&(ad.networks.len() as u64).to_le_bytes());
+    for n in &ad.networks {
+        field(n.as_bytes());
+    }
+    field(&(ad.groups.len() as u64).to_le_bytes());
+    for g in &ad.groups {
+        field(g.as_bytes());
+    }
+    field(ad.region.as_deref().unwrap_or("").as_bytes());
     buf
 }
 
@@ -67,6 +84,10 @@ pub fn sign_capability_ad(draft: CapabilityDraft, signer: &impl Signer) -> Capab
         pow_nonce: draft.pow.nonce,
         pow_bits: draft.pow.difficulty_bits,
         ts: draft.ts,
+        enabled: draft.enabled,
+        networks: draft.networks,
+        groups: draft.groups,
+        region: draft.region,
         sig: String::new(),
     };
     let sig = signer.sign_bytes(&signing_bytes(&ad));
@@ -240,6 +261,10 @@ mod tests {
             // PoW must be minted for the same epoch the ad's `ts` falls in.
             pow: mint_pow(pubkey, pow_epoch(100), 12, 1_000_000).unwrap(),
             ts: 100,
+            enabled: true,
+            networks: vec!["default".into()],
+            groups: vec![],
+            region: None,
         }
     }
 

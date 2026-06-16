@@ -1130,6 +1130,70 @@ async fn spoofed_attestation_level_is_downgraded_and_excluded() {
 }
 
 // --------------------------------------------------------------------------
+// Request-scoping / routing constraints (§7.5) — coordinator selection
+// --------------------------------------------------------------------------
+
+/// Region pin is FAIL-CLOSED at the coordinator: TOFU candidates advertise no
+/// region, so a region-pinned query can prove none are in-region and surfaces
+/// `NoCandidates` (mirrors `require_staked_hosts_without_registry_fails_closed`).
+#[tokio::test]
+async fn region_pin_fails_closed_without_advertised_region() {
+    let a = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let b = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let coord = coordinator(&[&a, &b], base_cfg(1, 1), st as Arc<dyn TrustStore>).await;
+
+    let ov = QueryOverrides {
+        regions: vec!["eu".into()],
+        ..Default::default()
+    };
+    let err = coord.run_query("SELECT 1", ov).await.unwrap_err();
+    assert!(
+        matches!(err, p2p_node::CoordinatorError::NoCandidates),
+        "a region pin with no in-region host must fail closed, got {err:?}",
+    );
+
+    // Control: no region constraint ⇒ the same hosts serve the query.
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+}
+
+/// Network targeting is enforced at WORKER admission end-to-end: default hosts
+/// serve the implicit "default" partition, so a query targeting a different
+/// partition is declined by every host (no eligible workers). Targeting the
+/// host's own partition is served — proving it's the constraint, not a refusal.
+#[tokio::test]
+async fn network_target_excludes_hosts_in_other_partition() {
+    let a = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    let coord = coordinator(&[&a], base_cfg(1, 1), st as Arc<dyn TrustStore>).await;
+
+    let ov = QueryOverrides {
+        network: Some("eu".into()),
+        ..Default::default()
+    };
+    let err = coord.run_query("SELECT 1", ov).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            p2p_node::CoordinatorError::InsufficientWorkers { .. }
+                | p2p_node::CoordinatorError::NoCandidates
+        ),
+        "a default-partition host must decline an offer targeting another network, got {err:?}",
+    );
+
+    let ov_default = QueryOverrides {
+        network: Some("default".into()),
+        ..Default::default()
+    };
+    let outcome = coord.run_query("SELECT 1", ov_default).await.unwrap();
+    assert!(outcome.verified);
+}
+
+// --------------------------------------------------------------------------
 // Anti-cheat: newcomer trust ceiling + Sybil stake-floor gate (default-off)
 // --------------------------------------------------------------------------
 

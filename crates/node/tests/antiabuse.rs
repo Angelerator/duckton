@@ -125,6 +125,9 @@ fn offer(requester: &str, cost_hint_rows: Option<u64>, class: DataClass) -> Offe
         cost_hint_rows,
         data_class: class,
         nonce: 1,
+        network: None,
+        groups: Vec::new(),
+        regions: Vec::new(),
     }
 }
 

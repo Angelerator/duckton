@@ -39,8 +39,31 @@ pub struct CapabilityAd {
     pub pow_bits: u32,
     /// Unix-seconds timestamp (freshness; stale ads are dropped).
     pub ts: u64,
+    // --- Request-scoping / routing labels (additive; `#[serde(default)]` so an ad
+    //     from an older peer parses identically to today). ---
+    /// Whether this host is currently accepting NEW offers. `false` = standby /
+    /// graceful drain (finishes in-flight, declines new). Defaults to `true` for
+    /// back-compat (an older ad omits it ⇒ enabled).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Logical grid partitions this host serves (NOT the TON chain selector).
+    /// Empty ⇒ the implicit `"default"` partition.
+    #[serde(default)]
+    pub networks: Vec<String>,
+    /// Declared group memberships this host serves (empty ⇒ public / ungrouped).
+    #[serde(default)]
+    pub groups: Vec<String>,
+    /// Declared region of this host (data-residency hint). `None` ⇒ unspecified.
+    #[serde(default)]
+    pub region: Option<String>,
     /// Hex Ed25519 signature over the canonical signing bytes.
     pub sig: String,
+}
+
+/// serde default for [`CapabilityAd::enabled`]: an ad without the field is from an
+/// older, enabled host.
+fn default_true() -> bool {
+    true
 }
 
 /// A node's **durable, self-measured** capability profile (the empirical
@@ -95,6 +118,10 @@ mod tests {
             pow_nonce: 7,
             pow_bits: 16,
             ts: 100,
+            enabled: true,
+            networks: vec!["default".into()],
+            groups: vec![],
+            region: None,
             sig: "ab".repeat(32),
         };
         let bytes = crate::to_bytes(&ad).unwrap();

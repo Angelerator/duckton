@@ -82,6 +82,10 @@ pub struct GridConfig {
     /// Host (worker) execution deadline + progress-streaming interval
     /// (resilience layer, architecture §11).
     pub worker: WorkerConfig,
+    /// Request-scoping / routing labels (logical network partition, groups,
+    /// region). Default-off posture (serves the `"default"` partition, ungrouped,
+    /// no region) so a zero-config node is unconstrained.
+    pub membership: MembershipConfig,
     /// Liveness / failure detection (phi-accrual + SWIM, architecture §8).
     pub liveness: LivenessConfig,
     pub budget: BudgetConfig,
@@ -768,6 +772,11 @@ pub struct WorkerConfig {
     /// pulled off" record. `false` (default) writes no profile — behavior is
     /// exactly as before.
     pub self_measure_capability: bool,
+    /// Whether this host accepts NEW offers. `true` (default) = serving normally.
+    /// `false` = **graceful standby/drain**: the worker declines new offers (its
+    /// `make_bid` rejects) but in-flight leases finish. Flipped by `p2p_pause` /
+    /// `p2p_resume`. Reflected in the host's advertised `CapabilityAd.enabled`.
+    pub enabled: bool,
 }
 
 impl Default for WorkerConfig {
@@ -776,8 +785,73 @@ impl Default for WorkerConfig {
             job_timeout_ms: 60_000,
             progress_interval_ms: 2_000,
             self_measure_capability: false,
+            enabled: true,
         }
     }
+}
+
+/// `[membership]` — request-scoping / routing labels for this node (architecture
+/// §7.5 selection). All DEFAULT to a no-constraint posture so a zero-config node
+/// behaves exactly as today: it serves the implicit `"default"` partition, claims
+/// no groups (⇒ public/ungrouped, serves everyone), and declares no region.
+///
+/// "network" here is a **logical grid partition**, NOT the TON chain selector
+/// (`economics.network`). `group_enforcement` / `region_trust` select the SOFT
+/// (declared) tier by default; the cryptographic-token / attested tiers are
+/// Phase 4 (deferred — the enum values + plumbing exist so the soft path is the
+/// default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MembershipConfig {
+    /// Logical grid partitions this node belongs to / serves. Default `["default"]`.
+    pub networks: Vec<String>,
+    /// Declared group memberships. Empty (default) ⇒ ungrouped / public (a host
+    /// with no groups serves everyone; a requester with no groups claims none).
+    pub groups: Vec<String>,
+    /// Declared region of this node (data-residency hint). `None` (default) ⇒
+    /// unspecified.
+    pub region: Option<String>,
+    /// How group membership is enforced. `soft` (default) trusts declared groups;
+    /// `token` (Phase 4, deferred) requires a verified group-membership token.
+    pub group_enforcement: GroupEnforcement,
+    /// How a host's region claim is trusted. `declared` (default) trusts the
+    /// self-declared region; `attested` (Phase 4, deferred) requires the region to
+    /// be bound into hardware attestation and raises the attestation floor.
+    pub region_trust: RegionTrust,
+}
+
+impl Default for MembershipConfig {
+    fn default() -> Self {
+        Self {
+            networks: vec!["default".to_string()],
+            groups: Vec::new(),
+            region: None,
+            group_enforcement: GroupEnforcement::Soft,
+            region_trust: RegionTrust::Declared,
+        }
+    }
+}
+
+/// Group-membership enforcement tier (default `soft`). The `token` tier is
+/// Phase 4 (deferred): verify a cryptographic group-membership token
+/// (`crates/trust/src/token.rs`) instead of trusting the declared groups.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupEnforcement {
+    #[default]
+    Soft,
+    Token,
+}
+
+/// Region-trust tier (default `declared`). The `attested` tier is Phase 4
+/// (deferred): require the host's region to be bound into its attestation
+/// evidence (and raise the attestation floor for region-pinned queries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RegionTrust {
+    #[default]
+    Declared,
+    Attested,
 }
 
 /// Liveness / failure-detection settings (architecture §8): a **phi-accrual**
@@ -1575,6 +1649,39 @@ impl GridConfig {
                 "P2P_WORKER_JOB_TIMEOUT_MS" => self.worker.job_timeout_ms = parse(k, v)?,
                 "P2P_WORKER_PROGRESS_INTERVAL_MS" => {
                     self.worker.progress_interval_ms = parse(k, v)?
+                }
+                "P2P_WORKER_ENABLED" => self.worker.enabled = parse(k, v)?,
+                // ---- request-scoping / routing labels (env layer) ----
+                "P2P_MEMBERSHIP_NETWORKS" => {
+                    self.membership.networks = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                }
+                "P2P_MEMBERSHIP_GROUPS" => {
+                    self.membership.groups = v
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                }
+                "P2P_MEMBERSHIP_REGION" => {
+                    self.membership.region =
+                        if v.trim().is_empty() { None } else { Some(v.clone()) }
+                }
+                "P2P_MEMBERSHIP_GROUP_ENFORCEMENT" => {
+                    self.membership.group_enforcement =
+                        match v.trim().to_ascii_lowercase().as_str() {
+                            "token" => GroupEnforcement::Token,
+                            _ => GroupEnforcement::Soft,
+                        }
+                }
+                "P2P_MEMBERSHIP_REGION_TRUST" => {
+                    self.membership.region_trust = match v.trim().to_ascii_lowercase().as_str() {
+                        "attested" => RegionTrust::Attested,
+                        _ => RegionTrust::Declared,
+                    }
                 }
                 // ---- liveness: phi-accrual + SWIM (env layer) ----
                 "P2P_LIVENESS_PHI_ENABLED" => self.liveness.phi.enabled = parse(k, v)?,
@@ -2429,6 +2536,43 @@ mod tests {
         assert!(cfg.planner.local_execution_enabled);
         // env did not touch prefer set by the file layer
         assert_eq!(cfg.planner.prefer, PreferMode::Remote);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn membership_env_layer_overrides_labels() {
+        let mut cfg = GridConfig::default();
+        // Defaults: serves the "default" partition, ungrouped, no region, enabled.
+        assert_eq!(cfg.membership.networks, vec!["default".to_string()]);
+        assert!(cfg.membership.groups.is_empty());
+        assert!(cfg.membership.region.is_none());
+        assert!(cfg.worker.enabled);
+
+        let mut env = BTreeMap::new();
+        env.insert("P2P_MEMBERSHIP_NETWORKS".to_string(), "eu,default".to_string());
+        env.insert(
+            "P2P_MEMBERSHIP_GROUPS".to_string(),
+            "finance,ops".to_string(),
+        );
+        env.insert("P2P_MEMBERSHIP_REGION".to_string(), "eu-west".to_string());
+        env.insert("P2P_WORKER_ENABLED".to_string(), "false".to_string());
+        env.insert(
+            "P2P_MEMBERSHIP_REGION_TRUST".to_string(),
+            "attested".to_string(),
+        );
+        cfg.apply_env_map(&env).unwrap();
+
+        assert_eq!(
+            cfg.membership.networks,
+            vec!["eu".to_string(), "default".to_string()]
+        );
+        assert_eq!(
+            cfg.membership.groups,
+            vec!["finance".to_string(), "ops".to_string()]
+        );
+        assert_eq!(cfg.membership.region.as_deref(), Some("eu-west"));
+        assert!(!cfg.worker.enabled);
+        assert_eq!(cfg.membership.region_trust, RegionTrust::Attested);
         cfg.validate().unwrap();
     }
 

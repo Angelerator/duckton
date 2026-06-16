@@ -21,6 +21,14 @@ pub struct Candidate {
     pub addr: SocketAddr,
     /// Advertised attestation level (from gossip capability ad), if known.
     pub advertised_level: Option<AttestationLevel>,
+    /// Advertised logical partitions (from the capability ad). Empty ⇒ unknown
+    /// (the host re-checks at admission) or the implicit `"default"` partition.
+    pub advertised_networks: Vec<String>,
+    /// Advertised group memberships (from the capability ad). Empty ⇒ ungrouped /
+    /// unknown.
+    pub advertised_groups: Vec<String>,
+    /// Advertised region (from the capability ad). `None` ⇒ unknown.
+    pub advertised_region: Option<String>,
 }
 
 impl Candidate {
@@ -29,15 +37,58 @@ impl Candidate {
             node_id,
             addr,
             advertised_level: None,
+            advertised_networks: Vec::new(),
+            advertised_groups: Vec::new(),
+            advertised_region: None,
         }
     }
 }
 
 /// A filter describing what kind of candidates a requester wants.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct CandidateFilter {
     pub data_class: DataClass,
     pub min_attestation: AttestationLevel,
+    /// Target logical partition (`None` ⇒ any). Soft prune: an ad with KNOWN
+    /// networks not including this is dropped; an unlabeled ad is kept.
+    pub network: Option<String>,
+    /// The requester's group claims. Soft prune: an ad advertising groups must
+    /// share ≥1; an ungrouped/unknown ad is kept.
+    pub groups: Vec<String>,
+    /// Accepted regions (empty ⇒ no constraint). Fail-closed prune: only an ad
+    /// whose region is in the set is kept.
+    pub regions: Vec<String>,
+}
+
+impl CandidateFilter {
+    /// Whether a candidate's ADVERTISED request-scoping labels pass this filter
+    /// (architecture §7.5). Network/group are SOFT (a candidate with unknown —
+    /// unadvertised — labels is kept; only a KNOWN, non-matching label drops it);
+    /// region is FAIL-CLOSED (a region-pinned query keeps only a candidate whose
+    /// advertised region is in the set). All-empty filter ⇒ always `true`. Shared
+    /// by the discovery prune (early optimization) and the coordinator retain
+    /// (enforcement), so they can't disagree.
+    pub fn admits_labels(&self, c: &Candidate) -> bool {
+        if let Some(net) = &self.network {
+            if !c.advertised_networks.is_empty()
+                && !c.advertised_networks.iter().any(|n| n == net)
+            {
+                return false;
+            }
+        }
+        if !c.advertised_groups.is_empty()
+            && !c.advertised_groups.iter().any(|g| self.groups.contains(g))
+        {
+            return false;
+        }
+        if !self.regions.is_empty() {
+            match &c.advertised_region {
+                Some(r) if self.regions.iter().any(|x| x == r) => {}
+                _ => return false,
+            }
+        }
+        true
+    }
 }
 
 /// Pluggable discovery.
@@ -89,6 +140,10 @@ impl Discovery for StaticDiscovery {
                 Some(level) => level >= filter.min_attestation,
                 None => true,
             })
+            // Request-scoping prune by advertised labels (network/group soft,
+            // region fail-closed) — an early optimization; the coordinator retain
+            // re-checks. No-op when the filter sets no constraint.
+            .filter(|c| filter.admits_labels(c))
             .cloned()
             .collect();
         let mut rng = self.next_rng();
@@ -110,6 +165,9 @@ mod tests {
         CandidateFilter {
             data_class: DataClass::Public,
             min_attestation: AttestationLevel::L0,
+            network: None,
+            groups: vec![],
+            regions: vec![],
         }
     }
 
@@ -138,7 +196,57 @@ mod tests {
         let f = CandidateFilter {
             data_class: DataClass::Sensitive,
             min_attestation: AttestationLevel::L2,
+            network: None,
+            groups: vec![],
+            regions: vec![],
         };
         assert!(disc.find_candidates(10, f).await.is_empty());
+    }
+
+    #[test]
+    fn admits_labels_network_group_soft_region_failclosed() {
+        // The shared matcher used by both the discovery prune and the coordinator
+        // retain (§7.5). Network/group are SOFT (unknown labels are kept; only a
+        // KNOWN, non-matching label drops); region is FAIL-CLOSED (unknown region
+        // dropped). Mirrors the `require_staked_hosts` fail-closed shape. Each
+        // dimension is tested on a single-labeled candidate so they don't conflate.
+        let mut net = peer(40_100);
+        net.advertised_networks = vec!["eu".into()];
+        let mut grp = peer(40_101);
+        grp.advertised_groups = vec!["finance".into()];
+        let mut reg = peer(40_102);
+        reg.advertised_region = Some("eu".into());
+        let unknown = peer(40_103); // no advertised labels
+
+        let f = |network: Option<&str>, groups: Vec<&str>, regions: Vec<&str>| CandidateFilter {
+            data_class: DataClass::Public,
+            min_attestation: AttestationLevel::L0,
+            network: network.map(String::from),
+            groups: groups.into_iter().map(String::from).collect(),
+            regions: regions.into_iter().map(String::from).collect(),
+        };
+
+        // No constraint ⇒ unlabeled / network-only / region-only candidates kept.
+        assert!(f(None, vec![], vec![]).admits_labels(&net));
+        assert!(f(None, vec![], vec![]).admits_labels(&unknown));
+
+        // Network (soft): known-but-wrong dropped; matching kept; unknown kept.
+        assert!(!f(Some("us"), vec![], vec![]).admits_labels(&net));
+        assert!(f(Some("eu"), vec![], vec![]).admits_labels(&net));
+        assert!(f(Some("us"), vec![], vec![]).admits_labels(&unknown));
+
+        // Group: a grouped host is a PRIVATE pool — reachable only by a requester
+        // sharing a group; an ungrouped requester is pruned. An unknown/ungrouped
+        // candidate is kept (soft).
+        assert!(!f(None, vec!["ops"], vec![]).admits_labels(&grp));
+        assert!(f(None, vec!["finance"], vec![]).admits_labels(&grp));
+        assert!(!f(None, vec![], vec![]).admits_labels(&grp));
+        assert!(f(None, vec!["ops"], vec![]).admits_labels(&unknown));
+
+        // Region (fail-closed): only an advertised region in the set is kept; an
+        // unknown region is always dropped.
+        assert!(!f(None, vec![], vec!["us"]).admits_labels(&reg));
+        assert!(f(None, vec![], vec!["eu"]).admits_labels(&reg));
+        assert!(!f(None, vec![], vec!["eu"]).admits_labels(&unknown));
     }
 }

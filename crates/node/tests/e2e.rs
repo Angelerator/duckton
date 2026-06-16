@@ -328,6 +328,10 @@ fn build_ad(w: &WorkerHandle) -> p2p_proto::CapabilityAd {
         recent_receipts_root: None,
         pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
         ts,
+        enabled: true,
+        networks: vec!["default".into()],
+        groups: vec![],
+        region: None,
     };
     sign_capability_ad(draft, &IdentitySigner(id))
 }

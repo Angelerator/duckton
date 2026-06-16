@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CompressionAlgo, ConfigError, DataClassCfg, GridConfig, PaymentPref, PreferMode, VerifyModeCfg,
+    CompressionAlgo, ConfigError, DataClassCfg, GridConfig, PaymentPref, PreferMode, RegionTrust,
+    VerifyModeCfg,
 };
 
 /// Overrides for a single `p2p_query(...)` call.
@@ -45,6 +46,18 @@ pub struct QueryOverrides {
     /// Per-call security gate (`require_staked_hosts => true`): restrict selection
     /// to bonded/staked hosts. `None` ⇒ inherit `scheduler.require_staked_hosts`.
     pub require_staked_hosts: Option<bool>,
+    /// Per-call **logical grid partition** to target (`network => '...'`). `None`
+    /// ⇒ no network constraint (matches any host). NOT the TON chain selector.
+    pub network: Option<String>,
+    /// Per-call **group** claims (`groups => ['...']`): a grouped host serves the
+    /// query only if it shares ≥1 group; an ungrouped host ignores it. Empty ⇒
+    /// inherit the node's `[membership].groups`.
+    pub groups: Vec<String>,
+    /// Per-call **region** constraint (`regions => ['...']`): only hosts in one of
+    /// these regions are eligible (fail-closed on a host with no region). A
+    /// non-empty list raises the attestation floor under `region_trust = attested`
+    /// (Phase 4). Empty ⇒ no region constraint.
+    pub regions: Vec<String>,
 }
 
 /// Rank of an attestation tier string for floor comparison (`L0 < L1 < L2`).
@@ -122,6 +135,18 @@ impl QueryOverrides {
                 }
             }
         }
+        // A region constraint raises the attestation floor "like data_class" — but
+        // ONLY under the attested region-trust tier (Phase 4). With the default
+        // `declared` tier the host's region is trusted as declared, so the floor is
+        // left unchanged (keeps region routing usable on today's L0 hosts). Empty
+        // regions ⇒ no constraint, unchanged behavior.
+        if !self.regions.is_empty() && cfg.membership.region_trust == RegionTrust::Attested {
+            // Mirror the data_class Internal floor (L1): region residency under the
+            // attested tier needs at least measured-boot evidence.
+            if attestation_rank("L1") > attestation_rank(&cfg.trust.min_attestation) {
+                cfg.trust.min_attestation = "L1".to_string();
+            }
+        }
         // candidate_sample_size must stay >= replicas; widen if needed.
         if cfg.discovery.candidate_sample_size < cfg.scheduler.replicas {
             cfg.discovery.candidate_sample_size = cfg.scheduler.replicas;
@@ -138,6 +163,14 @@ pub struct ShareOverrides {
     pub threads: Option<u32>,
     pub max_jobs: Option<u32>,
     pub data_classes: Option<Vec<DataClassCfg>>,
+    /// Host serving state (`enabled => false` ⇒ graceful standby/drain).
+    pub enabled: Option<bool>,
+    /// Logical grid partitions this host serves (`networks => ['...']`).
+    pub networks: Option<Vec<String>>,
+    /// Group memberships this host serves (`groups => ['...']`).
+    pub groups: Option<Vec<String>>,
+    /// Declared region of this host (`region => '...'`; empty string ⇒ clear).
+    pub region: Option<String>,
 }
 
 impl ShareOverrides {
@@ -154,6 +187,22 @@ impl ShareOverrides {
         }
         if let Some(dc) = &self.data_classes {
             cfg.budget.data_classes = dc.clone();
+        }
+        if let Some(e) = self.enabled {
+            cfg.worker.enabled = e;
+        }
+        if let Some(n) = &self.networks {
+            cfg.membership.networks = n.clone();
+        }
+        if let Some(g) = &self.groups {
+            cfg.membership.groups = g.clone();
+        }
+        if let Some(r) = &self.region {
+            cfg.membership.region = if r.trim().is_empty() {
+                None
+            } else {
+                Some(r.clone())
+            };
         }
         cfg.validate()?;
         Ok(cfg)
@@ -294,10 +343,61 @@ mod tests {
             threads: Some(4),
             max_jobs: Some(5),
             data_classes: Some(vec![DataClassCfg::Public, DataClassCfg::Internal]),
+            ..Default::default()
         }
         .apply(&GridConfig::default())
         .unwrap();
         assert_eq!(eff.budget.threads, 4);
         assert_eq!(eff.budget.data_classes.len(), 2);
+    }
+
+    #[test]
+    fn query_override_region_raises_floor_only_under_attested_tier() {
+        let ov = QueryOverrides {
+            network: Some("eu".into()),
+            groups: vec!["finance".into()],
+            regions: vec!["eu".into()],
+            ..Default::default()
+        };
+        // Default region_trust = declared ⇒ a region constraint does NOT raise the
+        // attestation floor (keeps region routing usable on today's L0 hosts).
+        let base = GridConfig::default();
+        let eff = ov.apply(&base).unwrap();
+        assert_eq!(eff.trust.min_attestation, base.trust.min_attestation);
+
+        // Attested tier (Phase 4) ⇒ a region constraint raises the floor to L1.
+        let mut attested = GridConfig::default();
+        attested.membership.region_trust = RegionTrust::Attested;
+        let eff = ov.apply(&attested).unwrap();
+        assert_eq!(eff.trust.min_attestation, "L1");
+        // No region constraint ⇒ floor unchanged even under the attested tier.
+        let eff2 = QueryOverrides::default().apply(&attested).unwrap();
+        assert_eq!(eff2.trust.min_attestation, attested.trust.min_attestation);
+    }
+
+    #[test]
+    fn share_override_sets_membership_labels() {
+        let eff = ShareOverrides {
+            enabled: Some(false),
+            networks: Some(vec!["eu".into(), "default".into()]),
+            groups: Some(vec!["finance".into()]),
+            region: Some("eu".into()),
+            ..Default::default()
+        }
+        .apply(&GridConfig::default())
+        .unwrap();
+        assert!(!eff.worker.enabled);
+        assert_eq!(eff.membership.networks, vec!["eu".to_string(), "default".to_string()]);
+        assert_eq!(eff.membership.groups, vec!["finance".to_string()]);
+        assert_eq!(eff.membership.region.as_deref(), Some("eu"));
+
+        // An empty region string clears the declared region back to None.
+        let cleared = ShareOverrides {
+            region: Some(String::new()),
+            ..Default::default()
+        }
+        .apply(&GridConfig::default())
+        .unwrap();
+        assert_eq!(cleared.membership.region, None);
     }
 }

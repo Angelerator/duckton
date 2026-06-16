@@ -264,6 +264,21 @@ struct InFlight {
     latency_ms: u64,
 }
 
+/// The per-query request-scoping constraints the coordinator stamps into each
+/// `Offer` and applies during candidate selection (architecture §7.5). Computed
+/// once per query from the per-call [`QueryOverrides`] + this node's
+/// `[membership]` claims. All-empty/`None` ⇒ no constraint = today's behavior.
+#[derive(Debug, Clone, Default)]
+struct RequestScope {
+    /// Target logical partition (`None` ⇒ any).
+    network: Option<String>,
+    /// The requester's claimed group memberships (its `[membership].groups` unless
+    /// the call overrode them) — presented to hosts for the group-match check.
+    groups: Vec<String>,
+    /// Regions the requester will accept a host in (empty ⇒ no constraint).
+    regions: Vec<String>,
+}
+
 impl Coordinator {
     pub fn new(
         transport: Arc<QuicTransport>,
@@ -543,8 +558,23 @@ impl Coordinator {
         let job_id = JobId::new();
         let query_hash = QueryHash::compute(sql, &self.engine_version);
 
-        self.run_resilient(sql, &cfg, &job_id, &query_hash, paid, min_level, data_class)
-            .await
+        // Request-scoping constraints (§7.5): the per-call network/region target +
+        // the requester's group claims (per-call `groups` override, else the node's
+        // own `[membership].groups`). All-empty ⇒ no constraint (unchanged routing).
+        let scope = RequestScope {
+            network: overrides.network.clone(),
+            groups: if overrides.groups.is_empty() {
+                cfg.membership.groups.clone()
+            } else {
+                overrides.groups.clone()
+            },
+            regions: overrides.regions.clone(),
+        };
+
+        self.run_resilient(
+            sql, &cfg, &job_id, &query_hash, paid, min_level, data_class, &scope,
+        )
+        .await
     }
 
     /// The resilient re-dispatch loop (architecture §8/§11): repeatedly run one
@@ -563,6 +593,7 @@ impl Coordinator {
         paid: bool,
         min_level: AttestationLevel,
         data_class: DataClass,
+        scope: &RequestScope,
     ) -> Result<QueryOutcome, CoordinatorError> {
         let mut excluded: HashSet<NodeId> = HashSet::new();
         let mut backoff = Backoff::new(
@@ -582,7 +613,7 @@ impl Coordinator {
         let result = loop {
             let attempt = self
                 .dispatch_attempt(
-                    sql, cfg, job_id, query_hash, paid, min_level, data_class, &excluded,
+                    sql, cfg, job_id, query_hash, paid, min_level, data_class, scope, &excluded,
                 )
                 .await;
             match attempt {
@@ -686,19 +717,33 @@ impl Coordinator {
         paid: bool,
         min_level: AttestationLevel,
         data_class: DataClass,
+        scope: &RequestScope,
         excluded: &HashSet<NodeId>,
     ) -> Result<AttemptResult, CoordinatorError> {
         // 1. Discover a bounded candidate set, excluding tried/convicted peers.
         let filter = CandidateFilter {
             data_class,
             min_attestation: min_level,
+            network: scope.network.clone(),
+            groups: scope.groups.clone(),
+            regions: scope.regions.clone(),
         };
         let mut candidates = self
             .discovery
-            .find_candidates(cfg.discovery.candidate_sample_size, filter)
+            .find_candidates(cfg.discovery.candidate_sample_size, filter.clone())
             .await;
         let now_live = now_ms();
-        candidates.retain(|c| match &c.node_id {
+        candidates.retain(|c| {
+            // Request-scoping (§7.5): network/group are SOFT (kept on unknown
+            // labels — the host re-checks at admission); region is fail-closed (an
+            // unknown region is dropped, mirroring `require_staked_hosts`). Applies
+            // to both known-id and TOFU candidates (it reads advertised labels).
+            // Same matcher discovery uses, so it also catches a `Discovery` impl
+            // that didn't prune.
+            if !filter.admits_labels(c) {
+                return false;
+            }
+            match &c.node_id {
             Some(id) => {
                 // Anti-abuse deny-list (each node independently refuses flagged actors).
                 if cfg.antiabuse.enabled {
@@ -753,6 +798,7 @@ impl Coordinator {
             // Unknown id (TOFU) can't be tracked → keep, UNLESS a stake gate is on
             // (an unverifiable peer cannot be proven bonded → drop, fail closed).
             None => !cfg.scheduler.require_staked_hosts && cfg.sybil.min_stake == 0,
+            }
         });
         if candidates.is_empty() {
             return Ok(AttemptResult::NoCandidates);
@@ -770,6 +816,12 @@ impl Coordinator {
             cost_hint_rows: None,
             data_class,
             nonce: rand::thread_rng().gen(),
+            // Stamp the request-scoping constraints (§7.5) so each host enforces
+            // them at admission (the always-correct check): the target partition,
+            // the requester's group claims, and the accepted regions.
+            network: scope.network.clone(),
+            groups: scope.groups.clone(),
+            regions: scope.regions.clone(),
         };
 
         let offer_futures = candidates.into_iter().map(|cand| {

@@ -606,6 +606,10 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
             recent_receipts_root: None,
             pow: mint_pow(&pk, pow_epoch(ts), 8, 1_000_000).unwrap(),
             ts,
+            enabled: true,
+            networks: vec!["default".into()],
+            groups: vec![],
+            region: None,
         };
         let ad = sign_capability_ad(draft, &p2p_node::IdentitySigner(&id));
         if ts == now {
@@ -616,6 +620,9 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
     let filter = p2p_node::CandidateFilter {
         data_class: p2p_proto::DataClass::Public,
         min_attestation: AttestationLevel::L0,
+        network: None,
+        groups: vec![],
+        regions: vec![],
     };
     let candidates = table.find_candidates(16, filter).await;
     // bounded
