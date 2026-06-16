@@ -15,7 +15,7 @@ echo "==> running containers: $RUN"
 
 # Bounded fan-out: give the requester a LARGE bootstrap; it must still complete
 # via the bounded candidate sample (StaticDiscovery caps at candidate_sample_size).
-BIG=(); while IFS= read -r _l; do BIG+=("$_l"); done < <(services | grep -E '^node' | shuf_lines | head -n 40)
+BIG=(); while IFS= read -r _l; do BIG+=("$_l"); done < <(public_workers | shuf_lines | head -n 40)
 BOOT="$(boot_list "${BIG[@]}")"
 cexec="$(ensure_client)"
 sql="SELECT s FROM p2p_query('${QUERY}', prefer=>'remote', replicas=>3, quorum=>2, min_trust=>0.0)"

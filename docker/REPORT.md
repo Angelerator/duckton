@@ -1,181 +1,155 @@
-# 100-Node Docker Swarm Test — P2P DuckDB Grid
+# Multi-node Docker harness — duckdb-p2p grid scenario catalog
 
-End-to-end validation of the P2P DuckDB compute grid at scale: a real Docker
-swarm of **100 nodes**, each a DuckDB CLI with the `duckdb_p2p` extension loaded,
-running distributed queries over QUIC, chaos/resilience under real node deaths,
-and a bounded TON economics check. **No git commits were made.**
+A real, heterogeneous Docker swarm of `duckdb_p2p` nodes (DuckDB CLI + the loadable
+extension) that exercises the **off-chain** scenario catalog in `docker/SCENARIOS.md`.
+Every test drives the real `duckdb` CLI and asserts **exact** rows / values / error
+substrings / log lines. **No git commits were made; no TON gas was spent.**
 
 ## TL;DR
 
 | Item | Result |
 |---|---|
-| In-container extension build | ✅ builds `crates/extension` cdylib (linux_arm64), appends DuckDB metadata, loads in CLI |
-| Node count | **100 / 100** launched & hosting (3 seeds + 97 workers) |
-| Host resource usage | **~1.03 GiB total, ~10.6 MiB/node idle** on a 7.7 GiB Docker VM |
-| Cross-node queries (over QUIC) | **31/31** correct (1 sanity + 30 concurrent), result matches locally-computed expected |
-| Chaos / re-dispatch | **20/20** correct after `docker kill` of 4/8 bootstrap workers; grid routes around dead nodes, quorum still reached |
-| Resilience guarantees (phi/SWIM + FailedCommitment fine) | **12/12** `resilience.rs` tests pass (in-memory rails) |
-| Scale / bounded fan-out | ✅ 40-node bootstrap query completes via the capped candidate sample (no global broadcast) |
-| TON | **68/68** Acton emulator tests pass; `fork_testnet` reads **live deployed** testnet vault state. Swarm uses the **mock/in-memory** rail; **no per-node testnet gas spent** |
+| Image | `p2p-node:latest` **rebuilt** from current source (per-job `data_class`, `require_staked_hosts`, measured-capability knobs present) |
+| Topology | **16 containers** + 1 client + 1 solo: 3 `seed`, 8 `honest-worker`, 2 `internal-host`, 2 `oom-worker`, 1 `remote-only-node` |
+| Per-id catalog result | **152 / 152 PASS, 0 FAIL** (`docker/run_all_scenarios.sh`) |
+| Live swarm (over QUIC) | Admin/Config 46, Query-local 6, Hosting 11, Sandbox 5, Settlement-prepared 10, Query-remote 13, Anti-abuse 8 |
+| Library tier (real loopback QUIC + MockEngine + in-mem rails) | scenarios 14, antiabuse 7, sandbox 5, transport 3, zero_config+trust 7, resilience 12, settlement 5 |
+| Legacy live smoke (back-compat) | `01` 31/31 ✅, `02` 20/20 ✅ (re-dispatch around 4 killed), `03` ✅, `05` free/gate ✅ paid 18/20 (concurrency) |
 
-## How a node is packaged
+## Two-tier design (why)
 
-A "node" = the **DuckDB CLI** + the loadable **`duckdb_p2p`** extension. On start the
-entrypoint:
+The extension's `p2p_query` returns only the **result rows** — the rich
+`QueryOutcome` metadata (`executed_locally`, `verified`, `agreement`, `winner`,
+`receipts`) is **not** surfaced to SQL, and the live host engine (`HostEngine`)
+always runs **real** SQL with **no fault-injection knob**. So:
 
-1. `LOAD '/node/duckdb_p2p.duckdb_extension'`
-2. `CALL p2p_set('budget.per_job_memory_bytes', …)` — shrink the per-job lease so it
-   is admissible under the lean donated budget.
-3. `CALL p2p_share(memory=>…, threads=>1, max_jobs=>4, data_classes=>['public'])` —
-   becomes a **host/worker**: binds a QUIC endpoint (`0.0.0.0:9494`) and spawns the
-   worker accept loop.
-4. Holds the DuckDB process open (stdin fed from a FIFO whose write end never
-   closes) so the worker keeps serving the swarm.
+* **Live swarm / single container** asserts everything observable end-to-end:
+  result values streamed back over QUIC, exact error strings
+  (`NoCandidates` / `InsufficientWorkers have:0` / quorum invariant /
+  `WalletRequired`), the full SQL admin surface, the in-DuckDB sandbox lockdown,
+  prepared settlement gates, and the deny-list surface — plus host-role logs
+  (`NODE_ROLE`, `share|node_id`, `listen_addr`) via `docker logs`.
+* **Library tier** (`cargo test`, real loopback QUIC + `MockEngine` + in-memory
+  stake registry, **no chain**) proves the adversarial / internal invariants the
+  live extension cannot inject: cheating/quorum-agreement/canary, hedged-race,
+  worker deadline/stall/abandon, phi/SWIM exclusion, re-dispatch, retry-budget,
+  infeasible consensus, the broken-commitment fine, escrow split + GlobalParams
+  overlay/version-binding, version negotiation, OS sandbox (rlimit/seatbelt),
+  cost-gate/rate-limit/blocklist-exclusion/requester-trust, and the
+  local-first metadata invariants.
 
-Bootstrap seeds are supplied via the **`P2P_BOOTSTRAP`** env (read by the
-extension's config layer) rather than a second `p2p_join` CALL — because every
-`p2p_share`/`p2p_join` rebuilds and **re-binds** the fixed port, so issuing both on
-one node collides ("address already in use"). One `p2p_share` + env bootstrap =
-one bind.
+## Heterogeneous topology (`gen_compose.py`)
 
-Requesters are short-lived `duckdb` processes (`p2p_set` per-job mem → `p2p_join`
-→ `FROM p2p_query(…, prefer=>'remote')`) run from a dedicated client container so
-they don't compete with a hosting node's tight `mem_limit`.
+Role-based, self-documenting service names; each role drives a real behavior via
+env/config the node already supports:
 
-### The image (`docker/Dockerfile`, multi-stage)
-
-* **builder** (`rust:1-bookworm`): installs clang + libc++ + python3, downloads the
-  DuckDB **v1.5.3** CLI (matches the `duckdb` crate `1.10503.1` → DuckDB 1.5.3),
-  runs `cargo build -p p2p-extension` (default features — **no libp2p**, static
-  seeds), then appends the DuckDB metadata footer via
-  `scripts/append_extension_metadata.py` and smoke-tests `LOAD … p2p_info()`.
-* **runtime** (`debian:bookworm-slim`): just the DuckDB CLI + the built
-  `.duckdb_extension` + entrypoint + `libstdc++6`/`libgomp1`. **No Rust toolchain
-  in the final image.** Image size ≈ **397 MB**.
-
-The in-container extension build was **not** a blocker — it compiles the whole
-workspace (proto/config/transport/trust/settlement/node/extension) in ~56 s and
-produces a `linux_arm64` loadable extension that the CLI loads cleanly.
-
-## Topology
-
-`docker/gen_compose.py` generates an explicit per-node compose file (stable DNS
-names so requesters can target many distinct nodes — `resolve_seeds` only takes
-the first A record per host, so distinct hostnames are required for real fan-out):
-
-* `seed1..seed3` — bootstrap mesh (bootstrap each other).
-* `node1..node97` — workers, `P2P_BOOTSTRAP` = the seeds.
-
-Each container: `mem_limit 224m`, `cpus 0.4`, `pids_limit 64`, `max_jobs 4`,
-donated budget `512MB` (admission accounting only — actual idle RSS ≈ 10 MiB).
-
-## Scenario results
-
-### 1. Cross-node queries (`docker/scenarios/01_cross_node_query.sh`)
-A client runs `FROM p2p_query('SELECT sum(i) AS s FROM range(1,1001)…',
-prefer=>'remote', replicas=>3, quorum=>2)` routed over QUIC to **other** nodes;
-the worker executes on its **host DuckDB** and streams the verified result back.
-Expected `500500` (computed independently). **31/31 correct** (1 sanity + 30
-concurrent). Queries are dispatched, quorum-verified, and streamed — not faked.
-
-### 2. Chaos / resilience (`docker/scenarios/02_chaos.sh`)
-Picks 8 bootstrap workers, `docker kill`s 4 of them, then runs 20 remote queries
-against the **same** 8-node bootstrap (4 dead). **20/20 correct** — the
-coordinator routes around dead candidates (failed offers are dropped) and still
-reaches `quorum=2` from the survivors.
-
-The deeper resilience guarantees are proven **deterministically** by
-`cargo test -p p2p-node --test resilience` (`docker/scenarios/04_resilience_units.sh`),
-**12/12 pass** over real loopback QUIC + mock engine + **in-memory** stake
-registry (NO network, NO live TON), including:
-* `phi_convicted_node_is_excluded_from_selection` — phi-accrual/SWIM exclusion.
-* `host_job_timeout_abandons_and_redispatches`, `all_silent_redispatches_to_a_fresh_set`,
-  `progress_stall_detected_redispatches` — resilient re-dispatch.
-* **`paid_broken_commitment_is_fined`** — a node that accepts a paid job then fails
-  to deliver is fined `FailedCommitment` (= 10% of bonded stake) against the
-  in-memory rail; the deliverer is paid, not fined.
-
-> Note: the extension's live `Node` wires plain `StaticDiscovery` + free
-> settlement, so phi/SWIM exclusion and the paid fine are exercised at the
-> **library** layer (the deterministic suite) rather than over the live swarm,
-> which demonstrates re-dispatch routing under real container deaths.
-
-### 3. Scale / health (`docker/scenarios/03_health.sh`)
-A requester given a **40-node** bootstrap still completes via the bounded
-candidate sample (`candidate_sample_size`, default 16) — **no global-broadcast
-blowup**, sub-linear fan-out. Swarm stable; resource snapshot ~1 GiB / 100 nodes.
-
-## TON (bounded, gas-aware)
-
-* The **swarm runs free jobs on the mock / in-memory settlement rail** — each node
-  reports `economics_enabled=false`, `settlement=noop`. **No paid jobs and no
-  testnet gas were spent across the 100 nodes.**
-* The **paid economics path** (escrow/stake/slash/anchor) is validated by the
-  **Acton emulator suite**: `acton test` → **68 passed in 8 files** (stake 22,
-  escrow 11, global_params 12, anchor 9, receipt_wallet 6, fuzz 6, e2e_flow 1,
-  fork_testnet 1), plus the in-memory `FailedCommitment` fine test above.
-* **Live testnet:** four economic contracts are deployed on testnet
-  (`ton/deployments/economics.testnet.toml`: stake_vault, job_escrow,
-  record_anchor, global_params) and `tests/fork_testnet.test.tolk` **reads the
-  live deployed vault state** (an on-chain read — no gas). The
-  `e2e-testnet` / `testnet_live` harnesses exist for live broadcasts but were
-  **not** run here (no Toncenter API key configured in this environment, and to
-  avoid spending gas per node, exactly as instructed).
-
-## Infra files added (all under `docker/`)
-
-| File | Purpose |
+| Service | Behavior (env/config) |
 |---|---|
-| `docker/Dockerfile` | Multi-stage image: builds the extension cdylib + metadata, lean runtime |
-| `docker/entrypoint.sh` | Node startup: load ext, set per-job mem, `p2p_share`, keep-alive FIFO |
-| `docker/gen_compose.py` | Generate an N-node compose (explicit seeds + workers) |
-| `docker/run_swarm.sh` | Generate + `compose up -d` the swarm |
-| `docker/stop_swarm.sh` | Tear down swarm + client |
-| `docker/scenarios/_common.sh` | Shared helpers (bootstrap lists, requester exec, client) |
-| `docker/scenarios/00_wait_ready.sh` | Wait for N nodes to report `NODE_READY` |
-| `docker/scenarios/01_cross_node_query.sh` | Cross-node distributed query + assertions |
-| `docker/scenarios/02_chaos.sh` | Kill nodes mid-flight; assert re-dispatch/quorum |
-| `docker/scenarios/03_health.sh` | Bounded fan-out + resource snapshot |
-| `docker/scenarios/04_resilience_units.sh` | Deterministic phi/SWIM + FailedCommitment fine |
-| `.dockerignore` | Keep the build context lean |
-| `docker/compose.generated.yml` | Generated artifact (regenerated by `run_swarm.sh`) |
+| `seed-1..3` | bootstrap mesh, serve `public`, bootstrap each other |
+| `honest-worker-1..8` | serve `public` — the REMOTE-OK workhorses (a public-only host = a "free-only host") |
+| `internal-host-1..2` | `P2P_SHARE_DATA_CLASSES=internal,sensitive` → **refuse** a `public` offer (data-class routing) |
+| `oom-worker-1..2` | tiny donated budget (`P2P_SHARE_MEMORY=32MB` < the 64 MiB per-job lease) → admission rejects "at capacity" |
+| `remote-only-node-1` | `P2P_PLANNER_LOCAL_EXEC=false` → never executes locally |
+
+Each container keeps the existing hardening (read-only root, `no-new-privileges`,
+all caps dropped) and the `/node/state` tmpfs **uid/gid=1001** fix.
+
+### Roles intentionally NOT baked (no supporting knob — noted, not faked)
+
+The live node/extension has **no env** for these, so they are proven at the
+library tier instead of being faked in the swarm:
+
+* **cheating / wrong-result / slow / equivocating workers** — `HostEngine` always
+  runs real SQL; result-divergence is `MockEngine`-only → `30_units_scenarios.sh`,
+  `31_units_antiabuse.sh`.
+* **`staked-host` / `l2-host`** — the live node wires no stake registry and emits
+  L0 attestation (bonded stake / measured attestation are not env-settable). The
+  fail-closed `require_staked_hosts` path IS shown live (`QRY-REQUIRE-STAKED-NOREG-01`).
+* **`blocked-actor`** — blocking is a runtime `p2p_block` deny-list entry, not a
+  baked image; the management surface is live (`21`), candidate-exclusion is
+  library-tier (`ABU-CAND-EXCLUDE-01`) because `StaticDiscovery` bootstrap
+  candidates carry no `node_id` (TOFU), so a node-id block cannot match one at the
+  requester.
+
+## Scenario groups → scripts
+
+| Catalog surface | Script | Tier | Count |
+|---|---|---|---|
+| A. Admin/Config | `scenarios/10_admin_config.sh` | solo | 46 |
+| B. Query/Dispatch (local) | `scenarios/11_query_local.sh` | solo | 6 |
+| C. Hosting/Swarm (share/join) | `scenarios/12_hosting.sh` | solo | 11 |
+| J. Sandbox/Security (in-DuckDB) | `scenarios/13_sandbox.sh` | solo | 5 |
+| E. Settlement (prepared/gates) | `scenarios/14_settlement_prepared.sh` | solo | 10 |
+| B. Query/Dispatch (remote) | `scenarios/20_query_remote.sh` | swarm | 13 |
+| H. Anti-abuse (deny-list) | `scenarios/21_antiabuse_live.sh` | solo | 8 |
+| B/D/F/G. scenarios | `scenarios/30_units_scenarios.sh` | cargo | 14 |
+| H. anti-abuse selection | `scenarios/31_units_antiabuse.sh` | cargo | 7 |
+| J. OS sandbox | `scenarios/32_units_sandbox.sh` | cargo | 5 |
+| F. transport versioning | `scenarios/33_units_transport.sh` | cargo | 3 |
+| B/E. zero_config + trust | `scenarios/34_units_trust.sh` | cargo | 7 |
+| G/E. resilience + fine | `scenarios/35_units_resilience.sh` | cargo | 12 |
+| E. paid settlement | `scenarios/36_units_settlement.sh` | cargo | 5 |
+
+Representative live evidence (exact, captured during the run):
+
+* `ADM-INFO-01` → `protocol_name|duckdb-p2p`, `alpn|duckdb-p2p/1`, 6 rows.
+* `ADM-NET-01` → `… switching to MAINNET puts REAL TON at stake …`.
+* `QRY-REMOTE-OK-01` → `500500` streamed from honest workers over QUIC.
+* `QRY-MINTRUST-EXCLUDES-ALL-01` → `not enough trustworthy workers: have 0, need quorum 2`.
+* `QRY-REQUIRE-STAKED-NOREG-01` → `no hosts available to run this query on the grid …`.
+* `QRY-DATA-CLASS-ROUTE-MISMATCH-01` → public job to `internal-host`s → `have 0`.
+* `HST-ADMIT-MEM-01` → public job to `oom-worker`s → `have 0` (admission reject).
+* `SBX-LOCAL-FILE-01` → `File system LocalFileSystem has been disabled by configuration`; `/etc/passwd` never leaks.
+* `SBX-RELOCK-01` → `… the configuration has been locked`.
+* `SET-STAKE-01` → `stake|status|prepared — submit on-chain via the configured wallet + RPC …`.
 
 ## How to reproduce
 
 ```bash
 docker build -f docker/Dockerfile -t p2p-node:latest .
-./docker/run_swarm.sh 100 3 224m 0.4
-./docker/scenarios/00_wait_ready.sh 100 100
-bash docker/scenarios/01_cross_node_query.sh 30 3 2
-bash docker/scenarios/02_chaos.sh 8 4 20
-bash docker/scenarios/04_resilience_units.sh
-bash docker/scenarios/03_health.sh
-./docker/stop_swarm.sh
+docker/run_all_scenarios.sh                 # build-if-needed, up, run all, tally, teardown
+#   KEEP_UP=1   leave the swarm running       NO_UNITS=1  skip the cargo library tier
+#   BUILD=1     force a rebuild
 ```
+
+Single groups (swarm must be up for `20/21` and the legacy live smoke):
+
+```bash
+bash docker/run_swarm.sh && bash docker/scenarios/00_wait_ready.sh
+bash docker/scenarios/10_admin_config.sh      # solo groups need no swarm
+bash docker/scenarios/20_query_remote.sh
+bash docker/scenarios/33_units_transport.sh   # cargo (sets SDKROOT on macOS)
+bash docker/stop_swarm.sh
+```
+
+## Harness bugs found & fixed (vs product behavior)
+
+* **Harness:** `group` is a reserved word in DuckDB — `SELECT group||…` parse
+  error; fixed by quoting `"group"` (escaped for bash) in the admin assertions.
+* **Harness:** the `_common.sh` `req_query` swallowed stderr, hiding the error
+  strings; added `req_query_all` (combined stdout+stderr) for the error-path
+  assertions.
+* **Harness (carried over):** `/node/state` tmpfs needs `uid=1001,gid=1001` —
+  preserved in the new `gen_compose.py`.
+
+## Honest limitations (product, not harness)
+
+* `QRY-EMPTYCOLS-01` (synthesized `result` column) is **not live-triggerable**:
+  the host DuckDB (duckdb-rs) always reports ≥1 column, so the column-synthesis
+  branch fires only for an engine returning zero columns. Documented in `11`.
+* `SET-STAKE-MAINNET-01`: the mainnet guard is enforced at config-set time (the
+  network switch itself is blocked without `confirm`), so an unconfirmed-mainnet
+  stake state is unreachable via SQL; the guard is unit-proven in config tests.
+* Legacy `05_economics_modes.sh` under 20-way concurrency on the smaller 8-honest
+  swarm occasionally reports paid 18/20 (a couple of paid offers time out under
+  load) — the free/gate divergence is always green, and the deterministic paid
+  guarantees (escrow split, overlay, version-binding, the fine) are green in
+  `36_units_settlement.sh`.
+* Paid self-broadcast stays `prepared` unless built `--features ton-live`
+  (by design; no gas spent).
 
 ## Host / environment
 
-* Docker 29.3.1 (Desktop 4.66.1), VM 7.7 GiB / 10 CPUs, `linux/arm64`.
-* 100 containers fit comfortably (~1 GiB actual). 100 was the target and was met
-  — no scale-down required.
-
-## Blockers / honest notes
-
-* **Initial QUIC "have 0" debugging.** Cross-node queries first failed with "not
-  enough trustworthy workers". Root causes (all fixed in the infra):
-  1. The image baked `P2P_SHARE_MEMORY` / `gen_compose` set a donated budget
-     **smaller** than the default 1 GiB per-job lease → workers rejected every
-     offer "at capacity". Fixed by shrinking the per-job lease (`p2p_set`) on both
-     worker and requester and sizing the budget above it.
-  2. Under concurrency, calling `docker compose ps` **per query** intermittently
-     returned empty → empty bootstrap → `p2p_join` error. Fixed by caching the
-     worker list once.
-  3. Requesters exec'd inside tight-`mem_limit` hosting nodes got starved; moved
-     to a dedicated client container.
-* **`p2p_query` per-call knobs:** only `replicas/quorum/min_trust/min_attest/
-  verify/prefer/payment` are exposed by the extension; the resilience timeout
-  knobs (`attempt_deadline_ms`, `max_retries`, …) are config/env-only.
-* Background `docker pull` of the `rust` base image kept dying across tool calls;
-  pulled it in the foreground once, after which builds were fast.
-* No source code was committed; two temporary debug edits to
-  `crates/node/src/{coordinator,worker}.rs` were **reverted** (verified clean).
+* Docker 29.4.2 (Desktop), macOS, ~8 GiB / 6 CPU VM, `linux/arm64`.
+* 16 swarm containers + a 1.5 GiB client + a 1 GiB solo fit comfortably
+  (idle RSS ≈ 10 MiB/node). No scale-down required.

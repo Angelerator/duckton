@@ -28,7 +28,7 @@ CONC="${1:-20}"
 EXPECTED=500500
 QUERY="SELECT sum(i) AS s FROM range(1,1001) t(i)"
 CLIENTC="$(ensure_client)"
-WORKERS_FILE="$LOGDIR/workers.txt"; services | grep -E '^node' > "$WORKERS_FILE"
+WORKERS_FILE="$LOGDIR/workers.txt"; public_workers > "$WORKERS_FILE"
 RESDIR="$LOGDIR/econ"; mkdir -p "$RESDIR"
 
 # Run a requester query INSIDE the client container with an explicit economics

@@ -25,6 +25,15 @@ MAXJOBS="${P2P_SHARE_MAXJOBS:-2}"
 # donated budget; shrink it so a job is admissible AND its DuckDB memory_limit
 # stays well under the container's mem_limit. 64 MiB = 67108864.
 PERJOB_BYTES="${P2P_SHARE_PERJOB_BYTES:-67108864}"
+# Comma-separated data classes this host SERVES (public|internal|sensitive). A
+# host that does not serve a class refuses offers tagged with it — this drives
+# the data-class routing roles (free-only-host=public, internal-host=internal,…).
+DATA_CLASSES="${P2P_SHARE_DATA_CLASSES:-public}"
+# Optional planner overrides (remote-only / thin-client roles). When
+# P2P_PLANNER_LOCAL_EXEC=false this node never executes a query locally (a query
+# with no reachable grid surfaces NoCandidates instead of a local fallback).
+PLANNER_LOCAL_EXEC="${P2P_PLANNER_LOCAL_EXEC:-}"
+PLANNER_PREFER="${P2P_PLANNER_PREFER:-}"
 
 # ---------------------------------------------------------------------------
 # Input validation — these values are interpolated into DuckDB SQL; reject
@@ -60,6 +69,35 @@ validate_posint  "$THREADS"      "P2P_SHARE_THREADS"
 validate_posint  "$MAXJOBS"      "P2P_SHARE_MAXJOBS"
 validate_uint    "$PERJOB_BYTES" "P2P_SHARE_PERJOB_BYTES"
 
+# DATA_CLASSES: comma-separated allowlist of public|internal|sensitive. Build the
+# SQL list literal (['public','internal']) used in the p2p_share call.
+DC_LIST=""
+IFS=',' read -ra _dc <<< "$DATA_CLASSES"
+for c in "${_dc[@]}"; do
+    c="$(printf '%s' "$c" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    [ -z "$c" ] && continue
+    case "$c" in
+        public|internal|sensitive) ;;
+        *) printf 'ERROR: invalid value for P2P_SHARE_DATA_CLASSES: %s (public|internal|sensitive)\n' "$c" >&2; exit 1 ;;
+    esac
+    [ -n "$DC_LIST" ] && DC_LIST="${DC_LIST},"
+    DC_LIST="${DC_LIST}'${c}'"
+done
+[ -z "$DC_LIST" ] && DC_LIST="'public'"
+
+if [ -n "$PLANNER_LOCAL_EXEC" ]; then
+    case "$(printf '%s' "$PLANNER_LOCAL_EXEC" | tr '[:upper:]' '[:lower:]')" in
+        true|false) ;;
+        *) printf 'ERROR: invalid value for P2P_PLANNER_LOCAL_EXEC: %s (true|false)\n' "$PLANNER_LOCAL_EXEC" >&2; exit 1 ;;
+    esac
+fi
+if [ -n "$PLANNER_PREFER" ]; then
+    case "$(printf '%s' "$PLANNER_PREFER" | tr '[:upper:]' '[:lower:]')" in
+        local|remote|auto) ;;
+        *) printf 'ERROR: invalid value for P2P_PLANNER_PREFER: %s (local|remote|auto)\n' "$PLANNER_PREFER" >&2; exit 1 ;;
+    esac
+fi
+
 mkdir -p "${P2P_CONFIG_DIR:-/node/state}"
 
 # Public knob BOOTSTRAP -> the extension's P2P_BOOTSTRAP (comma-separated seeds).
@@ -74,7 +112,17 @@ INIT=/tmp/init.sql
   # runtime layer without rebinding; p2p_share then builds the node from it).
   echo "CALL p2p_set('budget.per_job_memory_bytes', '${PERJOB_BYTES}');"
   echo "CALL p2p_set('budget.per_job_threads', '1');"
-  echo "CALL p2p_share(memory => '${MEM}', threads => ${THREADS}, max_jobs => ${MAXJOBS}, data_classes => ['public']);"
+  # Optional planner role overrides (remote-only / thin-client) persisted before
+  # the node is built by p2p_share.
+  if [ -n "$PLANNER_LOCAL_EXEC" ]; then
+    echo "CALL p2p_set('planner.local_execution_enabled', '${PLANNER_LOCAL_EXEC}');"
+  fi
+  if [ -n "$PLANNER_PREFER" ]; then
+    echo "CALL p2p_set('planner.prefer', '${PLANNER_PREFER}');"
+  fi
+  echo "CALL p2p_share(memory => '${MEM}', threads => ${THREADS}, max_jobs => ${MAXJOBS}, data_classes => [${DC_LIST}]);"
+  # Echo the served data classes + role so `docker logs` documents the topology.
+  echo "SELECT 'NODE_ROLE' AS tag, '${P2P_ROLE:-worker}' AS role, '${DATA_CLASSES}' AS data_classes;"
   # Readiness marker (does NOT re-call p2p_share, which would rebind the port).
   echo "SELECT 'NODE_READY' AS ready;"
 } > "$INIT"

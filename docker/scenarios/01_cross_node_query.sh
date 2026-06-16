@@ -19,7 +19,7 @@ QUERY="SELECT sum(i) AS s FROM range(1,1001) t(i)"
 EXPECTED=500500
 RESULTS="$LOGDIR/query_results.txt"; : > "$RESULTS"
 
-worker_pool() { services | grep -E '^node' ; }
+worker_pool() { public_workers ; }
 
 CLIENTC="$(ensure_client)"
 # Cache the worker list ONCE: calling `docker compose ps` per query under heavy

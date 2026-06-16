@@ -20,7 +20,7 @@ POSTQ="${3:-20}"
 EXPECTED=500500
 QUERY="SELECT sum(i) AS s FROM range(1,1001) t(i)"
 
-POOL=(); while IFS= read -r _l; do POOL+=("$_l"); done < <(services | grep -E '^node' | shuf_lines | head -n "$BSIZE")
+POOL=(); while IFS= read -r _l; do POOL+=("$_l"); done < <(honest_workers | shuf_lines | head -n "$BSIZE")
 BOOT="$(boot_list "${POOL[@]}")"
 echo "==> bootstrap workers ($BSIZE): ${POOL[*]}"
 
