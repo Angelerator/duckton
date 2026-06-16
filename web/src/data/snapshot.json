@@ -2794,6 +2794,722 @@
     ]
   },
   "ton": {
+    "toolchain": "Acton 1.1.0 (Rust TON toolkit · Tolk + @stdlib/@acton)",
+    "network": "testnet",
+    "rpc": "https://testnet.toncenter.com/api/v2/",
+    "wallet": "kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+    "resultHash": "0x9f93e7246ff86674ca1078133e3973f7194df96d7c0c41553ae8218676813349",
+    "bindingHash": "0xf064374e3068c80d08607859327d0aeeac6ae7fe16476590c4db866b68fea9eb",
+    "contracts": [
+      {
+        "name": "StakeVault",
+        "role": "Per-node non-custodial bond contract (one vault per operator) and the jetton master of the node's transfer-locked Duckton stake receipt. Deposit, unbonding cooldown, graduated slashing, keeper withdrawal — all governed by code, no human key.",
+        "doc": "§8 · §8.5 · §8.6",
+        "upgradeable": "timelocked SETCODE (announce → apply ≥ unbonding window)",
+        "storage": [
+          [
+            "owner",
+            "address",
+            "node operator wallet"
+          ],
+          [
+            "staked",
+            "coins",
+            "currently bonded"
+          ],
+          [
+            "unbondingAmount",
+            "coins",
+            "in cooldown (still slashable)"
+          ],
+          [
+            "unbondingAt",
+            "uint32",
+            "cooldown start ts (0 = none)"
+          ],
+          [
+            "totalSupply",
+            "coins",
+            "receipts outstanding (== staked + unbonding)"
+          ],
+          [
+            "bindingHash",
+            "uint256",
+            "wallet↔node identity binding (§3.2)"
+          ],
+          [
+            "config",
+            "^VaultConfig",
+            "minStake, windows, slasher, slash split"
+          ],
+          [
+            "upgrade",
+            "^VaultUpgradeState",
+            "codeVersion, pendingCodeHash, pendingAt"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_vault_state",
+            "{ staked, unbondingAmount, unbondingAt, totalSupply, eligible }"
+          ],
+          [
+            "get_pending_upgrade",
+            "{ codeVersion, pendingCodeHash, pendingAt, readyAt }"
+          ],
+          [
+            "get_code_version",
+            "int (0 = original)"
+          ],
+          [
+            "get_jetton_data",
+            "TEP-74 master data (Duckton)"
+          ],
+          [
+            "get_wallet_address(owner)",
+            "deterministic receipt-wallet address"
+          ],
+          [
+            "is_eligible",
+            "bool"
+          ]
+        ],
+        "guards": [
+          "slash only by config.slasher; bounded by staked + unbondingAmount",
+          "withdraw blocked until now ≥ unbondingAt + unbondingPeriod",
+          "slash split must sum to 10000 bps; burn share locked forever",
+          "upgrade two-step + timelocked + commit-reveal (hash must match)"
+        ],
+        "testnetAddress": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+        "codeHash": "2630657e91e482b536e0c6dcd0d61bca06180ad6260158069910c8d94839c707",
+        "bocBytes": 3708,
+        "codeBoc64": "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",
+        "verify": {
+          "codeHash": "fec61f627fc1a854cc249f9dd1a36615733162990b30d4bc409f387838d1cb24",
+          "url": null,
+          "verified": false,
+          "alreadyVerified": false,
+          "failed": true
+        },
+        "opcodes": [
+          {
+            "hex": "0x534b4b01",
+            "name": "OP_STAKE_DEPOSIT",
+            "value": 1397443329,
+            "desc": "owner bonds stake; mints 1:1 transfer-locked receipt jetton"
+          },
+          {
+            "hex": "0x534b4b02",
+            "name": "OP_STAKE_UNBOND",
+            "value": 1397443330,
+            "desc": "begin cooldown; stake stays slashable during unbonding"
+          },
+          {
+            "hex": "0x534b4b03",
+            "name": "OP_STAKE_WITHDRAW",
+            "value": 1397443331,
+            "desc": "withdraw after cooldown; burns receipts"
+          },
+          {
+            "hex": "0x534b4b05",
+            "name": "OP_STAKE_SLASH",
+            "value": 1397443333,
+            "desc": "slasher-only; graduated slash + split (challenger/redundancy/burn/treasury)"
+          },
+          {
+            "hex": "0x534b4b07",
+            "name": "OP_STAKE_ANNOUNCE_UPGRADE",
+            "value": 1397443335,
+            "desc": "start timelocked SETCODE (records pending code hash + clock)"
+          },
+          {
+            "hex": "0x534b4b08",
+            "name": "OP_STAKE_APPLY_UPGRADE",
+            "value": 1397443336,
+            "desc": "apply SETCODE after timelock; code hash must match announced"
+          },
+          {
+            "hex": "0x534b4b09",
+            "name": "OP_STAKE_CANCEL_UPGRADE",
+            "value": 1397443337,
+            "desc": "cancel a pending upgrade"
+          }
+        ]
+      },
+      {
+        "name": "StakeReceiptWallet",
+        "role": "Per-holder TEP-74-shaped but NON-transferable stake-receipt jetton (Duckton). A slashable accountability bond, not a liquid position — outgoing transfers are hard-locked for the whole bond lifetime so a host can't sell it and dodge slashing.",
+        "doc": "§8.5",
+        "upgradeable": "no (minimal surface; holds no TON, no admin)",
+        "storage": [
+          [
+            "status",
+            "uint4",
+            "bit 0 = transfers locked (always set)"
+          ],
+          [
+            "balance",
+            "coins",
+            "1:1 with bonded TON"
+          ],
+          [
+            "owner",
+            "address",
+            "node operator"
+          ],
+          [
+            "master",
+            "address",
+            "the minting StakeVault"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_wallet_data",
+            "TEP-74 { balance, owner, minter, code }"
+          ],
+          [
+            "is_transfer_locked",
+            "bool (always true)"
+          ],
+          [
+            "get_status",
+            "int"
+          ]
+        ],
+        "guards": [
+          "JettonTransfer (0x0f8a7ea5) always throws RECEIPT_LOCKED (138)",
+          "only master may credit (mint) or burn; balance never negative"
+        ],
+        "testnetAddress": null,
+        "codeHash": "13a38522adbbb9681bf630d186efbddb590025b992a562c7e66514472aaf1871",
+        "bocBytes": 420,
+        "codeBoc64": "te6ccgECDAEAAS4AART/APSkE/S88sgLAQIBYgIDAfjQ+JGRMOAg1ywgvGoozI5fMe1E0NYD+gAg+kj6SDD4kiHHBfLghQXTP/oA+kgx+kgx+gBRYqAHyM5QB/oCFM7J7VQkwgCOJMjPkc2LQnLLP1j6AhT6Us7JyM+FCBP6UgH6AnHPC2rMyXH7AJJfBuLg1ywgfFP1LJPywIrgBAIBIAYHAYyJ1yeOLjHtRNDWA/oAIPpIMfpIMPiSxwXy4IUD0z8x+gAwoSDC//LgiAHIzgH6As7J7VTg1ywimlpYBDGRMOCEDwHHAPL0BQAIU0tLBgIBIAgJAgFICgsAHbuaXtRNDTAzH6ADH6SDCAAju7Au1E0NMDMfoA+kj6SDD4KoABG1Qj2omhrhYHAAGbawHaiaGuFgbjYYADA=",
+        "verify": null,
+        "opcodes": []
+      },
+      {
+        "name": "JobEscrow",
+        "role": "Per-job non-custodial escrow with HTLC-style release keyed on the quorum result hash. Requester locks max bid B at deploy; settle is gated on the agreed hash and bounded by B (remainder refunded); refund-on-timeout returns everything. No platform key can take custody.",
+        "doc": "§4.2 · §6.2 · §13",
+        "upgradeable": "no — a live HTLC's guarantees can't be rewritten mid-flight",
+        "storage": [
+          [
+            "requester",
+            "address",
+            "funds B, receives refunds"
+          ],
+          [
+            "arbiter",
+            "address",
+            "quorum oracle/coordinator authorized to settle"
+          ],
+          [
+            "escrowAmount",
+            "coins",
+            "B, locked up front"
+          ],
+          [
+            "deadline",
+            "uint32",
+            "refund-on-timeout (unix secs)"
+          ],
+          [
+            "settled",
+            "bool",
+            "one-shot"
+          ],
+          [
+            "terms",
+            "^EscrowTerms",
+            "treasury, expectedHash (HTLC lock), paramsVersion"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_escrow_state",
+            "{ escrowAmount, deadline, settled, paramsVersion }"
+          ],
+          [
+            "get_expected_hash",
+            "int (the HTLC lock = quorum result hash)"
+          ],
+          [
+            "get_params_version",
+            "int"
+          ],
+          [
+            "get_requester",
+            "address"
+          ]
+        ],
+        "guards": [
+          "settle: arbiter-only, once, resultHash == terms.expectedHash",
+          "winnerAmount + platformFee + Σparticipants ≤ escrowAmount",
+          "refund: permissionless once now ≥ deadline → entire balance to requester"
+        ],
+        "testnetAddress": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+        "codeHash": "28f676708b3b16d39c5a5c926b3cda39d95c4c357ce7e783220bbff98c6fe001",
+        "bocBytes": 1148,
+        "codeBoc64": "te6ccgECFgEAA1EAART/APSkE/S88sgLAQIBYgIDBPbQ+JGOUdMfMdcLH4IQRVNDBbqOQe1E0PpI+kj6ANYg1PQF+JIhgQEL9ApvoZP6ANGSMHDi+JL4lxKgyAH6AgKBAQv0QQXI+lIU+lJY+gLOzPQAye1U4OAg1ywiKpoYFOMC1ywiKpoYHOMC1ywiKpoYJOMC1ywiKpoYBDEEBQYHAgEgDA0C/DHtRND6SPpI+gDWH9IAINdM+JImxwXy4N4C8tDgAdD6SNP/0//THzHRCNM/0//6SPoA+gD0BPQFUFe68uDfJcj0APkWUA268uEZUxnHBfLRGFMUgQEL9ApvoTHy4RlwUwOBAQv0gm+lkIroXwM1UwugUAWgKLvy4OIpyPpSGQgJAHZb7UTQ+kj6SPoA0x/SAAHy0OD4IyK+8uDhJMj6UhT6Ulj6Assfz4POye1UyM+FCPpScM8LbsmBAIL7AAC6Me1E0AHTP/pIMAL6SPpI+gDWINT0BVNwgQEL9Ary4OL6ANEgwgDy4OJSgoEBC/RZMAbI+lIV+lJQA/oCzswS9ADJ7VTIz4WIE/pSWPoCghBFU0MFzwuKyz/JcfsAABSRMOCEDwHHAPL0AEwCpCDBIfLhGlMogQEL9ApvoTHy4RkB+gDRE6BRFYEBC/R0b6UQNAL++lJQB/oCFc7PgxPOye1Uggr68IBw+wIhwgCOG8jPhYgV+lIB+gKCEEVTQwXPC4ohzws/yXH7AJI0MOIkwgCOHMjPhYgT+lJQBPoCghBFU0MFzwuKIc8LP8lx+wCSMjPiIoEBC/SCb6WQiuhbMsjPhYj6UoIQRVNDBc8Ljss/yQoLAGJSAvoA0SDCAI4byM+FiBP6Ulj6AoIQRVNDBc8LiiLPCz/JcfsAkjAx4iOBAQv0dG+lAAiDBvsAAgFIDg8CAUgQEQAptnsdqJoa6ZofSQY6f/p/5jpj5jowACm2Gd2omhrpmh9JBjp/5jp/5jpj+jACASASEwAptD29qJoa6ZofSQY6f+Y6f/pj5jowAgFmFBUAQbKdO1E0PpIMfpIMfoA0x/SANdM0PpIMdP/MdP/MdMf0YAAPp73aiaH0kGEARaat2omh9JBj9JBj9ABjpkBjqGPoCwICF+gU30MkYOHD9AGj",
+        "verify": {
+          "codeHash": "60c9f21aa3146cfa0a77b28098865118080b67f9cdf700f7c5dedc984bd77e71",
+          "url": "https://verifier.ton.org/0QAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjjV9?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x45534300",
+            "name": "OP_ESCROW_TOPUP",
+            "value": 1163084544,
+            "desc": "fund a freshly-deployed escrow"
+          },
+          {
+            "hex": "0x45534302",
+            "name": "OP_ESCROW_SETTLE",
+            "value": 1163084546,
+            "desc": "arbiter-only HTLC release keyed on quorum result hash; ≤ escrow B"
+          },
+          {
+            "hex": "0x45534303",
+            "name": "OP_ESCROW_REFUND",
+            "value": 1163084547,
+            "desc": "permissionless refund-on-timeout (entire balance → requester)"
+          }
+        ]
+      },
+      {
+        "name": "RecordAnchor",
+        "role": "Per-epoch Merkle-root anchor + dispute contract. Permissionless keepers anchor a per-epoch root chained to the previous one, gated by a stake-weighted threshold. Anyone can open a bonded dispute with an inclusion proof; an authority resolves it (upheld → bond returned + slash on the vault; rejected → bond forfeited).",
+        "doc": "§7 · §7.2 · §11",
+        "upgradeable": "authority-gated SETCODE (no timelock; only bonds + chain)",
+        "storage": [
+          [
+            "currentEpoch",
+            "uint32",
+            "last anchored epoch (0 = none)"
+          ],
+          [
+            "lastRoot",
+            "uint256",
+            "prev_root for the next epoch (chains history)"
+          ],
+          [
+            "nextDisputeId",
+            "uint32",
+            "dispute counter"
+          ],
+          [
+            "disputes",
+            "map<uint32,DisputeInfo>",
+            "open/resolved disputes"
+          ],
+          [
+            "config",
+            "^AnchorConfig",
+            "minStakeWeight, disputeBondMin, verdictAuthority, treasury"
+          ],
+          [
+            "codeVersion",
+            "uint32",
+            "monotonic (0 = original)"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_anchor_state",
+            "{ currentEpoch, lastRoot, nextDisputeId }"
+          ],
+          [
+            "verify_inclusion(leaf,root,proof)",
+            "bool"
+          ],
+          [
+            "compute_root(leaf,proof)",
+            "int"
+          ],
+          [
+            "get_dispute(id)",
+            "DisputeInfo? "
+          ],
+          [
+            "get_code_version",
+            "int"
+          ]
+        ],
+        "guards": [
+          "submit: epoch == currentEpoch+1, prevRoot == lastRoot, stakeWeight ≥ min",
+          "dispute requires value ≥ disputeBondMin and a valid inclusion proof",
+          "resolve: verdictAuthority-only; upheld → refund bond, rejected → forfeit to treasury"
+        ],
+        "testnetAddress": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+        "codeHash": "11f776bc4950de4fbef8ca2c247a8aa3ceb806676f90ea4abc8f909e14d1496e",
+        "bocBytes": 1112,
+        "codeBoc64": "te6ccgECFQEAAzYAART/APSkE/S88sgLAQIBYgIDAgLPBAUCASANDgTvPiRjlbTHzHTHwGCEEFOQwW6jkXXCx/tRNCBAUDXGPQEUzGAIPQOb6GOKvpI0x/T//oA0wEx0QPI+lISyx/L/wH6As+EgFBCgCD0QwHIzvQAzsntVJJfBeLgMOAg1ywiCnIYDOMC1ywiCnIYFOMC1ywiCnIYHOMCgBgcICQBtAHIy//5FnCTIm6zjiakIMEh8uD5AtDTANP/9ATRApjIy/8Sy//5FpkCyMv/Esv/+RbiWOgwMYADqMe1E0NMf0//WH/QE9AQg10zQ+gD6APpIMdTR0PpIMfpI+kgx0fiSxwXy4PqCCJiWgL7y4PwH0z8x0x/T/9P/+gAwIvLg+wmkI7ry4PFQB7ry4PBQZ77y4PJTU8jL/1BygCD0QwXIyx8Ty//O9AAS9ADOye1UANYx7UTQgQEg1xjTH/QEIPQE10zQ+gAx+gD6SDHUMdH4l7vy4PQF0z8x0x/T//QFUiiAIPQO8uD40//RUhjwAVAHuvLg8yOk+JL4lwHI+lITyx8Xy/8B+gLPhIBagCD0QwLIzhPLH/QAzsntVALcMe1E0IEBQNcY9AQg9AHXTND6ADH6ADH6SNTR+JJYxwXy4PYE0z8x0x/XCgBTE4Ag9A7y4PX6SNMf0//6ANMB0fLQ9ySRcZFy4iTI+lIUyx8Sy/8h+gISywFUIEeAIPRDBsjOFvQAE87J7VQB4w8KCwGoidcnjkYx7UTQgQFA1xj0BPQE1NcLHyHQ+gAx+gAx+kgx1NH4kgHQ+kgx+kgx+kjRxwXy4RsF10z7BASkA8jOEvQA9AASzMsfye1U4DCEDwHHAPL0DAA0M8jPhYgS+lIB+gKCEEFOQwXPC4rLH8lx+wAASDIC0PpI+kgx+kgx0cjPhYj6Ulj6AoIQQU5DBc8LissfyXH7AAAIQU5DBAIBIA8QAgFmExQAGbrNztRNDTH9P/1wsfgCASAREgAJtvJ+ADAAU7aQ3aiaECAoGuQ+gLAEHoHN9DLmDa2tra2uHD9JGmP6f/9AGmA6MCAQsAAjsId7UTQgQFA1yH0AfQB1wsfgAA2z2ES8AG6g",
+        "verify": {
+          "codeHash": "187743596e72426b5156e234fe4b12b7cf4887217fd99b249d024eb89f2270af",
+          "url": "https://verifier.ton.org/0QDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6G1Z?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x414e4301",
+            "name": "OP_ANCHOR_SUBMIT",
+            "value": 1095648001,
+            "desc": "permissionless keeper anchors epoch root (chained, stake-weighted)"
+          },
+          {
+            "hex": "0x414e4304",
+            "name": "OP_ANCHOR_UPGRADE_CODE",
+            "value": 1095648004,
+            "desc": "verdict-authority SETCODE (no timelock; holds only bonds+chain)"
+          }
+        ]
+      },
+      {
+        "name": "GlobalParams",
+        "role": "The single ecosystem-wide config contract (singleton). Holds the economic parameters every node/contract reads. Editable IN PLACE with a stable address (update_params mutates storage, bounds-validated on-chain) so others can hard-pin it; code is upgradable in place too.",
+        "doc": "§12 · §12.1",
+        "upgradeable": "admin-gated SETCODE (no timelock; no user funds)",
+        "storage": [
+          [
+            "admin",
+            "address",
+            "single key today; designed for multisig"
+          ],
+          [
+            "feeRecipient",
+            "address",
+            "platform fee sink"
+          ],
+          [
+            "params",
+            "^EcoParams",
+            "all bps + stake + windows + selection + weights"
+          ],
+          [
+            "blocklist",
+            "map<uint256,uint1>",
+            "governance blocklist (additive)"
+          ],
+          [
+            "paramsVersion",
+            "uint32",
+            "monotonic; bumped on every update"
+          ],
+          [
+            "codeVersion",
+            "uint32",
+            "monotonic; bumped on every SETCODE"
+          ]
+        ],
+        "getMethods": [
+          [
+            "get_params",
+            "{ admin, feeRecipient, params, paramsVersion }"
+          ],
+          [
+            "get_params_version",
+            "int"
+          ],
+          [
+            "get_code_version",
+            "int"
+          ],
+          [
+            "get_platform_fee_bps / get_participation_commission_bps / …",
+            "scalar policy reads"
+          ],
+          [
+            "get_blocklisted(subject)",
+            "bool"
+          ]
+        ],
+        "guards": [
+          "all mutators admin-only; validateEcoParams enforced on every update",
+          "slash split sums to 10000; unbondingSecs ≥ challengeWindowSecs",
+          "paramsVersion / codeVersion are contract-controlled (admin can't set directly)"
+        ],
+        "testnetAddress": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
+        "codeHash": "bc752b1f7ab0ffcd3705ce0255ab985e99849c1d2fee0378a9f5338c4be1b8a7",
+        "bocBytes": 2296,
+        "codeBoc64": "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",
+        "verify": {
+          "codeHash": "88cc70a4101f804fad9c053cda8e67fa986367ae4218f96f512fe13a844dd98e",
+          "url": "https://verifier.ton.org/0QB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tg5E?testnet",
+          "verified": true,
+          "alreadyVerified": true,
+          "failed": false
+        },
+        "opcodes": [
+          {
+            "hex": "0x47504101",
+            "name": "OP_UPDATE_PARAMS",
+            "value": 1196441857,
+            "desc": "admin-only; bounds-validated on-chain; bumps paramsVersion"
+          },
+          {
+            "hex": "0x47504102",
+            "name": "OP_UPDATE_ADMIN",
+            "value": 1196441858,
+            "desc": "admin rotation (single-key → multisig handoff)"
+          },
+          {
+            "hex": "0x47504104",
+            "name": "OP_UPGRADE_CODE",
+            "value": 1196441860,
+            "desc": "admin-only in-place SETCODE (no timelock; no user funds)"
+          }
+        ]
+      }
+    ],
+    "deployments": {
+      "StakeVault": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+      "JobEscrow": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+      "RecordAnchor": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+      "GlobalParams": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB"
+    },
+    "deployLogs": {
+      "stake": [
+        "Deployed StakeVault to kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
+        "owner       = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "min stake   = 0",
+        "receipt for = kQBQUNpbA-k3sNKPot4DT0tYd4kX4hUXgv0eHZlW5deT06HA"
+      ],
+      "anchor": [
+        "Deployed RecordAnchor to kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
+        "verdict authority = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "min stake weight  = 100000000000"
+      ],
+      "escrow": [
+        "Deployed JobEscrow to kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
+        "escrow amount = 50000000",
+        "deadline      = 1781430809"
+      ],
+      "globalParams": [
+        "Deployed GlobalParams to kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
+        "admin         = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+        "fee recipient = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422"
+      ]
+    },
+    "e2e": [
+      "wallet=kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
+      "globalparams_update::PASS::fee_bps=250::addr_stable=true",
+      "globalparams_blocklist::PASS::blocked=true::cleared=false",
+      "stake_deposit::staked=50000000::eligible=true",
+      "jetton::minted=50000000::staked=50000000::locked=true",
+      "duckton_metadata::PASS::name=Duckton::symbol=DUCKTON::decimals=9",
+      "escrow_settle::settled=true",
+      "anchor_submit::epoch=1::prev_epoch=0",
+      "inclusion::verified=true",
+      "multileaf_inclusion::PASS::epoch=2::included=true::tampered_rejected=true",
+      "dispute::id=0::status=1",
+      "done"
+    ],
+    "gas": [
+      {
+        "op": "StakeSlash",
+        "minGas": 1795,
+        "maxGas": 10634,
+        "avgGas": 10361,
+        "samples": 135
+      },
+      {
+        "op": "StakeDeposit",
+        "minGas": 1013,
+        "maxGas": 5672,
+        "avgGas": 5629,
+        "samples": 212
+      },
+      {
+        "op": "EscrowSettle",
+        "minGas": 1013,
+        "maxGas": 13226,
+        "avgGas": 4650,
+        "samples": 74
+      },
+      {
+        "op": "StakeKeeperWithdraw",
+        "minGas": 1176,
+        "maxGas": 7764,
+        "avgGas": 4605,
+        "samples": 4
+      },
+      {
+        "op": "ProvideWalletAddress",
+        "minGas": 3933,
+        "maxGas": 4459,
+        "avgGas": 4196,
+        "samples": 2
+      },
+      {
+        "op": "AnchorOpenDispute",
+        "minGas": 1438,
+        "maxGas": 5697,
+        "avgGas": 4009,
+        "samples": 7
+      },
+      {
+        "op": "UpdateParams",
+        "minGas": 945,
+        "maxGas": 6164,
+        "avgGas": 3825,
+        "samples": 95
+      },
+      {
+        "op": "AnchorResolveDispute",
+        "minGas": 1477,
+        "maxGas": 5505,
+        "avgGas": 3395,
+        "samples": 4
+      },
+      {
+        "op": "StakeWithdraw",
+        "minGas": 1145,
+        "maxGas": 6292,
+        "avgGas": 2608,
+        "samples": 4
+      },
+      {
+        "op": "SetBlocklisted",
+        "minGas": 985,
+        "maxGas": 2540,
+        "avgGas": 2189,
+        "samples": 5
+      },
+      {
+        "op": "AnchorSubmitRoot",
+        "minGas": 1503,
+        "maxGas": 2282,
+        "avgGas": 2091,
+        "samples": 11
+      },
+      {
+        "op": "ReceiptBurn",
+        "minGas": 1262,
+        "maxGas": 2079,
+        "avgGas": 2069,
+        "samples": 137
+      },
+      {
+        "op": "JettonInternalTransfer",
+        "minGas": 897,
+        "maxGas": 3831,
+        "avgGas": 1907,
+        "samples": 212
+      },
+      {
+        "op": "StakeRequestUnbond",
+        "minGas": 936,
+        "maxGas": 2056,
+        "avgGas": 1601,
+        "samples": 73
+      },
+      {
+        "op": "EscrowRefund",
+        "minGas": 892,
+        "maxGas": 2903,
+        "avgGas": 1594,
+        "samples": 3
+      },
+      {
+        "op": "UpdateAdmin",
+        "minGas": 840,
+        "maxGas": 1507,
+        "avgGas": 1174,
+        "samples": 2
+      },
+      {
+        "op": "ReceiptTopUp",
+        "minGas": 914,
+        "maxGas": 1072,
+        "avgGas": 993,
+        "samples": 2
+      },
+      {
+        "op": "0xdeadbeef",
+        "minGas": 729,
+        "maxGas": 1195,
+        "avgGas": 925,
+        "samples": 5
+      },
+      {
+        "op": "EscrowTopUp",
+        "minGas": 606,
+        "maxGas": 606,
+        "avgGas": 606,
+        "samples": 1
+      },
+      {
+        "op": "JettonTransfer",
+        "minGas": 592,
+        "maxGas": 592,
+        "avgGas": 592,
+        "samples": 3
+      },
+      {
+        "op": "TakeWalletAddress",
+        "minGas": 309,
+        "maxGas": 309,
+        "avgGas": 309,
+        "samples": 2
+      },
+      {
+        "op": "JettonTransferNotification",
+        "minGas": 309,
+        "maxGas": 309,
+        "avgGas": 309,
+        "samples": 1
+      }
+    ],
+    "economicsToml": "# Generated by scripts/testnet_e2e.sh — node [economics] snippet for the live\n# testnet. Point your node config at it via P2P_CONFIG, or merge the keys.\n#\n# crates/config's [economics.<net>.contracts] block is now wired (the live TON\n# client reads it via p2p_settlement::resolve_ton_wiring + economics.guard_mainnet),\n# so the deployed addresses are recorded directly below for the active network.\n[economics]\nenabled         = true\nsettlement      = \"onchain\"\ncustody         = \"noncustodial\"\naccounting_unit = \"ton\"\nchain           = \"ton\"\nnetwork         = \"testnet\"\ndefault_payment = \"paid\"\nfee_recipient   = \"kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422\"\n\n[economics.testnet.contracts]\nstake_vault   = \"kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K\"\njob_escrow    = \"kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4\"\nrecord_anchor = \"kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc\"\nglobal_params = \"kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB\"\n",
+    "canonical": {
+      "source": "docs/TESTNET.md",
+      "globalParams": "kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna",
+      "stakeVault": "kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp",
+      "ducktonHolder": "kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r",
+      "recordAnchor": "kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3",
+      "jobEscrow": "0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23",
+      "setcode": {
+        "address": "kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF",
+        "from": "GlobalParams (codeVersion 1)",
+        "to": "GlobalParamsV2 (codeVersion 2)",
+        "addressStable": true,
+        "newGetter": "get_surcharge_bps",
+        "newGetterValue": 500,
+        "note": "SETCODE swapped code in place — address unchanged, paramsVersion/fee/admin preserved."
+      },
+      "duckton": {
+        "name": "Duckton",
+        "symbol": "DUCKTON",
+        "decimals": 9,
+        "balance": "0.2",
+        "transferLocked": true
+      }
+    },
+    "deployFlow": {
+      "build": [
+        "acton build",
+        "acton test",
+        "acton test --coverage"
+      ],
+      "deploy": [
+        "STAKE_BINDING_HASH=0x… acton script scripts/deploy_stake.tolk --net testnet",
+        "ANCHOR_BOND_MIN=100000000 acton script scripts/deploy_anchor.tolk --net testnet",
+        "ESCROW_AMOUNT=300000000 ESCROW_EXPECTED_HASH=0x… acton script scripts/deploy_escrow.tolk --net testnet",
+        "GP_FEE_RECIPIENT=<addr> acton script scripts/deploy_global_params.tolk --net testnet"
+      ],
+      "verify": [
+        "acton verify GlobalParams --address <addr> --net testnet",
+        "acton verify RecordAnchor --address <addr> --net testnet",
+        "acton verify JobEscrow --address <addr> --net testnet"
+      ],
+      "live": "cargo test -p p2p-settlement --features ton-live --test testnet_live -- --nocapture"
+    },
     "computed": {
       "escrow": {
         "address": "0:cc11696fd04d1318fcac6d0bdff5798c5d1ede917939376272b8ec59a16b7ab0",
@@ -2961,6 +3677,48 @@
     }
   },
   "transport": {
+    "bench": {
+      "rows": 80000,
+      "sweep": [
+        {
+          "parallelism": 1,
+          "rowsPerSec": 52203,
+          "mbPerSec": 3.7,
+          "p50Ms": 5.326
+        },
+        {
+          "parallelism": 2,
+          "rowsPerSec": 115835,
+          "mbPerSec": 8.3,
+          "p50Ms": 4.884
+        },
+        {
+          "parallelism": 4,
+          "rowsPerSec": 115295,
+          "mbPerSec": 8.3,
+          "p50Ms": 4.901
+        },
+        {
+          "parallelism": 8,
+          "rowsPerSec": 114902,
+          "mbPerSec": 8.2,
+          "p50Ms": 5.004
+        }
+      ],
+      "best": {
+        "parallelism": 2,
+        "rowsPerSec": 115835,
+        "mbPerSec": 8.3,
+        "p50Ms": 4.884
+      },
+      "command": "cargo test -p p2p-node --test benches -- --nocapture",
+      "envKnobs": [
+        "P2P_BENCH_ROWS",
+        "P2P_BENCH_PARALLELISM",
+        "P2P_BENCH_COMPRESSION",
+        "P2P_BENCH_CONGESTION"
+      ]
+    },
     "compression": {
       "algorithm": "none",
       "level": 3,

@@ -183,12 +183,62 @@ const CLASS_POLICY: Record<
   Sensitive: { tier: 2, att: "L2", trust: 0.8, paid: true },
 };
 
-/** Honest hosts that clear both gates of a data class's policy. */
-function countEligibleHosts(list: Worker[], cls: DataClass): number {
-  const p = CLASS_POLICY[cls];
-  return list.filter(
-    (w) => w.behavior === "honest" && ATT_RANK[w.attestation] >= p.tier && w.trust >= p.trust
-  ).length;
+/** Honest hosts that clear the given attestation-tier + trust (+ optional stake) floors. */
+function isHostEligible(
+  w: Worker,
+  minTier: number,
+  minTrust: number,
+  requireStaked: boolean
+): boolean {
+  return (
+    w.behavior === "honest" &&
+    ATT_RANK[w.attestation] >= minTier &&
+    w.trust >= minTrust &&
+    (!requireStaked || w.stakeTon > 0)
+  );
+}
+
+function countEligibleHosts(
+  list: Worker[],
+  minTier: number,
+  minTrust: number,
+  requireStaked = false
+): number {
+  return list.filter((w) => isHostEligible(w, minTier, minTrust, requireStaked)).length;
+}
+
+/**
+ * Turn a backend dispatch error into a clean human message. The grid propagates
+ * the underlying engine error, but it may arrive wrapped in a Rust Debug struct
+ * (e.g. `Infeasible { reason: "Binder Error: ..." }`); pull the real cause out
+ * rather than showing the struct noise.
+ */
+function cleanEngineError(raw: string): string {
+  let s = raw.trim();
+  const reason = s.match(/reason:\s*"((?:[^"\\]|\\.)*)"/);
+  if (reason) {
+    s = reason[1];
+  } else {
+    const wrapped = s.match(/^[A-Za-z_][\w:]*\s*\{\s*([\s\S]*?)\s*\}$/);
+    if (wrapped) s = wrapped[1];
+    // Drop a leading `Variant: ` / `Variant(` enum prefix and a trailing paren.
+    s = s.replace(/^[A-Za-z_][\w:]*\s*[:(]\s*/, "").replace(/\)\s*$/, "");
+  }
+  s = s
+    .replace(/\\"/g, '"')
+    .replace(/\\n/g, " ")
+    .replace(/\\t/g, " ")
+    .replace(/\\\\/g, "\\")
+    .replace(/\s+/g, " ")
+    .trim();
+  return s.length ? s : raw.trim();
+}
+
+/** Heuristic: does this error look like a double-quoted-identifier mistake? */
+function looksLikeQuoteMistake(msg: string): boolean {
+  return /binder error|catalog error|referenced column|not found|no such column|does not (?:exist|have a column)/i.test(
+    msg
+  );
 }
 
 /* ------------------------------------------------------------------ helpers */
@@ -237,8 +287,22 @@ export default function QueryConsolePage() {
   const [verifyMode, setVerifyMode] = React.useState<VerifyMode>("Quorum");
   const [quorum, setQuorum] = React.useState(3);
   const [hedgeK, setHedgeK] = React.useState(4);
-  const [freeTier, setFreeTier] = React.useState(false);
+  // Economics. `payment` ("auto" derives free-vs-paid from the data class) is the
+  // p2p_query override; escrow is a UI/offline-preview knob (the grid derives the
+  // amount server-side, so it isn't part of the dispatch contract).
+  const [payment, setPayment] = React.useState<"auto" | "free" | "paid">("auto");
   const [maxEscrow, setMaxEscrow] = React.useState(2);
+  // Routing.
+  const [prefer, setPrefer] = React.useState<"auto" | "local" | "remote">("auto");
+  const [network, setNetwork] = React.useState("");
+  const [groupsInput, setGroupsInput] = React.useState("");
+  const [regionsInput, setRegionsInput] = React.useState("");
+  // Trust & attestation. "auto" derives the floor from the data class; an
+  // explicit value overrides it (the grid still enforces the class floor as a
+  // hard minimum, so overrides can only tighten, not loosen).
+  const [minAtt, setMinAtt] = React.useState<"auto" | AttestationLevel>("auto");
+  const [minTrustOverride, setMinTrustOverride] = React.useState<number | null>(null);
+  const [requireStakedHosts, setRequireStakedHosts] = React.useState(false);
 
   // Simulation state. Initial render is idle => hydration-safe (no timers run on server).
   const [running, setRunning] = React.useState(false);
@@ -305,31 +369,51 @@ export default function QueryConsolePage() {
   }, [running, ranLive, liveResult]);
 
   const kClamped = Math.min(hedgeK, 6);
-  // Candidate set = LIVE honest workers by trust desc, capped to k. The race is
-  // then ordered by real measured latency so the fastest real worker tends to win.
+  const pol = CLASS_POLICY[dataClass];
+
+  // Effective per-call values. Trust/attestation/payment default to the data
+  // class's policy ("auto") unless the operator explicitly overrides them.
+  const effMinAtt: AttestationLevel = minAtt === "auto" ? pol.att : minAtt;
+  const effMinTrust = minTrustOverride ?? pol.trust;
+  const effPayment: "free" | "paid" =
+    payment === "auto" ? (pol.paid ? "paid" : "free") : payment;
+  const effFree = effPayment === "free";
+  const groups = React.useMemo(
+    () => groupsInput.split(",").map((s) => s.trim()).filter(Boolean),
+    [groupsInput]
+  );
+  const regions = React.useMemo(
+    () => regionsInput.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    [regionsInput]
+  );
+  // Overrides can only TIGHTEN: the data class floor is always a hard minimum
+  // the grid enforces, so the effective gates are the stricter of the two.
+  const reqMinTier = Math.max(ATT_RANK[effMinAtt], pol.tier);
+  const reqMinTrust = Math.max(effMinTrust, pol.trust);
+  const reqMinAtt = (["L0", "L1", "L2"] as AttestationLevel[])[reqMinTier];
+  const isOverridden = minAtt !== "auto" || minTrustOverride !== null || payment !== "auto";
+
+  // Candidate set = LIVE honest workers passing the EFFECTIVE policy (attestation
+  // + trust + optional stake), by trust desc, capped to k. The race is then
+  // ordered by real measured latency so the fastest real worker tends to win.
   const candidates = React.useMemo(() => {
-    // Data-class selection policy (§7.5): the minimum attestation tier gates who
-    // is even eligible — Internal needs L1, Sensitive needs L2 — so free/L0 hosts
-    // are excluded from those classes. (The grid also enforces a trust floor.)
-    const { tier } = CLASS_POLICY[dataClass];
-    const pool = [...workers]
-      .filter((w) => w.behavior === "honest" && ATT_RANK[w.attestation] >= tier)
+    const pool = workers
+      .filter((w) => isHostEligible(w, reqMinTier, reqMinTrust, requireStakedHosts))
       .sort((a, b) => b.trust - a.trust)
       .slice(0, kClamped);
     return [...pool].sort((a, b) => a.p50LatencyMs - b.p50LatencyMs);
-  }, [workers, kClamped, dataClass]);
+  }, [workers, kClamped, reqMinTier, reqMinTrust, requireStakedHosts]);
 
-  // Hosts that clear BOTH gates (attestation + trust) of the selected class —
-  // the live backend rejects a dispatch whose quorum exceeds this count, so we
-  // cap the quorum slider and guard Dispatch against it.
+  // Hosts that clear every effective gate — the live backend rejects a dispatch
+  // whose quorum exceeds this count, so we cap the quorum slider and guard
+  // Dispatch against it.
   const eligibleHostCount = React.useMemo(
-    () => countEligibleHosts(workers, dataClass),
-    [workers, dataClass]
+    () => countEligibleHosts(workers, reqMinTier, reqMinTrust, requireStakedHosts),
+    [workers, reqMinTier, reqMinTrust, requireStakedHosts]
   );
   const quorumMax = Math.min(5, Math.max(1, eligibleHostCount));
   const effQuorum = Math.min(quorum, quorumMax);
   const noEligibleHosts = eligibleHostCount === 0;
-  const pol = CLASS_POLICY[dataClass];
 
   const kBelowQuorum = hedgeK < effQuorum;
 
@@ -346,8 +430,8 @@ export default function QueryConsolePage() {
       verifyMode,
       quorum: qEff,
       k: kClamped,
-      free: freeTier,
-      escrow: freeTier ? 0 : maxEscrow,
+      free: effFree,
+      escrow: effFree ? 0 : maxEscrow,
       jobId: "job_" + fakeHash(seed).slice(3, 11),
       queryHash: fakeHash("q:" + sql),
       nonce: 0x5e1f - sql.length, // deterministic, no Date/random
@@ -377,6 +461,14 @@ export default function QueryConsolePage() {
           verifyMode,
           quorum: qEff,
           k: kClamped,
+          prefer,
+          payment,
+          minTrust: effMinTrust,
+          minAttestation: effMinAtt,
+          network: network.trim() || undefined,
+          groups,
+          regions,
+          requireStakedHosts,
         });
       } catch (e) {
         outcome = {
@@ -419,8 +511,8 @@ export default function QueryConsolePage() {
     verifyMode,
     quorum: Math.min(effQuorum, hedgeK),
     k: kClamped,
-    free: freeTier,
-    escrow: freeTier ? 0 : maxEscrow,
+    free: effFree,
+    escrow: effFree ? 0 : maxEscrow,
     jobId: "job_pending",
     queryHash: fakeHash("q:" + sql),
     nonce: 0,
@@ -439,16 +531,27 @@ export default function QueryConsolePage() {
   // ---- REAL outcome view (when a live dispatch has resolved) --------------
   const real = liveResult; // alias for brevity in JSX
   const realError = real?.error ?? null;
-  // Translate the backend's raw data-class policy rejection into an actionable
-  // message that names how many hosts qualify and what to do about it.
-  const friendlyError = React.useMemo(() => {
+  // Turn a raw dispatch error into a clean, actionable message (+ optional hint).
+  // Policy rejections become a capacity message; engine errors are unwrapped from
+  // their Rust Debug struct and get a quoting hint when they look like the common
+  // double-quote-identifier mistake.
+  const dispatchError = React.useMemo<{ message: string; hint: string | null } | null>(() => {
     if (!realError) return null;
-    if (!/policy|no hosts|attestation|trust|eligible/i.test(realError)) return realError;
-    const errClass = run?.dataClass ?? dataClass;
-    const p = CLASS_POLICY[errClass];
-    const n = countEligibleHosts(workers, errClass);
-    const alt = errClass === "Sensitive" ? "Internal or Public" : "Public";
-    return `Only ${n} host${n === 1 ? "" : "s"} meet the ${errClass} policy (≥ ${p.att}, trust ≥ ${p.trust.toFixed(2)}) — lower the quorum or choose ${alt}.`;
+    if (/policy|no hosts|attestation tier|trust floor|eligible/i.test(realError)) {
+      const errClass = run?.dataClass ?? dataClass;
+      const p = CLASS_POLICY[errClass];
+      const n = countEligibleHosts(workers, p.tier, p.trust);
+      const alt = errClass === "Sensitive" ? "Internal or Public" : "Public";
+      return {
+        message: `Only ${n} host${n === 1 ? "" : "s"} meet the ${errClass} policy (≥ ${p.att}, trust ≥ ${p.trust.toFixed(2)}) — lower the quorum or choose ${alt}.`,
+        hint: null,
+      };
+    }
+    const message = cleanEngineError(realError);
+    const hint = looksLikeQuoteMistake(message)
+      ? 'Hint: in SQL, "double quotes" mean a column/table name and \'single quotes\' mean a text value — e.g. WHERE name = \'acme\', not "acme".'
+      : null;
+    return { message, hint };
   }, [realError, run, dataClass, workers]);
   const realOk = real != null && !realError;
   // Real candidates straight from the grid (alias/attestation/state/verdict/…).
@@ -531,194 +634,352 @@ export default function QueryConsolePage() {
                 <Cpu className="size-4 text-primary" /> Execution policy
               </CardTitle>
               <CardDescription>
-                Redundancy, verification, and escrow controls.
+                Every p2p_query override — scope, routing, verification, trust, and economics.
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid gap-5 sm:grid-cols-2">
-                {/* Data class */}
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground text-xs">
-                    Data class
-                    <InfoHint
-                      text="How sensitive the data is — Sensitive routes only to hardware-attested (L2) machines."
-                      className="ml-1"
+              {/* ----------------------------------------------------- Scope */}
+              <div className="space-y-4">
+                <SectionTitle className="mb-0" info="Which data and which slice of the swarm this query targets.">
+                  Scope
+                </SectionTitle>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs">
+                      Data class
+                      <InfoHint
+                        text="How sensitive the data is — it sets the default attestation, trust and payment floors below (Sensitive needs L2 hardware)."
+                        className="ml-1"
+                      />
+                    </Label>
+                    <Select value={dataClass} onValueChange={(v) => setDataClass(v as DataClass)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="Public">Public</SelectItem>
+                        <SelectItem value="Internal">Internal</SelectItem>
+                        <SelectItem value="Sensitive">Sensitive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs" htmlFor="network">
+                      Network
+                      <InfoHint text="Logical swarm partition to scope discovery to (blank = the default partition)." className="ml-1" />
+                    </Label>
+                    <Input
+                      id="network"
+                      value={network}
+                      onChange={(e) => setNetwork(e.target.value)}
+                      placeholder="default"
+                      className="font-mono text-xs"
                     />
-                  </Label>
-                  <Select
-                    value={dataClass}
-                    onValueChange={(v) => setDataClass(v as DataClass)}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Public">Public</SelectItem>
-                      <SelectItem value="Internal">Internal</SelectItem>
-                      <SelectItem value="Sensitive">Sensitive</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  </div>
                 </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs" htmlFor="groups">
+                      Groups
+                      <InfoHint text="Only select hosts advertising these capability groups (comma-separated)." className="ml-1" />
+                    </Label>
+                    <Input
+                      id="groups"
+                      value={groupsInput}
+                      onChange={(e) => setGroupsInput(e.target.value)}
+                      placeholder="e.g. gpu, analytics"
+                      className="text-xs"
+                    />
+                    {groups.length ? (
+                      <div className="flex flex-wrap gap-1">
+                        {groups.map((g) => (
+                          <Badge key={g} variant="muted" className="font-mono">{g}</Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs" htmlFor="regions">
+                      Regions
+                      <InfoHint text="Restrict to hosts in these regions (comma-separated), e.g. eu, us." className="ml-1" />
+                    </Label>
+                    <Input
+                      id="regions"
+                      value={regionsInput}
+                      onChange={(e) => setRegionsInput(e.target.value)}
+                      placeholder="e.g. eu, us"
+                      className="text-xs"
+                    />
+                    {regions.length ? (
+                      <div className="flex flex-wrap gap-1">
+                        {regions.map((r) => (
+                          <Badge key={r} variant="muted" className="font-mono">{r}</Badge>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
 
-                {/* Verify mode */}
+              <Separator />
+
+              {/* --------------------------------------------------- Routing */}
+              <div className="space-y-2">
+                <SectionTitle className="mb-0" info="Where the query should run.">Routing</SectionTitle>
+                <Label className="text-muted-foreground text-xs">
+                  Prefer
+                  <InfoHint text="Keep work on this node (local), force remote hosts, or let the grid decide (auto)." className="ml-1" />
+                </Label>
+                <Tabs value={prefer} onValueChange={(v) => setPrefer(v as typeof prefer)}>
+                  <TabsList className="w-full">
+                    <TabsTrigger value="auto">auto</TabsTrigger>
+                    <TabsTrigger value="local">local</TabsTrigger>
+                    <TabsTrigger value="remote">remote</TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+
+              <Separator />
+
+              {/* ---------------------------------------------- Verification */}
+              <div className="space-y-5">
+                <SectionTitle className="mb-0" info="How redundantly the query runs and how agreement is checked.">
+                  Verification
+                </SectionTitle>
                 <div className="space-y-2">
                   <Label className="text-muted-foreground text-xs">Verify mode</Label>
-                  <Tabs
-                    value={verifyMode}
-                    onValueChange={(v) => setVerifyMode(v as VerifyMode)}
-                  >
+                  <Tabs value={verifyMode} onValueChange={(v) => setVerifyMode(v as VerifyMode)}>
                     <TabsList className="w-full">
                       <TabsTrigger value="Fast">Fast</TabsTrigger>
                       <TabsTrigger value="Quorum">Quorum</TabsTrigger>
                     </TabsList>
                   </Tabs>
                 </div>
-              </div>
 
-              {/* Active selection policy + live eligibility (§7.5 + §8.2.1): the
-                  attestation tier is a HARD gate and the grid enforces a trust
-                  floor, so the quorum can't exceed how many hosts clear both. */}
-              <div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3 text-xs">
-                <span className="text-foreground font-medium">{dataClass} selection policy</span>
-                <Badge variant="muted" className="font-mono">≥ {pol.att} attestation</Badge>
-                <Badge variant="muted" className="font-mono">trust ≥ {pol.trust.toFixed(2)}</Badge>
-                <Badge variant={pol.paid ? "warn" : "ok"}>
-                  {pol.paid ? "paid · stake counts" : "free · off-chain"}
-                </Badge>
-                <Badge variant={noEligibleHosts ? "destructive" : "info"} className="font-mono">
-                  {eligibleHostCount} eligible
-                </Badge>
-                <span className="text-muted-foreground">
-                  {noEligibleHosts
-                    ? `no hosts meet this policy — choose ${dataClass === "Sensitive" ? "Internal or Public" : "Public"}.`
-                    : `${eligibleHostCount} host${eligibleHostCount === 1 ? "" : "s"} eligible for ${dataClass} (≥ ${pol.att}, trust ≥ ${pol.trust.toFixed(2)}) — quorum capped at ${quorumMax}.`}
-                </span>
-              </div>
-
-              {dataClass === "Sensitive" ? (
-                <div className="flex items-start gap-2 rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/10 p-3 text-xs text-[var(--warn)]">
-                  <AlertTriangle className="mt-px size-4 shrink-0" />
-                  <span>
-                    Routes only to L2-attested hosts; data key sealed to enclave.
-                  </span>
+                {/* Quorum slider */}
+                <div className="space-y-2">
+                  <div className="flex items-baseline justify-between">
+                    <Label className="text-muted-foreground text-xs">
+                      Quorum
+                      <InfoHint
+                        text="How many workers must return the same result before it is accepted."
+                        className="ml-1"
+                      />
+                    </Label>
+                    <span className="text-sm font-medium tabular-nums">{effQuorum}</span>
+                  </div>
+                  <Slider
+                    min={1}
+                    max={quorumMax}
+                    step={1}
+                    value={[effQuorum]}
+                    onValueChange={(v) => setQuorum(v[0])}
+                  />
+                  {quorum > quorumMax ? (
+                    <p className="flex items-center gap-1 text-xs text-[var(--warn)]">
+                      <AlertTriangle className="size-3" /> capped at {quorumMax} — only{" "}
+                      {eligibleHostCount} host{eligibleHostCount === 1 ? "" : "s"} clear the policy
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground text-xs">
+                      Matching result hashes required before a result is accepted.
+                    </p>
+                  )}
                 </div>
-              ) : null}
 
-              {/* Quorum slider */}
-              <div className="space-y-2">
-                <div className="flex items-baseline justify-between">
-                  <Label className="text-muted-foreground text-xs">
-                    Quorum
-                    <InfoHint
-                      text="How many workers must return the same result before it is accepted."
-                      className="ml-1"
-                    />
-                  </Label>
-                  <span className="text-sm font-medium tabular-nums">{effQuorum}</span>
+                {/* Hedge k slider */}
+                <div className="space-y-2">
+                  <div className="flex items-baseline justify-between">
+                    <Label className="text-muted-foreground text-xs">
+                      Hedge k (replicas)
+                      <InfoHint
+                        text="How many workers run your query in parallel (a race); the rest are cancelled once it is decided."
+                        className="ml-1"
+                      />
+                    </Label>
+                    <span className="text-sm font-medium tabular-nums">{hedgeK}</span>
+                  </div>
+                  <Slider
+                    min={1}
+                    max={6}
+                    step={1}
+                    value={[hedgeK]}
+                    onValueChange={(v) => setHedgeK(v[0])}
+                  />
+                  {kBelowQuorum ? (
+                    <p className="flex items-center gap-1 text-xs text-[var(--warn)]">
+                      <AlertTriangle className="size-3" /> k should be ≥ quorum
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground text-xs">
+                      Hosts the query races on redundantly.
+                    </p>
+                  )}
                 </div>
-                <Slider
-                  min={1}
-                  max={quorumMax}
-                  step={1}
-                  value={[effQuorum]}
-                  onValueChange={(v) => setQuorum(v[0])}
-                />
-                {quorum > quorumMax ? (
-                  <p className="flex items-center gap-1 text-xs text-[var(--warn)]">
-                    <AlertTriangle className="size-3" /> capped at {quorumMax} — only{" "}
-                    {eligibleHostCount} host{eligibleHostCount === 1 ? "" : "s"} eligible for{" "}
-                    {dataClass}
-                  </p>
-                ) : (
-                  <p className="text-muted-foreground text-xs">
-                    Matching result hashes required before a result is accepted.
-                  </p>
-                )}
-              </div>
-
-              {/* Hedge k slider */}
-              <div className="space-y-2">
-                <div className="flex items-baseline justify-between">
-                  <Label className="text-muted-foreground text-xs">
-                    Hedge k
-                    <InfoHint
-                      text="How many workers run your query in parallel (a race); the rest are cancelled once it is decided."
-                      className="ml-1"
-                    />
-                  </Label>
-                  <span className="text-sm font-medium tabular-nums">{hedgeK}</span>
-                </div>
-                <Slider
-                  min={1}
-                  max={6}
-                  step={1}
-                  value={[hedgeK]}
-                  onValueChange={(v) => setHedgeK(v[0])}
-                />
-                {kBelowQuorum ? (
-                  <p className="flex items-center gap-1 text-xs text-[var(--warn)]">
-                    <AlertTriangle className="size-3" /> k should be ≥ quorum
-                  </p>
-                ) : (
-                  <p className="text-muted-foreground text-xs">
-                    Hosts the query races on redundantly.
-                  </p>
-                )}
               </div>
 
               <Separator />
 
-              {/* Escrow — in live mode the grid derives free-vs-paid and the
-                  escrow amount from the data class, so these knobs only drive
-                  the offline/snapshot preview. */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <Label className="text-sm">
-                      Free public tier
-                      {connected ? (
-                        <InfoHint
-                          text="In live mode the grid sets free-vs-paid from the data class (Public = free, Internal/Sensitive = paid), so this toggle doesn't affect the dispatch."
-                          className="ml-1"
-                        />
-                      ) : null}
-                    </Label>
-                    <p className="text-muted-foreground text-xs">
-                      {connected
-                        ? "Derived from data class in live mode."
-                        : "Off-chain path; no escrow, price = 0."}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={freeTier}
-                    onCheckedChange={setFreeTier}
-                    disabled={connected}
-                  />
+              {/* ------------------------------------- Trust & attestation */}
+              <div className="space-y-5">
+                <SectionTitle className="mb-0" info="The host-quality floors. These default to the data class but can be tightened.">
+                  Trust &amp; attestation
+                </SectionTitle>
+
+                {/* Effective policy + live eligibility. Overrides only tighten the
+                    data-class floor, so the quorum can't exceed eligible hosts. */}
+                <div className="bg-muted/40 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border p-3 text-xs">
+                  <span className="text-foreground font-medium">Effective policy</span>
+                  <Badge variant="muted" className="font-mono">≥ {reqMinAtt} attestation</Badge>
+                  <Badge variant="muted" className="font-mono">trust ≥ {reqMinTrust.toFixed(2)}</Badge>
+                  <Badge variant={effFree ? "ok" : "warn"}>
+                    {effFree ? "free · off-chain" : "paid · stake counts"}
+                  </Badge>
+                  {requireStakedHosts ? <Badge variant="muted">staked only</Badge> : null}
+                  <Badge variant={isOverridden ? "info" : "muted"}>
+                    {isOverridden ? "overridden" : "auto (from data class)"}
+                  </Badge>
+                  <Badge variant={noEligibleHosts ? "destructive" : "info"} className="font-mono">
+                    {eligibleHostCount} eligible
+                  </Badge>
+                  <span className="text-muted-foreground">
+                    {noEligibleHosts
+                      ? "no hosts meet this policy — relax the floors or pick a lower data class."
+                      : `${eligibleHostCount} host${eligibleHostCount === 1 ? "" : "s"} eligible — quorum capped at ${quorumMax}.`}
+                  </span>
                 </div>
 
+                {dataClass === "Sensitive" ? (
+                  <div className="flex items-start gap-2 rounded-lg border border-[var(--warn)]/30 bg-[var(--warn)]/10 p-3 text-xs text-[var(--warn)]">
+                    <AlertTriangle className="mt-px size-4 shrink-0" />
+                    <span>
+                      Routes only to L2-attested hosts; data key sealed to enclave.
+                    </span>
+                  </div>
+                ) : null}
+
+                {/* Min attestation */}
                 <div className="space-y-2">
-                  <Label
-                    className="text-muted-foreground text-xs"
-                    htmlFor="escrow"
-                  >
-                    Max escrow (TON)
-                  </Label>
-                  <Input
-                    id="escrow"
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    value={freeTier ? 0 : maxEscrow}
-                    onChange={(e) => setMaxEscrow(Math.max(0, Number(e.target.value) || 0))}
-                    disabled={freeTier || connected}
-                    className="tabular-nums"
-                  />
-                  {connected ? (
+                  <div className="flex items-baseline justify-between">
+                    <Label className="text-muted-foreground text-xs">
+                      Min attestation
+                      <InfoHint text="Lowest hardware-trust tier a host must present. Auto uses the data class floor." className="ml-1" />
+                    </Label>
+                    <Badge variant={minAtt === "auto" ? "muted" : "info"}>
+                      {minAtt === "auto" ? `auto · ${pol.att}` : "overridden"}
+                    </Badge>
+                  </div>
+                  <Select value={minAtt} onValueChange={(v) => setMinAtt(v as typeof minAtt)}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="auto">auto (from data class → {pol.att})</SelectItem>
+                      <SelectItem value="L0">L0 · anonymous</SelectItem>
+                      <SelectItem value="L1">L1 · TPM</SelectItem>
+                      <SelectItem value="L2">L2 · TEE</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {minAtt !== "auto" && ATT_RANK[minAtt] < pol.tier ? (
                     <p className="text-muted-foreground text-xs">
-                      Set by the grid from the data class in live mode.
+                      Data class floor {pol.att} still applies — effective ≥ {reqMinAtt}.
                     </p>
                   ) : null}
                 </div>
+
+                {/* Min trust */}
+                <div className="space-y-2">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <Label className="text-muted-foreground text-xs">
+                      Min trust
+                      <InfoHint text="Lowest effective trust (0–1) a host must have. Auto uses the data class floor." className="ml-1" />
+                    </Label>
+                    <span className="flex items-center gap-2">
+                      {minTrustOverride === null ? (
+                        <Badge variant="muted">auto · {pol.trust.toFixed(2)}</Badge>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setMinTrustOverride(null)}
+                          className="text-primary text-xs hover:underline"
+                        >
+                          reset to auto
+                        </button>
+                      )}
+                      <span className="text-sm font-medium tabular-nums">{reqMinTrust.toFixed(2)}</span>
+                    </span>
+                  </div>
+                  <Slider
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={[minTrustOverride ?? pol.trust]}
+                    onValueChange={(v) => setMinTrustOverride(v[0])}
+                  />
+                </div>
+
+                {/* Require staked hosts */}
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <Label className="text-sm">
+                      Require staked hosts
+                      <InfoHint text="Only select hosts that have bonded stake — skin in the game they lose if they cheat." className="ml-1" />
+                    </Label>
+                    <p className="text-muted-foreground text-xs">
+                      Excludes hosts with no bonded stake.
+                    </p>
+                  </div>
+                  <Switch checked={requireStakedHosts} onCheckedChange={setRequireStakedHosts} />
+                </div>
+              </div>
+
+              <Separator />
+
+              {/* ----------------------------------------------- Economics */}
+              <div className="space-y-3">
+                <SectionTitle className="mb-0" info="How the job is paid for. Auto follows the data class (Public = free, otherwise paid).">
+                  Economics
+                </SectionTitle>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs">
+                      Payment
+                      <InfoHint text="Off-chain free tier, on-chain paid (escrow), or auto (free for Public, paid otherwise)." className="ml-1" />
+                    </Label>
+                    <Select value={payment} onValueChange={(v) => setPayment(v as typeof payment)}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="auto">auto (→ {pol.paid ? "paid" : "free"})</SelectItem>
+                        <SelectItem value="free">free · off-chain</SelectItem>
+                        <SelectItem value="paid">paid · escrow</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-muted-foreground text-xs" htmlFor="escrow">
+                      Max escrow (TON)
+                    </Label>
+                    <Input
+                      id="escrow"
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={effFree ? 0 : maxEscrow}
+                      onChange={(e) => setMaxEscrow(Math.max(0, Number(e.target.value) || 0))}
+                      disabled={effFree || connected}
+                      className="tabular-nums"
+                    />
+                  </div>
+                </div>
+                <p className="text-muted-foreground text-xs">
+                  {connected
+                    ? "In live mode the grid sets the escrow amount from the data class; the payment path follows this selection."
+                    : effFree
+                      ? "Free tier — off-chain, price 0, no escrow."
+                      : "Requester locks up to this escrow; the unused remainder is refunded."}
+                </p>
               </div>
 
               <div className="flex items-center gap-2 pt-1">
@@ -800,7 +1061,15 @@ export default function QueryConsolePage() {
                   {realError ? (
                     <div className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                       <AlertTriangle className="mt-px size-4 shrink-0" />
-                      <span>Dispatch failed: {friendlyError}</span>
+                      <div className="min-w-0 space-y-1">
+                        <div>
+                          <span className="font-medium">Dispatch failed.</span>{" "}
+                          {dispatchError?.message ?? realError}
+                        </div>
+                        {dispatchError?.hint ? (
+                          <div className="text-destructive/80">{dispatchError.hint}</div>
+                        ) : null}
+                      </div>
                     </div>
                   ) : (
                     /* Dispatched-to-grid banner */

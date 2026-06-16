@@ -9,7 +9,7 @@ import {
   workers as snapWorkers,
 } from "@/lib/data";
 import type { CommEdge, CommNode } from "@/lib/data";
-import type { Job, Receipt, Snapshot, Worker } from "@/lib/types";
+import type { AttestationLevel, Job, Receipt, Snapshot, Worker } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Dot } from "@/components/common/atoms";
 
@@ -32,6 +32,36 @@ const FALLBACK: LiveState = {
   receipts: snapReceipts,
   commGraph: snapComm,
 };
+
+/**
+ * The full set of per-call overrides the Query Console can send to the live
+ * backend's `POST /api/query`. Everything except `sql` is optional; the grid
+ * derives sensible values (free-vs-paid, attestation/trust floors) from the
+ * data class when an override is omitted.
+ */
+export interface QueryRequest {
+  sql: string;
+  dataClass?: string;
+  verifyMode?: string;
+  quorum?: number;
+  k?: number;
+  /** routing preference: run locally, force remote, or let the grid decide */
+  prefer?: "local" | "remote" | "auto";
+  /** payment path: off-chain free tier, on-chain paid, or derived from class */
+  payment?: "free" | "paid" | "auto";
+  /** minimum effective trust a host must have to be selected (0–1) */
+  minTrust?: number;
+  /** minimum hardware-attestation tier a host must present */
+  minAttestation?: AttestationLevel;
+  /** logical network partition to scope the swarm to */
+  network?: string;
+  /** restrict to hosts advertising these capability groups */
+  groups?: string[];
+  /** restrict to hosts in these regions (e.g. "eu", "us") */
+  regions?: string[];
+  /** require candidate hosts to have bonded stake */
+  requireStakedHosts?: boolean;
+}
 
 export interface QueryResult {
   id: string;
@@ -56,13 +86,7 @@ interface LiveCtx extends LiveState {
   connected: boolean;
   jobsRun: number;
   /** dispatch a REAL job on the grid; resolves with its outcome */
-  submitQuery: (body: {
-    sql: string;
-    dataClass?: string;
-    verifyMode?: string;
-    quorum?: number;
-    k?: number;
-  }) => Promise<QueryResult>;
+  submitQuery: (body: QueryRequest) => Promise<QueryResult>;
 }
 
 const Ctx = React.createContext<LiveCtx | null>(null);
