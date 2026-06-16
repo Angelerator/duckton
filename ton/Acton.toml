@@ -1,6 +1,6 @@
 [package]
-name = "duckdb-p2p-settlement"
-description = "TON economic/settlement layer for the P2P DuckDB-over-QUIC grid (stake, escrow, record anchor)"
+name = "duckton-settlement"
+description = "Duckton — TON economic/settlement layer for the peer-to-peer DuckDB-over-QUIC query grid (stake, escrow, record anchor)"
 version = "0.1.0"
 license = "Apache-2.0"
 

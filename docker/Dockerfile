@@ -2,7 +2,7 @@
 #
 # Lean P2P DuckDB grid node image.
 #
-# A "node" = the DuckDB CLI with the `duckdb_p2p` loadable extension. On start it
+# A "node" = the DuckDB CLI with the `duckton` loadable extension. On start it
 # `CALL p2p_share(...)` (becomes a host/worker that serves queries over QUIC) and
 # optionally `CALL p2p_join(bootstrap => [...])` (learns seeds). The DuckDB
 # process is kept alive (stdin held open via a FIFO) so the worker accept loop
@@ -78,22 +78,22 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     set -eux; \
     cargo build --release -p p2p-extension; \
     mkdir -p /out; \
-    cp target/release/libduckdb_p2p.so /out/libduckdb_p2p.so
+    cp target/release/libduckton.so /out/libduckton.so
 
 # Append the DuckDB metadata footer → a loadable .duckdb_extension. The output
-# basename MUST be `duckdb_p2p.duckdb_extension` (DuckDB derives the init symbol
+# basename MUST be `duckton.duckdb_extension` (DuckDB derives the init symbol
 # from it).
 RUN set -eux; \
     platform="$(duckdb -list -noheader -c 'PRAGMA platform;' | tr -d '[:space:]')"; \
     echo "duckdb platform: $platform"; \
     python3 scripts/append_extension_metadata.py \
-        -l /out/libduckdb_p2p.so \
-        -n duckdb_p2p \
+        -l /out/libduckton.so \
+        -n duckton \
         -p "$platform" \
         -dv v1.0.0 \
         -ev 0.1.0 \
-        -o /out/duckdb_p2p.duckdb_extension; \
-    duckdb -unsigned -c "LOAD '/out/duckdb_p2p.duckdb_extension'; SELECT value FROM p2p_info() WHERE key='protocol_name';"
+        -o /out/duckton.duckdb_extension; \
+    duckdb -unsigned -c "LOAD '/out/duckton.duckdb_extension'; SELECT value FROM p2p_info() WHERE key='protocol_name';"
 
 # ---------------------------------------------------------------------------
 # Stage 2: lean runtime
@@ -115,7 +115,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/duckdb /usr/local/bin/duckdb
-COPY --from=builder /out/duckdb_p2p.duckdb_extension /node/duckdb_p2p.duckdb_extension
+COPY --from=builder /out/duckton.duckdb_extension /node/duckton.duckdb_extension
 COPY docker/entrypoint.sh /node/entrypoint.sh
 RUN chmod +x /node/entrypoint.sh
 
@@ -140,7 +140,7 @@ EXPOSE 9494/udp
 
 # Health check: load the extension and run a trivial query.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-    CMD duckdb -unsigned -c "LOAD '/node/duckdb_p2p.duckdb_extension'; SELECT 1 FROM p2p_info() LIMIT 1;" || exit 1
+    CMD duckdb -unsigned -c "LOAD '/node/duckton.duckdb_extension'; SELECT 1 FROM p2p_info() LIMIT 1;" || exit 1
 
 USER p2pnode
 ENTRYPOINT ["/node/entrypoint.sh"]

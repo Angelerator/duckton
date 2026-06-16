@@ -8,7 +8,7 @@ import { JobsClient } from "./jobs-client";
 
 export const metadata: Metadata = {
   title: "Jobs",
-  description: "Inspect every job dispatched to the duckdb-p2p grid: hedged execution, quorum verification, and settlement.",
+  description: "Inspect every job dispatched to the Duckton grid: hedged execution, quorum verification, and settlement.",
 };
 
 export default function JobsPage() {
@@ -38,7 +38,7 @@ export default function JobsPage() {
       />
 
       <p className="text-muted-foreground -mt-4 text-xs">
-        Real jobs executed over loopback QUIC against the in-process duckdb-p2p
+        Real jobs executed over loopback QUIC against the in-process Duckton
         grid (engine{" "}
         <span className="text-foreground font-mono">{meta.engineVersion}</span>) —
         no hand-authored runs.

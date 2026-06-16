@@ -1,4 +1,4 @@
-# Off-chain scenario catalog — duckdb-p2p grid
+# Off-chain scenario catalog — Duckton grid
 
 This file is the written scenario list AND the spec the Docker harness covers. It
 is reproduced verbatim from the harness brief. The harness in `docker/` maps each

@@ -1,4 +1,4 @@
-# Blockchain Economic & Incentive Layer (TON) — Design
+# Duckton — Blockchain Economic & Incentive Layer (TON) Design
 
 > Status: **v0.3 — v1 product decisions CONFIRMED and IMPLEMENTED (foundation).**
 > The seven product calls formerly open in §14 are **decided** (no bespoke token

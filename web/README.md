@@ -1,7 +1,7 @@
-# DuckGrid Console
+# Duckton Console
 
-A web console for the **duckdb-p2p** project — a peer-to-peer distributed DuckDB
-compute grid over QUIC. It surfaces every part of the system (query dispatch,
+A web console for **Duckton** — a peer-to-peer distributed DuckDB
+compute grid over QUIC, settled on TON. It surfaces every part of the system (query dispatch,
 discovery, workers, trust/attestation, hedged execution, QUIC transport tuning,
 storage, and the optional TON settlement layer) as an operator-friendly UI.
 
@@ -35,7 +35,7 @@ cd web && npm run dev
 ## Real data
 
 This console is **not** backed by mock data. Everything it shows is produced by the
-**actual duckdb-p2p crates**. A Rust exporter
+**actual Duckton (`p2p-*`) crates**. A Rust exporter
 (`crates/node/tests/console_export.rs`) brings up a real in-process **loopback-QUIC
 grid** — a real coordinator and 8 heterogeneous workers (varied attestation tiers,
 capacity, latency, plus a cheating node and a failing node) — runs a batch of real

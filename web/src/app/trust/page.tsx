@@ -48,7 +48,7 @@ import type { AttestationLevel, FaultClass } from "@/lib/types";
 
 export const metadata: Metadata = {
   title: "Trust & Attestation",
-  description: "How the duckdb-p2p grid scores untrusted hosts: attestation tiers, reputation from signed receipts, quorum verification, and flagged providers.",
+  description: "How the Duckton grid scores untrusted hosts: attestation tiers, reputation from signed receipts, quorum verification, and flagged providers.",
 };
 
 /* -------------------------------------------------------------- derivations */

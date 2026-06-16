@@ -1,7 +1,7 @@
-# Multi-node Docker harness — duckdb-p2p grid scenario catalog
+# Multi-node Docker harness — Duckton grid scenario catalog
 
-A real, heterogeneous Docker swarm of `duckdb_p2p` nodes (DuckDB CLI + the loadable
-extension) that exercises the **off-chain** scenario catalog in `docker/SCENARIOS.md`.
+A real, heterogeneous Docker swarm of Duckton nodes (DuckDB CLI + the loadable
+`duckton` extension) that exercises the **off-chain** scenario catalog in `docker/SCENARIOS.md`.
 Every test drives the real `duckdb` CLI and asserts **exact** rows / values / error
 substrings / log lines. **No git commits were made; no TON gas was spent.**
 

@@ -42,7 +42,7 @@ import { meta, protocol } from "@/lib/data";
 
 export const metadata: Metadata = {
   title: "Protocol",
-  description: "QUIC wire protocol, request lifecycle stages, message reference, and version negotiation for the duckdb-p2p grid.",
+  description: "QUIC wire protocol, request lifecycle stages, message reference, and version negotiation for the Duckton grid.",
 };
 
 /* ------------------------------------------------------------- lifecycle */

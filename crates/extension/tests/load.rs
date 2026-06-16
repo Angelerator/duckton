@@ -22,7 +22,7 @@ fn locate_cdylib() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     // .../target/<profile>/deps/load-<hash>  -> .../target/<profile>/
     let profile_dir = exe.parent()?.parent()?;
-    for name in ["libduckdb_p2p.dylib", "libduckdb_p2p.so", "duckdb_p2p.dll"] {
+    for name in ["libduckton.dylib", "libduckton.so", "duckton.dll"] {
         let p = profile_dir.join(name);
         if p.exists() {
             return Some(p);
@@ -51,7 +51,7 @@ fn build_loadable(dylib: &PathBuf, platform: &str, out: &PathBuf) -> bool {
     Command::new("python3")
         .arg(&script)
         .args(["-l", dylib.to_str().unwrap()])
-        .args(["-n", "duckdb_p2p"])
+        .args(["-n", "duckton"])
         .args(["-p", platform])
         .args(["-dv", "v1.0.0"])
         .args(["-ev", "0.1.0"])
@@ -84,15 +84,15 @@ fn extension_loads_into_duckdb_and_runs_table_functions() {
 
     // Append the metadata footer to produce a loadable .duckdb_extension.
     // NOTE: DuckDB derives the init symbol from the file's basename, so it MUST
-    // be named `duckdb_p2p.duckdb_extension` to match `duckdb_p2p_init_c_api`.
+    // be named `duckton.duckdb_extension` to match `duckton_init_c_api`.
     let tmp_dir = std::env::temp_dir().join("p2p_ext_load_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     let script = repo_root().join("scripts/append_extension_metadata.py");
     let status = Command::new("python3")
         .arg(&script)
         .args(["-l", dylib.to_str().unwrap()])
-        .args(["-n", "duckdb_p2p"])
+        .args(["-n", "duckton"])
         .args(["-p", &platform])
         .args(["-dv", "v1.0.0"])
         .args(["-ev", "0.1.0"])
@@ -165,7 +165,7 @@ fn extension_p2p_query_local_execution_end_to_end() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_query_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"
@@ -230,7 +230,7 @@ fn extension_p2p_query_meta_surfaces_outcome_metadata() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_query_meta_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"
@@ -295,7 +295,7 @@ fn extension_local_path_blocks_local_file_reads() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_lockdown_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"
@@ -362,7 +362,7 @@ fn extension_p2p_share_and_join_callable() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_grid_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"
@@ -443,7 +443,7 @@ fn extension_two_node_grid_query_over_sql() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_two_node_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"
@@ -532,7 +532,7 @@ fn extension_sql_admin_surface_end_to_end() {
 
     let tmp_dir = std::env::temp_dir().join("p2p_ext_admin_test");
     std::fs::create_dir_all(&tmp_dir).unwrap();
-    let out_ext = tmp_dir.join("duckdb_p2p.duckdb_extension");
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
     assert!(
         build_loadable(&dylib, &platform, &out_ext),
         "metadata append failed"

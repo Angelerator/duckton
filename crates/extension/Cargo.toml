@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "duckdb_p2p"
+name = "duckton"
 crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 

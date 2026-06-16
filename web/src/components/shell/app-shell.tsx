@@ -34,7 +34,7 @@ function Brand({ onNavigate }: { onNavigate?: () => void }) {
         </svg>
       </div>
       <div className="leading-tight">
-        <div className="text-sm font-semibold">DuckGrid</div>
+        <div className="text-sm font-semibold">Duckton</div>
         <div className="text-muted-foreground text-[10px]">p2p · console</div>
       </div>
     </Link>

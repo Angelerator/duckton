@@ -1,10 +1,20 @@
-# duckdb-p2p
+# Duckton
 
-A peer-to-peer **distributed DuckDB** compute grid. Ordinary machines run DuckDB +
-this extension and donate a slice of their RAM/CPU. A requester broadcasts a query
-(over data in S3 / ADLS / GCS) to many hosts; several accept and run it redundantly;
-the **first correct result wins** and the rest are cancelled. Machines talk **directly
-over QUIC** — there is no central broker in the data path.
+A peer-to-peer **distributed DuckDB** compute grid, settled on **TON**. Ordinary
+machines run DuckDB + the **`duckton`** extension and donate a slice of their
+RAM/CPU. A requester broadcasts a query (over data in S3 / ADLS / GCS) to many
+hosts; several accept and run it redundantly; the **first correct result wins** and
+the rest are cancelled. Machines talk **directly over QUIC** — there is no central
+broker in the data path.
+
+```sql
+INSTALL duckton FROM community;   -- (once published)
+LOAD duckton;
+SELECT * FROM p2p_query('SELECT 42 AS x');
+```
+
+> The published loadable extension is **`duckton`**; the in-repo crate names stay
+> `p2p-*` and the SQL surface stays `p2p_*` (`p2p_query`, `p2p_share`, …).
 
 ## Why
 
@@ -19,10 +29,13 @@ reason about which untrusted hosts to trust with a job.
   **Quinn + rustls**. Nothing is readable on the wire.
 - **Data:** lives in cloud object storage, encrypted at rest (Parquet Modular
   Encryption). Hosts are pure compute; the design delivers per-job **scoped,
-  short-lived credentials** encrypted to the chosen worker. *Status:* the scoped
-  cloud-read path (sealed credential → prefix-scoped DuckDB secret) is built and
-  unit-tested, but the coordinator does **not yet attach per-job credentials**
-  (`credential: None`), so the object-store read path is not exercised end-to-end.
+  short-lived credentials** encrypted to the chosen worker. *Status:* the
+  coordinator now **attaches a per-job scoped credential** into each `Dispatch`
+  when a credential provider is wired (off by default — only when an operator opts
+  into remote object-store reads via `storage.enable_remote_access`), and the
+  worker resolves it. The credential is currently scoped to the provider root and
+  delivered **unsealed**; attestation-bound sealing to the worker's key still needs
+  the per-offer attested key handshake (real TEE hardware, see below).
 - **Trustworthiness:** identity (Ed25519, Sybil-resistant) + **attestation tiers**
   (anonymous / TPM measured-boot / hardware TEE) + **reputation from signed receipts**
   + **verification** (canonical result hashing, quorum agreement, canary audits).
@@ -75,7 +88,7 @@ crates/
                               Sybil PoW/vouch, capability tokens, attestation, sealing
   node/        p2p-node       coordinator (hedging), worker (admission), discovery,
                               membership, query engines (mock + locked-down DuckDB), storage
-  extension/   duckdb_p2p     loadable DuckDB C-API extension (table functions)
+  extension/   duckton        loadable DuckDB C-API extension (table functions)
 config/p2p.example.toml       documented example configuration
 scripts/                      build_extension.sh, append_extension_metadata.py
 ```
@@ -95,7 +108,7 @@ cargo test -p p2p-node --features duckdb-engine
 
 # Build the loadable DuckDB extension and smoke-test it in the duckdb CLI
 scripts/build_extension.sh
-duckdb -unsigned -c "LOAD 'dist/duckdb_p2p.duckdb_extension'; SELECT * FROM p2p_info();"
+duckdb -unsigned -c "LOAD 'dist/duckton.duckdb_extension'; SELECT * FROM p2p_info();"
 ```
 
 The end-to-end **scenario suite** lives in `crates/node/tests/scenarios.rs`

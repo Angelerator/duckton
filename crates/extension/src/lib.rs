@@ -1,9 +1,9 @@
-//! `duckdb_p2p` — the loadable DuckDB C-API extension surface (architecture §12).
+//! `duckton` — the loadable DuckDB C-API extension surface (architecture §12).
 //!
-//! Phase 0 walking-skeleton surface. It is built as a loadable extension against
-//! DuckDB's **stable C extension API** (so it loads via `LOAD 'duckdb_p2p'`
-//! without linking the whole engine). It exposes table functions that prove the
-//! extension loads and is wired to the workspace crates:
+//! Duckton is built as a loadable extension against DuckDB's **stable C extension
+//! API** (so it loads via `LOAD 'duckton'` without linking the whole engine). The
+//! published flow is `INSTALL duckton FROM community; LOAD duckton;`. It exposes
+//! table functions (the `p2p_*` SQL surface) wired to the workspace crates:
 //!
 //!  * `p2p_info()`   → protocol/version/build metadata (from `p2p-proto`).
 //!  * `p2p_peers()`  → the bootstrap/seed peers from the resolved config
@@ -2016,8 +2016,8 @@ impl VTab for JoinVTab {
     }
 }
 
-#[duckdb_entrypoint_c_api(ext_name = "duckdb_p2p", min_duckdb_version = "v1.0.0")]
-pub fn duckdb_p2p_init(con: Connection) -> Result<(), Box<dyn Error>> {
+#[duckdb_entrypoint_c_api(ext_name = "duckton", min_duckdb_version = "v1.0.0")]
+pub fn duckton_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // Read-only metadata + inspection.
     con.register_table_function::<InfoVTab>("p2p_info")?;
     con.register_table_function::<PeersVTab>("p2p_peers")?;

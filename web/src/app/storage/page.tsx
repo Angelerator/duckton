@@ -37,7 +37,7 @@ import { durationSecs, inFuture, NOW } from "@/lib/format";
 
 export const metadata: Metadata = {
   title: "Storage",
-  description: "Cloud object-storage providers, formats, per-job scoped credentials, and the encryption security boundary for the duckdb-p2p grid.",
+  description: "Cloud object-storage providers, formats, per-job scoped credentials, and the encryption security boundary for the Duckton grid.",
 };
 
 /* ------------------------------------------- real node storage config (live) */

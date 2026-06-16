@@ -15,7 +15,7 @@
 # included) and starts hosting with a single bind.
 set -euo pipefail
 
-EXT=/node/duckdb_p2p.duckdb_extension
+EXT=/node/duckton.duckdb_extension
 # Total donated budget (admission accounting, not a hard RAM reservation). Must
 # be >= per-job memory or admission rejects every offer with "at capacity".
 MEM="${P2P_SHARE_MEMORY:-256MB}"

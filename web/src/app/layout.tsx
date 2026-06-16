@@ -17,8 +17,8 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "DuckGrid Console — distributed P2P DuckDB",
-    template: "%s · DuckGrid Console",
+    default: "Duckton Console — distributed P2P DuckDB on TON",
+    template: "%s · Duckton Console",
   },
   description:
     "Operator console for a peer-to-peer distributed DuckDB compute grid over QUIC: query console, network, workers, trust & attestation, and TON settlement.",

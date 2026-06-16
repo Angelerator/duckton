@@ -1,4 +1,4 @@
-# duckdb-p2p — TON settlement contracts (Tolk / Acton)
+# Duckton — TON settlement contracts (Tolk / Acton)
 
 The on-chain economic/settlement layer for the P2P DuckDB-over-QUIC grid. See
 [`docs/BLOCKCHAIN_ECONOMICS.md`](../docs/BLOCKCHAIN_ECONOMICS.md) for the full

@@ -14,6 +14,9 @@ members = [
 [workspace.package]
 version = "0.2.0"
 edition = "2021"
+# Duckton — a peer-to-peer DuckDB query grid with TON-settled economics. The
+# published loadable extension is `duckton`; internal crate names stay `p2p-*`.
+description = "Duckton — a peer-to-peer DuckDB query grid settled on TON."
 license = "Apache-2.0"
 repository = "https://github.com/example/duckdb-p2p"
 rust-version = "1.80"

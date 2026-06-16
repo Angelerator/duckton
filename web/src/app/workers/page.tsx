@@ -8,7 +8,7 @@ import { WorkersClient } from "./workers-client";
 
 export const metadata: Metadata = {
   title: "Workers",
-  description: "Hosts donating RAM and CPU to the duckdb-p2p grid, with real trust scores, attestation, and capacity.",
+  description: "Hosts donating RAM and CPU to the Duckton grid, with real trust scores, attestation, and capacity.",
 };
 
 // Online count is derived from a static module import — hoist to module scope

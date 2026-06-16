@@ -325,7 +325,7 @@ export default function OverviewPage() {
           real
         </Badge>
         <span>
-          Real data from an in-process loopback grid run of the duckdb-p2p crates — no hand-authored
+          Real data from an in-process loopback grid run of the Duckton (p2p-*) crates — no hand-authored
           values. Protocol {meta.protocolVersion} · engine {meta.engineVersion} · workspace{" "}
           {meta.workspaceVersion}.
         </span>

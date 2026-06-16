@@ -1,4 +1,4 @@
-# TON testnet — deploy + live end-to-end runbook
+# Duckton — TON testnet deploy + live end-to-end runbook
 
 This is a **turnkey** runbook for taking the on-chain economic/settlement layer
 of the P2P DuckDB-over-QUIC grid live on the **TON testnet**. The contracts

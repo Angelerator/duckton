@@ -1,4 +1,4 @@
-# duckdb-p2p — Capstone Analysis & Improvement Roadmap
+# Duckton — Capstone Analysis & Improvement Roadmap
 
 > Status: analysis/roadmap deliverable. **No features are implemented here.** Every
 > claim is grounded in the real code (file:line) and the just-produced test

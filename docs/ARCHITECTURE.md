@@ -1,4 +1,4 @@
-# Distributed P2P DuckDB over QUIC — Architecture & Trust Design
+# Duckton — Distributed P2P DuckDB over QUIC: Architecture & Trust Design
 
 > Status: Design draft (v0.1)
 > Scope: A peer-to-peer compute grid where independent machines ("hosts") donate
@@ -430,7 +430,7 @@ loading the extension, a user runs a query with **no prior `p2p_join` /
 `p2p_share`, no config file, and no environment variables**:
 
 ```sql
-INSTALL p2p; LOAD p2p;        -- or autoload
+INSTALL duckton FROM community; LOAD duckton;   -- or autoload
 
 -- That's the whole setup. Just query:
 FROM p2p_query('SELECT region, count(*) FROM ''s3://bucket/events/*.parquet'' GROUP BY region');
