@@ -28,8 +28,8 @@ use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, VerifyModeCfg,
 };
 use p2p_node::{
-    AdmissionController, Candidate, Coordinator, CoordinatorError, MockEngine, QueryEngine,
-    StaticDiscovery, Worker, WorkerParams,
+    AdmissionController, Candidate, Coordinator, CoordinatorError, DuckDbEngine, MockEngine,
+    QueryEngine, StaticDiscovery, StorageSetup, Worker, WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
 use p2p_settlement::types::Amount;
@@ -115,6 +115,22 @@ fn demo_measurement(level: AttestationLevel) -> &'static str {
     }
 }
 
+/// Storage setup for an honest host's REAL DuckDB engine: keeps the default
+/// lockdown (no network egress, no `INSTALL`/`LOAD`, local FS disabled) but, when
+/// `~/tpch-data` exists, additionally allow-lists it so file-backed demos like
+/// `read_parquet('<home>/tpch-data/sf1/lineitem.parquet')` succeed. Pure
+/// in-memory/compute SQL (`SELECT 42`, `range(5)`, …) needs none of this.
+fn honest_storage_setup() -> StorageSetup {
+    let mut storage = GridConfig::default().storage;
+    if let Ok(home) = std::env::var("HOME") {
+        let tpch = format!("{home}/tpch-data");
+        if std::path::Path::new(&tpch).is_dir() {
+            storage.allowed_local_paths = vec![tpch];
+        }
+    }
+    StorageSetup::from_config(&storage)
+}
+
 async fn spawn_worker(spec: &Spec, attestor_authority: &SigningKey) -> WorkerHandle {
     let net = GridConfig::default().network;
     let transport =
@@ -127,13 +143,26 @@ async fn spawn_worker(spec: &Spec, attestor_authority: &SigningKey) -> WorkerHan
     let mut cfg = GridConfig::default();
     cfg.budget = budget.clone();
     let params = WorkerParams::from_config(&cfg);
-    let base = match spec.behavior {
-        "cheat" => MockEngine::deterministic().cheating(),
-        "fail" => MockEngine::failing("simulated worker fault"),
-        _ => MockEngine::deterministic(),
+    // HONEST hosts run the REAL locked-down DuckDB engine, so dispatched SQL is
+    // actually executed and the true columns/rows are returned + canonical-hashed.
+    // CHEAT/FAIL hosts stay on the Mock engine so the trust/quorum/equivocation
+    // demo still works (the cheater returns a divergent hash and is caught; the
+    // failing node errors; both lose to the honest quorum on the real result).
+    let engine: Arc<dyn QueryEngine> = match spec.behavior {
+        "cheat" => Arc::new(
+            MockEngine::deterministic()
+                .cheating()
+                .with_delay(Duration::from_millis(spec.delay_ms)),
+        ),
+        "fail" => Arc::new(
+            MockEngine::failing("simulated worker fault")
+                .with_delay(Duration::from_millis(spec.delay_ms)),
+        ),
+        _ => Arc::new(
+            DuckDbEngine::with_setup(honest_storage_setup())
+                .expect("DuckDb engine init (honest demo host)"),
+        ),
     };
-    let engine: Arc<dyn QueryEngine> =
-        Arc::new(base.with_delay(Duration::from_millis(spec.delay_ms)));
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
     let mut worker = Worker::new(
@@ -751,15 +780,27 @@ async fn query_handler(State(s): State<AppState>, Json(body): Json<QueryBody>) -
 
 // --------------------------------------------------------------------------
 
+// Ambient/warmup analytics. These now run on the REAL DuckDB engine on the honest
+// hosts, so each query is fully SELF-CONTAINED (synthesizes its source table via a
+// `range()` CTE) — realistic shape, deterministic across workers (so quorum agrees),
+// no external tables/files required.
 const AMBIENT_SQL: &[&str] = &[
-    "SELECT region, count(*) AS orders, sum(total) AS gmv FROM orders GROUP BY region",
-    "SELECT date_trunc('hour', ts) h, avg(latency_ms) FROM telemetry GROUP BY 1",
-    "SELECT sku, sum(qty) FROM sales GROUP BY sku HAVING sum(qty) > 1000",
-    "SELECT cohort, count(DISTINCT user_id) FROM events WHERE kind='session' GROUP BY cohort",
-    "SELECT country, sum(revenue) FROM invoices GROUP BY country ORDER BY 2 DESC LIMIT 20",
-    "SELECT model, avg(score) FROM predictions GROUP BY model",
-    "SELECT status, count(*) FROM jobs GROUP BY status",
-    "SELECT tier, sum(amount) FROM payments GROUP BY tier",
+    "WITH orders AS (SELECT i%5 AS region, (i*7)%1000 AS total FROM range(5000) t(i)) \
+     SELECT region, count(*) AS orders, sum(total) AS gmv FROM orders GROUP BY region ORDER BY region",
+    "WITH telemetry AS (SELECT i%24 AS hour, (i*13)%500 AS latency_ms FROM range(4800) t(i)) \
+     SELECT hour, avg(latency_ms) AS avg_latency FROM telemetry GROUP BY hour ORDER BY hour",
+    "WITH sales AS (SELECT i%40 AS sku, (i*3)%50 AS qty FROM range(6000) t(i)) \
+     SELECT sku, sum(qty) AS qty FROM sales GROUP BY sku HAVING sum(qty) > 1000 ORDER BY sku",
+    "WITH events AS (SELECT i%8 AS cohort, i%500 AS user_id FROM range(4000) t(i)) \
+     SELECT cohort, count(DISTINCT user_id) AS users FROM events GROUP BY cohort ORDER BY cohort",
+    "WITH invoices AS (SELECT i%20 AS country, (i*11)%1000 AS revenue FROM range(6000) t(i)) \
+     SELECT country, sum(revenue) AS revenue FROM invoices GROUP BY country ORDER BY revenue DESC LIMIT 20",
+    "WITH predictions AS (SELECT i%6 AS model, (i*17)%100 AS score FROM range(3000) t(i)) \
+     SELECT model, avg(score) AS score FROM predictions GROUP BY model ORDER BY model",
+    "WITH jobs AS (SELECT i%3 AS status FROM range(1500) t(i)) \
+     SELECT status, count(*) AS n FROM jobs GROUP BY status ORDER BY status",
+    "WITH payments AS (SELECT i%4 AS tier, (i*5)%500 AS amount FROM range(2500) t(i)) \
+     SELECT tier, sum(amount) AS amount FROM payments GROUP BY tier ORDER BY tier",
 ];
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]

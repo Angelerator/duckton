@@ -5,14 +5,14 @@
       "antiabuse": {
         "blocklist": {
           "auto_block_enabled": false,
-          "auto_block_trust_floor": 0,
+          "auto_block_trust_floor": 0.0,
           "honor_global_params": false,
           "honor_gossip_signals": false
         },
         "cost_gate": {
           "enabled": false,
           "max_cost_hint_rows": 0,
-          "max_working_set_factor": 1
+          "max_working_set_factor": 1.0
         },
         "enabled": true,
         "fault_attribution": {
@@ -37,7 +37,7 @@
         "requester_trust": {
           "age_saturation": 50,
           "enabled": false,
-          "negative_floor_weight": 0,
+          "negative_floor_weight": 0.0,
           "positive_floor_weight": 0.5
         }
       },
@@ -134,8 +134,11 @@
           "w_throughput": 0.2
         },
         "ranking": {
-          "exploration_rate": 0,
+          "capability_weight": 0.0,
+          "exploration_rate": 0.0,
           "exploration_saturation": 20,
+          "newcomer_obs_threshold": 20,
+          "newcomer_trust_ceiling": 1.0,
           "w_price": 0.25,
           "w_quality": 0.6,
           "w_stake": 0.15
@@ -146,8 +149,8 @@
         },
         "reputation": {
           "confidence_z": 1.96,
-          "prior_alpha": 1,
-          "prior_beta": 2
+          "prior_alpha": 1.0,
+          "prior_beta": 2.0
         },
         "selection": {
           "checksum_allow_degraded": true,
@@ -160,7 +163,7 @@
         "settlement": "noop",
         "slashing": {
           "challenge_window_secs": 86400,
-          "slash_cheat_pct": 1,
+          "slash_cheat_pct": 1.0,
           "slash_downtime_pct": 0.02,
           "slash_equivocation_pct": 0.5,
           "slash_failed_commitment_pct": 0.1,
@@ -209,11 +212,11 @@
       },
       "liveness": {
         "phi": {
-          "acceptable_pause_ms": 0,
-          "convict_threshold": 8,
+          "acceptable_pause_ms": 0.0,
+          "convict_threshold": 8.0,
           "enabled": true,
-          "first_interval_ms": 5000,
-          "min_std_ms": 50,
+          "first_interval_ms": 5000.0,
+          "min_std_ms": 50.0,
           "window_size": 100
         },
         "swim": {
@@ -222,6 +225,19 @@
           "indirect_probe_timeout_ms": 2000,
           "probe_timeout_ms": 1000
         }
+      },
+      "membership": {
+        "group_enforcement": "soft",
+        "group_issuers": {},
+        "group_token": null,
+        "groups": [],
+        "networks": [
+          "default"
+        ],
+        "region": null,
+        "region_issuers": {},
+        "region_token": null,
+        "region_trust": "declared"
       },
       "network": {
         "advertised_addr": null,
@@ -262,6 +278,7 @@
           "memory_bytes": 0,
           "mode": "inherit_budget"
         },
+        "process_per_job": false,
         "temp_dir": null,
         "temp_dir_policy": "ephemeral"
       },
@@ -279,8 +296,9 @@
         "progress_stall_multiplier": 5,
         "quorum": 2,
         "replicas": 3,
-        "retry_budget_max_tokens": 32,
-        "retry_budget_refill_per_sec": 4,
+        "require_staked_hosts": false,
+        "retry_budget_max_tokens": 32.0,
+        "retry_budget_refill_per_sec": 4.0,
         "verify_mode": "quorum"
       },
       "storage": {
@@ -358,8 +376,10 @@
         }
       },
       "worker": {
+        "enabled": true,
         "job_timeout_ms": 60000,
-        "progress_interval_ms": 2000
+        "progress_interval_ms": 2000,
+        "self_measure_capability": false
       }
     }
   },
@@ -377,19 +397,19 @@
           "progressPct": 100,
           "state": "committed",
           "verdict": "Incorrect",
-          "workerId": "b3:0fdfccb0b14ee5434f6dbfe9761fc18858ac79a3ce194a5dc3ca8d896cbc07d7"
+          "workerId": "b3:6bc06c0771ab571f78adbc12c8101a8ad4391de41a7d79669feffc96b791fb0a"
         },
         {
           "alias": "harbor-vole",
           "attestation": "L2",
-          "commitLatencyMs": 23,
+          "commitLatencyMs": 22,
           "committedHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-          "etaMs": 23,
+          "etaMs": 22,
           "price": 0,
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
@@ -401,7 +421,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
@@ -413,7 +433,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "slate-heron",
@@ -425,7 +445,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         },
         {
           "alias": "cobalt-stoat",
@@ -437,16 +457,16 @@
           "progressPct": 0,
           "state": "dispatched",
           "verdict": "Inconclusive",
-          "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
+          "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
         }
       ],
-      "createdAtMs": 1781511734990,
+      "createdAtMs": 1781614129061,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "a15097d89d560d8b8391069f5151fc09",
+      "id": "ec8fa36d4dd5ea74899137836e3e7041",
       "k": 6,
-      "latencyMs": 131,
+      "latencyMs": 129,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -498,7 +518,7 @@
           "detail": "commit-first, before bulk stream",
           "label": "First result_hash committed",
           "stage": "commit",
-          "tMs": 23
+          "tMs": 22
         },
         {
           "detail": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
@@ -510,12 +530,12 @@
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 131
+          "tMs": 129
         }
       ],
       "verifyMode": "Quorum",
       "winner": "harbor-vole",
-      "winnerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+      "winnerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
     },
     {
       "_idx": 1,
@@ -523,50 +543,50 @@
         {
           "alias": "harbor-vole",
           "attestation": "L2",
-          "commitLatencyMs": 24,
+          "commitLatencyMs": 23,
           "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-          "etaMs": 24,
+          "etaMs": 23,
           "price": 0,
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
           "attestation": "L1",
-          "commitLatencyMs": 40,
+          "commitLatencyMs": 30,
           "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-          "etaMs": 40,
+          "etaMs": 30,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
           "attestation": "L1",
-          "commitLatencyMs": 50,
+          "commitLatencyMs": 46,
           "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-          "etaMs": 50,
+          "etaMs": 46,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "pine-marten",
           "attestation": "L0",
-          "commitLatencyMs": 61,
+          "commitLatencyMs": 62,
           "committedHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-          "etaMs": 61,
+          "etaMs": 62,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+          "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
         },
         {
           "alias": "slate-heron",
@@ -578,7 +598,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         },
         {
           "alias": "cobalt-stoat",
@@ -590,16 +610,16 @@
           "progressPct": 0,
           "state": "dispatched",
           "verdict": "Inconclusive",
-          "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
+          "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
         }
       ],
-      "createdAtMs": 1781511735121,
+      "createdAtMs": 1781614129190,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "524b2f57459317bb1518a230020b163d",
+      "id": "2fa9c8af976b831d6510d76d00bcfd6e",
       "k": 6,
-      "latencyMs": 129,
+      "latencyMs": 126,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -651,24 +671,24 @@
           "detail": "commit-first, before bulk stream",
           "label": "First result_hash committed",
           "stage": "commit",
-          "tMs": 24
+          "tMs": 23
         },
         {
           "detail": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
           "label": "Quorum reached: 5/3 agree",
           "stage": "verify",
-          "tMs": 50
+          "tMs": 46
         },
         {
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 129
+          "tMs": 126
         }
       ],
       "verifyMode": "Quorum",
       "winner": "harbor-vole",
-      "winnerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+      "winnerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
     },
     {
       "_idx": 2,
@@ -676,26 +696,26 @@
         {
           "alias": "harbor-vole",
           "attestation": "L2",
-          "commitLatencyMs": 23,
+          "commitLatencyMs": 22,
           "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-          "etaMs": 23,
+          "etaMs": 22,
           "price": 0,
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
           "attestation": "L1",
-          "commitLatencyMs": 30,
+          "commitLatencyMs": 31,
           "committedHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-          "etaMs": 30,
+          "etaMs": 31,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
@@ -707,7 +727,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "pine-marten",
@@ -719,7 +739,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+          "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
         },
         {
           "alias": "slate-heron",
@@ -731,7 +751,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         },
         {
           "alias": "cobalt-stoat",
@@ -743,16 +763,16 @@
           "progressPct": 0,
           "state": "dispatched",
           "verdict": "Inconclusive",
-          "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
+          "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
         }
       ],
-      "createdAtMs": 1781511735251,
+      "createdAtMs": 1781614129317,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
+      "id": "2756ed6e0c9b2793574aa38fe109e5a0",
       "k": 6,
-      "latencyMs": 127,
+      "latencyMs": 133,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -804,7 +824,7 @@
           "detail": "commit-first, before bulk stream",
           "label": "First result_hash committed",
           "stage": "commit",
-          "tMs": 23
+          "tMs": 22
         },
         {
           "detail": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
@@ -816,12 +836,12 @@
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 127
+          "tMs": 133
         }
       ],
       "verifyMode": "Quorum",
       "winner": "harbor-vole",
-      "winnerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+      "winnerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
     },
     {
       "_idx": 3,
@@ -829,26 +849,26 @@
         {
           "alias": "frost-owl",
           "attestation": "L2",
-          "commitLatencyMs": 14,
+          "commitLatencyMs": 13,
           "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-          "etaMs": 14,
+          "etaMs": 13,
           "price": 0,
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+          "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
         },
         {
           "alias": "harbor-vole",
           "attestation": "L2",
-          "commitLatencyMs": 24,
+          "commitLatencyMs": 22,
           "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-          "etaMs": 24,
+          "etaMs": 22,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
@@ -860,7 +880,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
@@ -872,7 +892,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "pine-marten",
@@ -884,28 +904,28 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+          "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
         },
         {
           "alias": "slate-heron",
           "attestation": "L0",
-          "commitLatencyMs": 111,
+          "commitLatencyMs": 110,
           "committedHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-          "etaMs": 111,
+          "etaMs": 110,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         }
       ],
-      "createdAtMs": 1781511735378,
+      "createdAtMs": 1781614129450,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "ebc0e8510b912afd3c70e93226782649",
+      "id": "6c4816e39a0aa805e826c2bb20de1950",
       "k": 6,
-      "latencyMs": 128,
+      "latencyMs": 127,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -957,7 +977,7 @@
           "detail": "commit-first, before bulk stream",
           "label": "First result_hash committed",
           "stage": "commit",
-          "tMs": 14
+          "tMs": 13
         },
         {
           "detail": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
@@ -969,12 +989,12 @@
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 128
+          "tMs": 127
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     },
     {
       "_idx": 4,
@@ -989,19 +1009,19 @@
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+          "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
         },
         {
           "alias": "harbor-vole",
           "attestation": "L2",
-          "commitLatencyMs": 23,
+          "commitLatencyMs": 22,
           "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-          "etaMs": 23,
+          "etaMs": 22,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
@@ -1013,52 +1033,52 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
           "attestation": "L1",
-          "commitLatencyMs": 47,
+          "commitLatencyMs": 46,
           "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-          "etaMs": 47,
+          "etaMs": 46,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "pine-marten",
           "attestation": "L0",
-          "commitLatencyMs": 61,
+          "commitLatencyMs": 62,
           "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-          "etaMs": 61,
+          "etaMs": 62,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+          "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
         },
         {
           "alias": "slate-heron",
           "attestation": "L0",
-          "commitLatencyMs": 112,
+          "commitLatencyMs": 110,
           "committedHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-          "etaMs": 112,
+          "etaMs": 110,
           "price": 0,
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         }
       ],
-      "createdAtMs": 1781511735506,
+      "createdAtMs": 1781614129578,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "1cf864684406c9166cff79a0fdde1c30",
+      "id": "08dce84849b76b2b56af33ddfab9ac63",
       "k": 6,
-      "latencyMs": 128,
+      "latencyMs": 126,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -1122,12 +1142,12 @@
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 128
+          "tMs": 126
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     },
     {
       "_idx": 5,
@@ -1142,7 +1162,7 @@
           "progressPct": 100,
           "state": "won",
           "verdict": "Correct",
-          "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+          "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
         },
         {
           "alias": "harbor-vole",
@@ -1154,7 +1174,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+          "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
         },
         {
           "alias": "tidal-fox",
@@ -1166,7 +1186,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+          "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
         },
         {
           "alias": "amber-mole",
@@ -1178,7 +1198,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+          "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
         },
         {
           "alias": "pine-marten",
@@ -1190,7 +1210,7 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+          "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
         },
         {
           "alias": "slate-heron",
@@ -1202,16 +1222,16 @@
           "progressPct": 100,
           "state": "reset",
           "verdict": "Correct",
-          "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+          "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
         }
       ],
-      "createdAtMs": 1781511735635,
+      "createdAtMs": 1781614129705,
       "dataClass": "Public",
       "escrowTon": 0,
       "fn": "p2p_query",
-      "id": "5e69bee59a73842ad942b8260b1106f9",
+      "id": "74e9b1d812725ca58cb56bb9b9ab12c3",
       "k": 6,
-      "latencyMs": 130,
+      "latencyMs": 132,
       "paid": false,
       "quorum": 3,
       "requester": "analyst-ws",
@@ -1275,18 +1295,18 @@
           "detail": "receipts emitted",
           "label": "Winner streams result · losers RESET",
           "stage": "settle",
-          "tMs": 130
+          "tMs": 132
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     }
   ],
   "meta": {
-    "buildMs": 3348,
+    "buildMs": 3360,
     "engineVersion": "mock-1",
-    "generatedAtMs": 1781511734975,
+    "generatedAtMs": 1781614129039,
     "generatedNote": "Generated by `cargo test -p p2p-node --test console_export -- --ignored`. Every value below is produced by the real duckdb-p2p crates running an in-process loopback-QUIC grid — no hand-authored data.",
     "jobsRun": 27,
     "minSupported": "1.0.0",
@@ -1325,11 +1345,11 @@
       },
       {
         "bucket": "25–50",
-        "count": 47
+        "count": 48
       },
       {
         "bucket": "50–100",
-        "count": 24
+        "count": 23
       },
       {
         "bucket": "100–250",
@@ -1347,97 +1367,97 @@
     "series": [
       {
         "label": "j1",
-        "latencyMs": 131,
+        "latencyMs": 129,
         "verified": 1
       },
       {
         "label": "j2",
-        "latencyMs": 129,
+        "latencyMs": 126,
         "verified": 1
       },
       {
         "label": "j3",
-        "latencyMs": 127,
-        "verified": 1
-      },
-      {
-        "label": "j4",
-        "latencyMs": 128,
-        "verified": 1
-      },
-      {
-        "label": "j5",
-        "latencyMs": 128,
-        "verified": 1
-      },
-      {
-        "label": "j6",
-        "latencyMs": 130,
-        "verified": 1
-      },
-      {
-        "label": "j7",
-        "latencyMs": 129,
-        "verified": 1
-      },
-      {
-        "label": "j8",
-        "latencyMs": 129,
-        "verified": 1
-      },
-      {
-        "label": "j9",
-        "latencyMs": 129,
-        "verified": 1
-      },
-      {
-        "label": "j10",
         "latencyMs": 133,
         "verified": 1
       },
       {
+        "label": "j4",
+        "latencyMs": 127,
+        "verified": 1
+      },
+      {
+        "label": "j5",
+        "latencyMs": 126,
+        "verified": 1
+      },
+      {
+        "label": "j6",
+        "latencyMs": 132,
+        "verified": 1
+      },
+      {
+        "label": "j7",
+        "latencyMs": 127,
+        "verified": 1
+      },
+      {
+        "label": "j8",
+        "latencyMs": 133,
+        "verified": 1
+      },
+      {
+        "label": "j9",
+        "latencyMs": 133,
+        "verified": 1
+      },
+      {
+        "label": "j10",
+        "latencyMs": 131,
+        "verified": 1
+      },
+      {
         "label": "j11",
-        "latencyMs": 129,
+        "latencyMs": 132,
         "verified": 1
       },
       {
         "label": "j12",
-        "latencyMs": 128,
+        "latencyMs": 133,
         "verified": 1
       },
       {
         "label": "j13",
-        "latencyMs": 130,
+        "latencyMs": 131,
         "verified": 1
       },
       {
         "label": "j14",
-        "latencyMs": 127,
+        "latencyMs": 128,
         "verified": 1
       },
       {
         "label": "j15",
-        "latencyMs": 129,
+        "latencyMs": 133,
         "verified": 1
       },
       {
         "label": "j16",
-        "latencyMs": 129,
+        "latencyMs": 133,
         "verified": 1
       },
       {
         "label": "j17",
-        "latencyMs": 129,
+        "latencyMs": 130,
         "verified": 1
       },
       {
         "label": "j18",
-        "latencyMs": 129,
+        "latencyMs": 133,
         "verified": 1
       },
       {
         "label": "j19",
-        "latencyMs": 127,
+        "latencyMs": 133,
         "verified": 1
       },
       {
@@ -1447,22 +1467,22 @@
       },
       {
         "label": "j21",
-        "latencyMs": 128,
+        "latencyMs": 126,
         "verified": 1
       },
       {
         "label": "j22",
-        "latencyMs": 130,
+        "latencyMs": 131,
         "verified": 1
       },
       {
         "label": "j23",
-        "latencyMs": 151,
+        "latencyMs": 131,
         "verified": 1
       },
       {
         "label": "j24",
-        "latencyMs": 129,
+        "latencyMs": 128,
         "verified": 1
       }
     ],
@@ -1475,13 +1495,13 @@
     {
       "_paidIdx": 0,
       "candidates": [],
-      "createdAtMs": 1781511738136,
+      "createdAtMs": 1781614132218,
       "dataClass": "Internal",
       "escrowTon": 100,
       "fn": "p2p_query",
-      "id": "f1af72251d6b6a8e7b66bc86cd4f6824",
+      "id": "2baba3a2972472057712bc631f305b12",
       "k": 4,
-      "latencyMs": 56,
+      "latencyMs": 57,
       "paid": true,
       "quorum": 3,
       "requester": "etl-runner",
@@ -1527,23 +1547,23 @@
           "detail": "anchored to epoch root",
           "label": "Settle: winner paid, losers RESET",
           "stage": "settle",
-          "tMs": 56
+          "tMs": 57
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     },
     {
       "_paidIdx": 1,
       "candidates": [],
-      "createdAtMs": 1781511738192,
+      "createdAtMs": 1781614132276,
       "dataClass": "Internal",
       "escrowTon": 100,
       "fn": "p2p_query",
-      "id": "b68f2d77764860a7b22dc28dd41e8988",
+      "id": "3c5a7f3ae64316ccf1f731fcaafb0434",
       "k": 4,
-      "latencyMs": 58,
+      "latencyMs": 55,
       "paid": true,
       "quorum": 3,
       "requester": "etl-runner",
@@ -1589,23 +1609,23 @@
           "detail": "anchored to epoch root",
           "label": "Settle: winner paid, losers RESET",
           "stage": "settle",
-          "tMs": 58
+          "tMs": 55
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     },
     {
       "_paidIdx": 2,
       "candidates": [],
-      "createdAtMs": 1781511738250,
+      "createdAtMs": 1781614132332,
       "dataClass": "Internal",
       "escrowTon": 100,
       "fn": "p2p_query",
-      "id": "30ddfebc3e87e9f43ca35faa5181eac2",
+      "id": "865f97e2c2ebcd2298f2f14c3ca8d350",
       "k": 4,
-      "latencyMs": 56,
+      "latencyMs": 55,
       "paid": true,
       "quorum": 3,
       "requester": "etl-runner",
@@ -1651,12 +1671,12 @@
           "detail": "anchored to epoch root",
           "label": "Settle: winner paid, losers RESET",
           "stage": "settle",
-          "tMs": 56
+          "tMs": 55
         }
       ],
       "verifyMode": "Quorum",
       "winner": "frost-owl",
-      "winnerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+      "winnerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
     }
   ],
   "protocol": {
@@ -1677,20 +1697,21 @@
         "eta_ms": 2600,
         "free_mem_bytes": 23622320128,
         "free_threads": 14,
-        "job_id": "45666b341dadb53940826dd5411a64b4",
+        "job_id": "02db19f0cc69054429e28f37e9ec16e4",
         "price": 0,
         "recent_receipts": [],
-        "worker_id": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+        "region_proof": null,
+        "worker_id": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
       },
       "Dispatch": {
         "compression": null,
         "credential": {
-          "expires_at": 1781512638,
+          "expires_at": 1781615032,
           "prefix": "s3://acme-lake/orders/2026/",
           "provider": "s3",
           "token": "<downscoped-sts-session>"
         },
-        "job_id": "45666b341dadb53940826dd5411a64b4",
+        "job_id": "02db19f0cc69054429e28f37e9ec16e4",
         "memory_limit_bytes": 4294967296,
         "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
         "result_parallelism": 4,
@@ -1702,29 +1723,36 @@
       "Offer": {
         "cost_hint_rows": 184000000,
         "data_class": "Internal",
-        "job_id": "45666b341dadb53940826dd5411a64b4",
-        "nonce": 11469010869004630000,
+        "group_proof": null,
+        "groups": [],
+        "job_id": "02db19f0cc69054429e28f37e9ec16e4",
+        "network": null,
+        "nonce": 11469010869004629920,
         "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
+        "regions": [],
         "requester_id": "b3:350c2e42fbeb7f973be2adae1234b62906543f2509b7d88cb8a1c8a90c7aebcf"
       },
       "Receipt": {
-        "job_id": "a15097d89d560d8b8391069f5151fc09",
-        "latency_ms": 23,
+        "job_id": "ec8fa36d4dd5ea74899137836e3e7041",
+        "latency_ms": 22,
+        "observed_input_bytes": 0,
+        "observed_result_bytes": 100,
+        "observed_result_rows": 3,
         "query_hash": "91cdffe15f7cbce0d2c789a90fda5c81a9cd473a41eaa43c03163e8facd9a7eb",
-        "requester_id": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-        "requester_pubkey": "25161dbf4e299f572c830eec22e26b59169fff61a6ab86626653389c7628b026",
+        "requester_id": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+        "requester_pubkey": "c39beb03d094a7aa1180b6e7232e7298f69c4de9760352e1ce29febc9d3594dd",
         "result_hash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-        "sig": "7425bf353bca4ad5686d51a6127c2381576ddb72c6a04f09c6650ca12b9c3c7e4e31b7d314d7e10d4f97fcb29ec26ae5792c16dce7a18d396edfe081d5829a0f",
-        "ts": 1781511735,
+        "sig": "70714eed0074e7a20196cb227ce1dfa7f936de8f7267cf48a003c8f00e92698f8d3363d0afb5257541b2d10d9002b89ee336fd077a06a545ab5878b29010f001",
+        "ts": 1781614129,
         "verdict": "Correct",
-        "worker_id": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+        "worker_id": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
       },
       "ResultCommit": {
-        "job_id": "45666b341dadb53940826dd5411a64b4",
+        "job_id": "02db19f0cc69054429e28f37e9ec16e4",
         "latency_ms": 2410,
         "result_hash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
         "row_count": 3,
-        "worker_id": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+        "worker_id": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
       }
     },
     "verdicts": [
@@ -1824,724 +1852,724 @@
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
-      "latencyMs": 23,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
+      "latencyMs": 22,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-      "sig": "ed25519:7425bf35…9a0f",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:70714eed…f001",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
       "latencyMs": 112,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-      "sig": "ed25519:09c5df78…300f",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:e8e9fa21…8c0d",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
       "latencyMs": 47,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-      "sig": "ed25519:010945ba…b70e",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:a33b8928…9504",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
     },
     {
       "fault": "provider",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
       "latencyMs": 20,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "1bf229cf6cb8bc342a6062476e73c55e2ecaffcc5865228b2c4e467a01cf4325",
-      "sig": "ed25519:c2560655…c105",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:89aebd80…550c",
+      "tsMs": 1781614129000,
       "verdict": "Incorrect",
       "verified": true,
       "workerAlias": "rust-shrike",
-      "workerId": "b3:0fdfccb0b14ee5434f6dbfe9761fc18858ac79a3ce194a5dc3ca8d896cbc07d7"
+      "workerId": "b3:6bc06c0771ab571f78adbc12c8101a8ad4391de41a7d79669feffc96b791fb0a"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
       "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "790adc4ba2024c23468b925c9725856aac0164822cf7c06b961b8384adae62d1",
-      "sig": "ed25519:15ea5268…4b0f",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:c199026a…7d0a",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "a15097d89d560d8b8391069f5151fc09",
+      "jobId": "ec8fa36d4dd5ea74899137836e3e7041",
       "latencyMs": 0,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
       "resultHash": "—",
-      "sig": "ed25519:ec1af605…cb00",
-      "tsMs": 1781511735000,
+      "sig": "ed25519:b195c004…c900",
+      "tsMs": 1781614129000,
       "verdict": "Inconclusive",
       "verified": true,
       "workerAlias": "cobalt-stoat",
-      "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
+      "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 24,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-      "sig": "ed25519:bac820cf…ad07",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 61,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-      "sig": "ed25519:4816d27c…8c07",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-      "sig": "ed25519:b37419dc…7002",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 40,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-      "sig": "ed25519:1deae4f0…6804",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 50,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
-      "sig": "ed25519:751a94d3…b70f",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "524b2f57459317bb1518a230020b163d",
-      "latencyMs": 0,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "—",
-      "sig": "ed25519:2c8369e3…fc02",
-      "tsMs": 1781511735000,
-      "verdict": "Inconclusive",
-      "verified": true,
-      "workerAlias": "cobalt-stoat",
-      "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
       "latencyMs": 23,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-      "sig": "ed25519:a288c8ac…bb0e",
-      "tsMs": 1781511735000,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:87dd7086…6602",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
-      "latencyMs": 61,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-      "sig": "ed25519:0a2078f6…3c02",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
-      "latencyMs": 47,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-      "sig": "ed25519:14ef02de…610c",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
-      "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-      "sig": "ed25519:7c74cc51…b70f",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
-      "latencyMs": 30,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
-      "sig": "ed25519:d1fa4ca5…1401",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "f178cf01e3ff5a3fb64f7d1b3cf9baf7",
-      "latencyMs": 0,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "—",
-      "sig": "ed25519:a9545173…b009",
-      "tsMs": 1781511735000,
-      "verdict": "Inconclusive",
-      "verified": true,
-      "workerAlias": "cobalt-stoat",
-      "workerId": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 14,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:6f992a77…150c",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "frost-owl",
-      "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:909c4f34…110c",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:8e8dcf28…8d04",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 46,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:9ac30f70…460e",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 24,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:4718aac9…5f06",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "ebc0e8510b912afd3c70e93226782649",
-      "latencyMs": 61,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
-      "sig": "ed25519:018b5429…6c0f",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 13,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:28c21b80…c701",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "frost-owl",
-      "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 47,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:afcf4d5a…b009",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 23,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:903575b7…e205",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 112,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:9ea0cc46…f804",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:d1ede661…e803",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "1cf864684406c9166cff79a0fdde1c30",
-      "latencyMs": 61,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
-      "sig": "ed25519:b1957477…6a09",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 13,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:75f16537…fd0e",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "frost-owl",
-      "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:52336f82…6a02",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:1b7c0dd5…2109",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 46,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:0cbe274d…640a",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 22,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:90d62b30…6d0d",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "5e69bee59a73842ad942b8260b1106f9",
-      "latencyMs": 60,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
-      "sig": "ed25519:73581d92…7c00",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
-      "latencyMs": 13,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:c644776f…cf0b",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "frost-owl",
-      "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
-      "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:c32bd895…2c0d",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
-      "latencyMs": 22,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:e1f343eb…7c07",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
-      "latencyMs": 46,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:343d8a3b…9b0c",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
-      "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:bf6a9c72…060e",
-      "tsMs": 1781511735000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "b8e4a151d434a4df9bb9ca25ed9b2135",
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
       "latencyMs": 62,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
-      "sig": "ed25519:7dcbec1f…c901",
-      "tsMs": 1781511735000,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:ad5e12a0…f10d",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
-      "latencyMs": 13,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:891fca7a…8001",
-      "tsMs": 1781511736000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "frost-owl",
-      "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
-      "latencyMs": 31,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:8e6e0311…0f0c",
-      "tsMs": 1781511736000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "tidal-fox",
-      "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
-      "latencyMs": 22,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:847f257b…6d00",
-      "tsMs": 1781511736000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "harbor-vole",
-      "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
-      "latencyMs": 46,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:219ece82…e701",
-      "tsMs": 1781511736000,
-      "verdict": "Correct",
-      "verified": true,
-      "workerAlias": "amber-mole",
-      "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
-    },
-    {
-      "fault": "neutral",
-      "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
       "latencyMs": 111,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:7c864b33…100a",
-      "tsMs": 1781511736000,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:5abf9ca8…400e",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "slate-heron",
-      "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
     },
     {
       "fault": "neutral",
       "gossiped": true,
-      "jobId": "bd169906d0fa571c338086c02ed05035",
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
+      "latencyMs": 30,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:92e9811b…4404",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "4ebf7f496edac530c27bae94e516a4c2d7f8f8903815666dbc2a24d6f5e55f06",
+      "sig": "ed25519:55e9a6e5…7b04",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2fa9c8af976b831d6510d76d00bcfd6e",
+      "latencyMs": 0,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "—",
+      "sig": "ed25519:b6efefe8…780a",
+      "tsMs": 1781614129000,
+      "verdict": "Inconclusive",
+      "verified": true,
+      "workerAlias": "cobalt-stoat",
+      "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
+      "latencyMs": 22,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:631945c1…a70a",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
       "latencyMs": 61,
-      "requesterId": "b3:7ae90f9a37977dce1798c69bcf4efab62548e89ac73921fe43d18a6d559dea09",
-      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
-      "sig": "ed25519:15231f74…b60a",
-      "tsMs": 1781511736000,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:6480f1d0…cb08",
+      "tsMs": 1781614129000,
       "verdict": "Correct",
       "verified": true,
       "workerAlias": "pine-marten",
-      "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
+      "latencyMs": 47,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:f671b30c…b107",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
+      "latencyMs": 111,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:82759894…a402",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "8d588e8ecb4cee125e9ea8001f28dd18e9ebb17c4e11396c14d3323892e873a7",
+      "sig": "ed25519:550d0bae…060a",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "2756ed6e0c9b2793574aa38fe109e5a0",
+      "latencyMs": 0,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "—",
+      "sig": "ed25519:03783888…4806",
+      "tsMs": 1781614129000,
+      "verdict": "Inconclusive",
+      "verified": true,
+      "workerAlias": "cobalt-stoat",
+      "workerId": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 13,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:a1bfc14a…7d0d",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:e9a0fd79…a60e",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 110,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:69566a92…3b0e",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:4ba9f64c…cb04",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 22,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:e53abbd0…d10d",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6c4816e39a0aa805e826c2bb20de1950",
+      "latencyMs": 61,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "165e4f8db1045f0f74dd88bcf288bfa63338944832f85fa8516b2ee3383e07b3",
+      "sig": "ed25519:e07ac7fd…b401",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 13,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:b006a68e…5a0c",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:ff3046da…8808",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 22,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:bec361bc…4005",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 110,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:5c99298e…1501",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:af76d2ed…7e09",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "08dce84849b76b2b56af33ddfab9ac63",
+      "latencyMs": 62,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "23b2c94b89ae50d5ff8d6b899a1f7ac4df3acbeccb97673a559dd55f6068b739",
+      "sig": "ed25519:2b221527…0705",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 13,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:b9a3305f…2200",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:5eefbe1c…9d0c",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 111,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:69b2d4e1…7207",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:5fa19c6d…7501",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 22,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:651dd5df…360c",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "74e9b1d812725ca58cb56bb9b9ab12c3",
+      "latencyMs": 60,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "bdd8a222237f47df9504687dfe9da3d00f4cfc9969ccd9c5f08d9f5b7b06313d",
+      "sig": "ed25519:dd5a9271…2c08",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 12,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:571d285b…7208",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:fedcd1a9…160c",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 23,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:43cd4f8f…f705",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:30e77f14…8b00",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 110,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:228f1652…780d",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "83428378dbb2fa5a2835ebb2d263c4a8",
+      "latencyMs": 61,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "5a2a1d2a26bd421148f3c4a26c2c876eb49e8f81d874897bb58e0665b5d5c506",
+      "sig": "ed25519:ce6eeb78…f20c",
+      "tsMs": 1781614129000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 12,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:7a687752…5f0a",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "frost-owl",
+      "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 31,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:9a9a870d…490f",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "tidal-fox",
+      "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 24,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:22a4d389…0c0e",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "harbor-vole",
+      "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 46,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:ff55aa1e…0908",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "amber-mole",
+      "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 110,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:972ea1db…0502",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "slate-heron",
+      "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
+    },
+    {
+      "fault": "neutral",
+      "gossiped": true,
+      "jobId": "6ece584c12f28c2433bde11965a2169f",
+      "latencyMs": 61,
+      "requesterId": "b3:8adc7759d6081b570f88ee6d2e942060a7a2e340557aa56394c12fe158858193",
+      "resultHash": "b9f1bbc801c59a8f9e470f65210d44087a68ba238eb7cea22df17fc28b8b8f68",
+      "sig": "ed25519:d4bdc9b2…c10d",
+      "tsMs": 1781614130000,
+      "verdict": "Correct",
+      "verified": true,
+      "workerAlias": "pine-marten",
+      "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
     }
   ],
   "settlement": {
     "anchorRecords": 3,
     "binding": {
-      "expiry": 1784103738,
-      "nodeId": "b3:5ffdcf43ba5a9b3c4ce88dde658267b4fda999af7a8a73a154c7ef84fa60fb90",
+      "expiry": 1784206132,
+      "nodeId": "b3:d794723719aea09edb558b7f7797fa3b6c191295ea0aa50d2fe8fa4a5c4ec8c9",
       "nonceHex": "636f6e736f6c652d6e6f6e63652d3031",
-      "sigNodeHex": "7cbd026938754abc…",
+      "sigNodeHex": "d997b11ab3b50f48…",
       "tonProof": {
         "domain": "duckdb-p2p",
-        "payloadHex": "62333a3566666463…",
-        "signatureHex": "1444faa3579641a5…",
-        "timestamp": 1781511738
+        "payloadHex": "62333a6437393437…",
+        "signatureHex": "b9dfde46d6a7bfbd…",
+        "timestamp": 1781614132
       },
       "verified": true,
-      "walletAddress": "0:bbeca56816c9b2f3392197525d5a674d4f3fe1e35abf492c24fb6c12042be5c7"
+      "walletAddress": "0:456c892a1a2a2686dcca63511617d222d5a141987dd41ebee328d62c81cedf38"
     },
     "enabled": true,
-    "epochRootHex": "10309467cee24a36bfeb6f542965289268dcd05b1dc5dfcf2d6cb999172a14c7",
+    "epochRootHex": "4d8316e1f022e2c88f829f11c2a044bacabee7100ae383acbe40ebb1c3df2f85",
     "escrowMaxBidTon": 100,
     "events": [
       {
-        "job": "f1af72251d6b6a8e7b66bc86cd4f6824",
-        "maxBidTon": 100,
+        "job": "2baba3a2972472057712bc631f305b12",
+        "maxBidTon": 100.0,
         "type": "Opened"
       },
       {
-        "job": "f1af72251d6b6a8e7b66bc86cd4f6824",
-        "totalTon": 100,
+        "job": "2baba3a2972472057712bc631f305b12",
+        "totalTon": 100.0,
         "type": "Settled"
       },
       {
-        "job": "b68f2d77764860a7b22dc28dd41e8988",
-        "maxBidTon": 100,
+        "job": "3c5a7f3ae64316ccf1f731fcaafb0434",
+        "maxBidTon": 100.0,
         "type": "Opened"
       },
       {
-        "job": "b68f2d77764860a7b22dc28dd41e8988",
-        "totalTon": 100,
+        "job": "3c5a7f3ae64316ccf1f731fcaafb0434",
+        "totalTon": 100.0,
         "type": "Settled"
       },
       {
-        "job": "30ddfebc3e87e9f43ca35faa5181eac2",
-        "maxBidTon": 100,
+        "job": "865f97e2c2ebcd2298f2f14c3ca8d350",
+        "maxBidTon": 100.0,
         "type": "Opened"
       },
       {
-        "job": "30ddfebc3e87e9f43ca35faa5181eac2",
-        "totalTon": 100,
+        "job": "865f97e2c2ebcd2298f2f14c3ca8d350",
+        "totalTon": 100.0,
         "type": "Settled"
       }
     ],
@@ -2554,14 +2582,14 @@
       "verificationSurchargePct": 0.05
     },
     "inclusionProof": {
-      "leafHex": "ad6dc9fc80b6642b472a9ffb3a67025aae1155b55c67c31adc58115971e8221d",
+      "leafHex": "19ec4d7b104ec44b555fd9c9725a2da0806b678898ffbb1156864805266579ed",
       "siblings": [
         {
-          "hashHex": "65d0aa39516152b47d0aad7c181ba86f6a7da7db94a59261cc8377814e462971",
+          "hashHex": "ff5523aaf2ede94fe1b7af8f71047bc51884c521349d0f79cbe91079ab17a3f2",
           "right": false
         },
         {
-          "hashHex": "43e8f78bcc5f2e0c15965e76ff54c3ac1f12ad7da1da8042f509c3c71f0cb356",
+          "hashHex": "10c46a5ff4556be696d5f2e972bca7ef953cfb61390f6eb5c9be42d233529907",
           "right": false
         }
       ],
@@ -2575,11 +2603,11 @@
         "latencyMs": 240,
         "successRatio": 0.98
       },
-      "throughputScore": 1
+      "throughputScore": 1.0
     },
     "slashing": {
       "challengeWindowSecs": 86400,
-      "cheatPct": 1,
+      "cheatPct": 1.0,
       "downtimePct": 0.02,
       "equivocationPct": 0.5,
       "failedCommitmentPct": 0.1,
@@ -2593,62 +2621,62 @@
       {
         "participants": [
           {
-            "amountTon": 2,
-            "wallet": "0:619e3d5ad3f8"
+            "amountTon": 2.0,
+            "wallet": "0:bc0b04832c53"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:1a124f7ca2ad"
+            "amountTon": 2.0,
+            "wallet": "0:0730587e21b0"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:b897b81a5c3c"
+            "amountTon": 2.0,
+            "wallet": "0:07285182483f"
           }
         ],
-        "platformFeeTon": 2,
+        "platformFeeTon": 2.0,
         "resultHashHex": "1196c1a032643b28a156bbe590b6c184d314ca5671f1870bafea6644b7119222",
-        "totalTon": 100,
-        "winnerTon": 92
+        "totalTon": 100.0,
+        "winnerTon": 92.0
       },
       {
         "participants": [
           {
-            "amountTon": 2,
-            "wallet": "0:619e3d5ad3f8"
+            "amountTon": 2.0,
+            "wallet": "0:bc0b04832c53"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:1a124f7ca2ad"
+            "amountTon": 2.0,
+            "wallet": "0:0730587e21b0"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:b897b81a5c3c"
+            "amountTon": 2.0,
+            "wallet": "0:07285182483f"
           }
         ],
-        "platformFeeTon": 2,
+        "platformFeeTon": 2.0,
         "resultHashHex": "dfa6341ff75044e03ea5f81f4e9a78ee6b11719120a81d64316baaf53391d7c8",
-        "totalTon": 100,
-        "winnerTon": 92
+        "totalTon": 100.0,
+        "winnerTon": 92.0
       },
       {
         "participants": [
           {
-            "amountTon": 2,
-            "wallet": "0:619e3d5ad3f8"
+            "amountTon": 2.0,
+            "wallet": "0:bc0b04832c53"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:1a124f7ca2ad"
+            "amountTon": 2.0,
+            "wallet": "0:0730587e21b0"
           },
           {
-            "amountTon": 2,
-            "wallet": "0:b897b81a5c3c"
+            "amountTon": 2.0,
+            "wallet": "0:07285182483f"
           }
         ],
-        "platformFeeTon": 2,
+        "platformFeeTon": 2.0,
         "resultHashHex": "2caaa786554b04fee2eb229ab298764cdcfe3bbd2cb58ece70d46c290a4829be",
-        "totalTon": 100,
-        "winnerTon": 92
+        "totalTon": 100.0,
+        "winnerTon": 92.0
       }
     ],
     "stake": {
@@ -2662,7 +2690,7 @@
     },
     "stakeCurve": [
       {
-        "factor": 0,
+        "factor": 0.0,
         "stakeTon": 0
       },
       {
@@ -2698,7 +2726,7 @@
         "stakeTon": 50000
       },
       {
-        "factor": 1,
+        "factor": 1.0,
         "stakeTon": 100000
       }
     ],
@@ -2710,8 +2738,8 @@
         "eligibleSensitive": true,
         "stakeFactor": 0.7246699068704621,
         "stakeTon": 4200,
-        "wallet": "0:ca8203c3d8756e5fd5e656363581493f74a95c4539f969a575d65a63c9ab85ae",
-        "workerId": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65"
+        "wallet": "0:04b3116724a6e23c419484904bb94b1776aac39a7e520c0bb5be23ee39103daf",
+        "workerId": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90"
       },
       {
         "alias": "harbor-vole",
@@ -2720,8 +2748,8 @@
         "eligibleSensitive": true,
         "stakeFactor": 0.6830274771720122,
         "stakeTon": 2600,
-        "wallet": "0:1a124f7ca2ade1cdfe2d8623e241c72d03bb84d80e55ae4d3a6a2b74edc3f9e8",
-        "workerId": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b"
+        "wallet": "0:0730587e21b0e094df692fd041e9f4297b8d9db617a10d651b4ad15be9f7a4d8",
+        "workerId": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09"
       },
       {
         "alias": "tidal-fox",
@@ -2730,8 +2758,8 @@
         "eligibleSensitive": true,
         "stakeFactor": 0.6352755866580494,
         "stakeTon": 1500,
-        "wallet": "0:b897b81a5c3c36bf5e086b6b3682a894fbc1832c464615ae1f893be50076cbb4",
-        "workerId": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44"
+        "wallet": "0:07285182483f839833e59b24dc17f892a309ec2708f8237e186b8fabf162591c",
+        "workerId": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b"
       },
       {
         "alias": "amber-mole",
@@ -2740,8 +2768,8 @@
         "eligibleSensitive": false,
         "stakeFactor": 0.580725998807176,
         "stakeTon": 800,
-        "wallet": "0:619e3d5ad3f822568416619ead0158b93e924f23d6501be79f5ad84b2d69d6f2",
-        "workerId": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff"
+        "wallet": "0:bc0b04832c538ff3389a298300ca62c55e06df188ed7f8808281b4deadcec2cc",
+        "workerId": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee"
       },
       {
         "alias": "pine-marten",
@@ -2750,8 +2778,8 @@
         "eligibleSensitive": false,
         "stakeFactor": 0.49571286855019464,
         "stakeTon": 300,
-        "wallet": "0:9e0cf2ed9559143b1fbfb070fc333d9faca0faceb5da57c4819425cf39ac3577",
-        "workerId": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85"
+        "wallet": "0:61b7c75a285db96bec837bea62104bc44d54c3a1bdc2a473aa976b968fab7f94",
+        "workerId": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d"
       },
       {
         "alias": "slate-heron",
@@ -2760,22 +2788,22 @@
         "eligibleSensitive": false,
         "stakeFactor": 0.416556712248536,
         "stakeTon": 120,
-        "wallet": "0:8cd57d0aff5fc60354e436fb62aead7396b748098db3f71648a208b4eda7953b",
-        "workerId": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a"
+        "wallet": "0:0c6e583e94743c1dd87e09c494d41f176e3c6d4f81df2c346be3b6e76d157dfa",
+        "workerId": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227"
       }
     ]
   },
   "ton": {
     "computed": {
       "escrow": {
-        "address": "0:c53b44dffd113c6d7a5672231a2762d12acd5ed102cca1e5eb7c29e902d3bb53",
-        "candidatesHashHex": "328b9cbe572872491c29b7983d9285de1b65b71ae53e78dc14e8f2d504935516",
+        "address": "0:cc11696fd04d1318fcac6d0bdff5798c5d1ede917939376272b8ec59a16b7ab0",
+        "candidatesHashHex": "0ebab5d5697eb1aea0b1d03899d15cfff889f9d745b8dfc2adecfb51d9a543cc",
         "codeHash": "28f676708b3b16d39c5a5c926b3cda39d95c4c357ce7e783220bbff98c6fe001",
         "deterministic": "address = hash(StateInit{code, data}); data binds requester+arbiter+B+deadline+^terms (terms bind expectedHash+candidatesHash+paramsVersion)",
         "escrowTon": 100,
         "expectedHashHex": "1196c1a032643b28a156bbe590b6c184d314ca5671f1870bafea6644b7119222",
         "paramsVersion": 1,
-        "termsCellHash": "b1450d7d88f06cf349acc84d3bf36d2df266c7a215387af71747ac08ba4eed84"
+        "termsCellHash": "7a3018b6a44f2e3b60962ec2e7ca6ae156afd22dfa736678043b9f98c7513754"
       },
       "globalParams": {
         "attemptDeadlineMs": 60000,
@@ -2814,8 +2842,8 @@
       "messages": [
         {
           "bits": 701,
-          "bocBase64": "te6cckECDQEAAYEAAq9FU0MCAAAAAAAAAAERlsGgMmQ7KKFWu+WQtsGE0xTKVnHxhwuv6mZEtxGSIoAZUEB4ew6ty/q8ysbGsCkn7pUriKc/LTSuustMeTVwtcoq10EwAI7msoAcCAECBYFwAgUCAgEgBAMAQ7+KggPD2HVuX9XmVjY1gUk/dKlcRTn5aaV11lpjyauFrsAAQ7+4l7gaXDw2v14Ia2s2gqiU+8GDLEZGFa4fiTvlAHbLtMACASAHBgBDv6GePVrT+CJWhBZhnq0BWLk+kk8j1lAb559a2EstadbywABDv5oST3yireHN/i2GI+JBxy0Du4TYDlWuTTpqK3Ttw/nowAIFgXACCgkAS7/cS9wNLh4bX68ENbWbQVRKfeDBliMjCtcPxJ3ygDtl2iO5rKAEAgEgDAsAS7+hnj1a0/giVoQWYZ6tAVi5PpJPI9ZQG+efWthLLWnW8kdzWUAIAEu/mhJPfKKt4c3+LYYj4kHHLQO7hNgOVa5NOmordO3D+ehHc1lACOokIFQ=",
-          "cellHash": "cf7afb1a1ddf871282886709d8a091f68ed709c39ea7f9a86cb621b9dfc1367a",
+          "bocBase64": "te6cckECDQEAAX4AAq9FU0MCAAAAAAAAAAERlsGgMmQ7KKFWu+WQtsGE0xTKVnHxhwuv6mZEtxGSIoAAlmIs5JTcR4gykJIJdyli7tVYc0/KQYF2t8R9xyIHteoq10EwAI7msoAcCAECBYFwAgMCAEO/3gWCQZYpx/mcTRTBgGUxYq8Db4xHa/xAQUDab1bnYWZgAgN8GAcEAgN6YAYFAD+9AWH4hsOCU32kv0EHp9Cl7jZ22F6ENZRtK0Vvp96TYwA/vSFGCSD+DmDPlmyTcF/iSownsJwj4I34Ya4+r8WJZHMAQb5WYizklNxHiDKQkgl3KWLu1VhzT8pBgXa3xH3HIge1+AIFgXACCgkAS7/eBYJBlinH+ZxNFMGAZTFirwNvjEdr/EBBQNpvVudhZiO5rKAEAgWCg5gMCwBJvQFh+IbDglN9pL9BB6fQpe42dthehDWUbStFb6fek2EdzWUAIABJvSFGCSD+DmDPlmyTcF/iSownsJwj4I34Ya4+r8WJZHEdzWUAIK0m7TQ=",
+          "cellHash": "2ec84868837f2cf89ef166eec0b75cdfbf311248037bf8d1b5b056b0660e80dc",
           "label": "EscrowSettle (HTLC release)",
           "opcode": 1163084546,
           "opcodeHex": "0x45534302"
@@ -2830,8 +2858,8 @@
         },
         {
           "bits": 644,
-          "bocBase64": "te6cckEBAQEAUwAAoUFOQwEAAAAAAAAAAQAAAAEQMJRnzuJKNr/rb1QpZSiSaNzQWx3F388tbLmZFyoUxwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACONZADA=",
-          "cellHash": "599b573ae838eb4fb81cd420a9411e4fdba606adbc6c0744e4b19572d35d7760",
+          "bocBase64": "te6cckEBAQEAUwAAoUFOQwEAAAAAAAAAAQAAAAFNgxbh8CLiyI+CnxHCoES6yr7nEArjg6y+QOuxw98vhQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAJyLfY=",
+          "cellHash": "75d09c6dbbf970382d145356bdff99b5c8f07438881202b426c838fda3809944",
           "label": "AnchorSubmit (epoch 1 root)",
           "opcode": 1095648001,
           "opcodeHex": "0x414e4301"
@@ -2930,722 +2958,6 @@
           }
         ]
       }
-    },
-    "toolchain": "Acton 1.1.0 (Rust TON toolkit · Tolk + @stdlib/@acton)",
-    "network": "testnet",
-    "rpc": "https://testnet.toncenter.com/api/v2/",
-    "wallet": "kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
-    "resultHash": "0x9f93e7246ff86674ca1078133e3973f7194df96d7c0c41553ae8218676813349",
-    "bindingHash": "0xf064374e3068c80d08607859327d0aeeac6ae7fe16476590c4db866b68fea9eb",
-    "contracts": [
-      {
-        "name": "StakeVault",
-        "role": "Per-node non-custodial bond contract (one vault per operator) and the jetton master of the node's transfer-locked Duckton stake receipt. Deposit, unbonding cooldown, graduated slashing, keeper withdrawal — all governed by code, no human key.",
-        "doc": "§8 · §8.5 · §8.6",
-        "upgradeable": "timelocked SETCODE (announce → apply ≥ unbonding window)",
-        "storage": [
-          [
-            "owner",
-            "address",
-            "node operator wallet"
-          ],
-          [
-            "staked",
-            "coins",
-            "currently bonded"
-          ],
-          [
-            "unbondingAmount",
-            "coins",
-            "in cooldown (still slashable)"
-          ],
-          [
-            "unbondingAt",
-            "uint32",
-            "cooldown start ts (0 = none)"
-          ],
-          [
-            "totalSupply",
-            "coins",
-            "receipts outstanding (== staked + unbonding)"
-          ],
-          [
-            "bindingHash",
-            "uint256",
-            "wallet↔node identity binding (§3.2)"
-          ],
-          [
-            "config",
-            "^VaultConfig",
-            "minStake, windows, slasher, slash split"
-          ],
-          [
-            "upgrade",
-            "^VaultUpgradeState",
-            "codeVersion, pendingCodeHash, pendingAt"
-          ]
-        ],
-        "getMethods": [
-          [
-            "get_vault_state",
-            "{ staked, unbondingAmount, unbondingAt, totalSupply, eligible }"
-          ],
-          [
-            "get_pending_upgrade",
-            "{ codeVersion, pendingCodeHash, pendingAt, readyAt }"
-          ],
-          [
-            "get_code_version",
-            "int (0 = original)"
-          ],
-          [
-            "get_jetton_data",
-            "TEP-74 master data (Duckton)"
-          ],
-          [
-            "get_wallet_address(owner)",
-            "deterministic receipt-wallet address"
-          ],
-          [
-            "is_eligible",
-            "bool"
-          ]
-        ],
-        "guards": [
-          "slash only by config.slasher; bounded by staked + unbondingAmount",
-          "withdraw blocked until now ≥ unbondingAt + unbondingPeriod",
-          "slash split must sum to 10000 bps; burn share locked forever",
-          "upgrade two-step + timelocked + commit-reveal (hash must match)"
-        ],
-        "testnetAddress": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
-        "codeHash": "2630657e91e482b536e0c6dcd0d61bca06180ad6260158069910c8d94839c707",
-        "bocBytes": 3708,
-        "codeBoc64": "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",
-        "verify": {
-          "codeHash": "fec61f627fc1a854cc249f9dd1a36615733162990b30d4bc409f387838d1cb24",
-          "url": null,
-          "verified": false,
-          "alreadyVerified": false,
-          "failed": true
-        },
-        "opcodes": [
-          {
-            "hex": "0x534b4b01",
-            "name": "OP_STAKE_DEPOSIT",
-            "value": 1397443329,
-            "desc": "owner bonds stake; mints 1:1 transfer-locked receipt jetton"
-          },
-          {
-            "hex": "0x534b4b02",
-            "name": "OP_STAKE_UNBOND",
-            "value": 1397443330,
-            "desc": "begin cooldown; stake stays slashable during unbonding"
-          },
-          {
-            "hex": "0x534b4b03",
-            "name": "OP_STAKE_WITHDRAW",
-            "value": 1397443331,
-            "desc": "withdraw after cooldown; burns receipts"
-          },
-          {
-            "hex": "0x534b4b05",
-            "name": "OP_STAKE_SLASH",
-            "value": 1397443333,
-            "desc": "slasher-only; graduated slash + split (challenger/redundancy/burn/treasury)"
-          },
-          {
-            "hex": "0x534b4b07",
-            "name": "OP_STAKE_ANNOUNCE_UPGRADE",
-            "value": 1397443335,
-            "desc": "start timelocked SETCODE (records pending code hash + clock)"
-          },
-          {
-            "hex": "0x534b4b08",
-            "name": "OP_STAKE_APPLY_UPGRADE",
-            "value": 1397443336,
-            "desc": "apply SETCODE after timelock; code hash must match announced"
-          },
-          {
-            "hex": "0x534b4b09",
-            "name": "OP_STAKE_CANCEL_UPGRADE",
-            "value": 1397443337,
-            "desc": "cancel a pending upgrade"
-          }
-        ]
-      },
-      {
-        "name": "StakeReceiptWallet",
-        "role": "Per-holder TEP-74-shaped but NON-transferable stake-receipt jetton (Duckton). A slashable accountability bond, not a liquid position — outgoing transfers are hard-locked for the whole bond lifetime so a host can't sell it and dodge slashing.",
-        "doc": "§8.5",
-        "upgradeable": "no (minimal surface; holds no TON, no admin)",
-        "storage": [
-          [
-            "status",
-            "uint4",
-            "bit 0 = transfers locked (always set)"
-          ],
-          [
-            "balance",
-            "coins",
-            "1:1 with bonded TON"
-          ],
-          [
-            "owner",
-            "address",
-            "node operator"
-          ],
-          [
-            "master",
-            "address",
-            "the minting StakeVault"
-          ]
-        ],
-        "getMethods": [
-          [
-            "get_wallet_data",
-            "TEP-74 { balance, owner, minter, code }"
-          ],
-          [
-            "is_transfer_locked",
-            "bool (always true)"
-          ],
-          [
-            "get_status",
-            "int"
-          ]
-        ],
-        "guards": [
-          "JettonTransfer (0x0f8a7ea5) always throws RECEIPT_LOCKED (138)",
-          "only master may credit (mint) or burn; balance never negative"
-        ],
-        "testnetAddress": null,
-        "codeHash": "13a38522adbbb9681bf630d186efbddb590025b992a562c7e66514472aaf1871",
-        "bocBytes": 420,
-        "codeBoc64": "te6ccgECDAEAAS4AART/APSkE/S88sgLAQIBYgIDAfjQ+JGRMOAg1ywgvGoozI5fMe1E0NYD+gAg+kj6SDD4kiHHBfLghQXTP/oA+kgx+kgx+gBRYqAHyM5QB/oCFM7J7VQkwgCOJMjPkc2LQnLLP1j6AhT6Us7JyM+FCBP6UgH6AnHPC2rMyXH7AJJfBuLg1ywgfFP1LJPywIrgBAIBIAYHAYyJ1yeOLjHtRNDWA/oAIPpIMfpIMPiSxwXy4IUD0z8x+gAwoSDC//LgiAHIzgH6As7J7VTg1ywimlpYBDGRMOCEDwHHAPL0BQAIU0tLBgIBIAgJAgFICgsAHbuaXtRNDTAzH6ADH6SDCAAju7Au1E0NMDMfoA+kj6SDD4KoABG1Qj2omhrhYHAAGbawHaiaGuFgbjYYADA=",
-        "verify": null,
-        "opcodes": []
-      },
-      {
-        "name": "JobEscrow",
-        "role": "Per-job non-custodial escrow with HTLC-style release keyed on the quorum result hash. Requester locks max bid B at deploy; settle is gated on the agreed hash and bounded by B (remainder refunded); refund-on-timeout returns everything. No platform key can take custody.",
-        "doc": "§4.2 · §6.2 · §13",
-        "upgradeable": "no — a live HTLC's guarantees can't be rewritten mid-flight",
-        "storage": [
-          [
-            "requester",
-            "address",
-            "funds B, receives refunds"
-          ],
-          [
-            "arbiter",
-            "address",
-            "quorum oracle/coordinator authorized to settle"
-          ],
-          [
-            "escrowAmount",
-            "coins",
-            "B, locked up front"
-          ],
-          [
-            "deadline",
-            "uint32",
-            "refund-on-timeout (unix secs)"
-          ],
-          [
-            "settled",
-            "bool",
-            "one-shot"
-          ],
-          [
-            "terms",
-            "^EscrowTerms",
-            "treasury, expectedHash (HTLC lock), paramsVersion"
-          ]
-        ],
-        "getMethods": [
-          [
-            "get_escrow_state",
-            "{ escrowAmount, deadline, settled, paramsVersion }"
-          ],
-          [
-            "get_expected_hash",
-            "int (the HTLC lock = quorum result hash)"
-          ],
-          [
-            "get_params_version",
-            "int"
-          ],
-          [
-            "get_requester",
-            "address"
-          ]
-        ],
-        "guards": [
-          "settle: arbiter-only, once, resultHash == terms.expectedHash",
-          "winnerAmount + platformFee + Σparticipants ≤ escrowAmount",
-          "refund: permissionless once now ≥ deadline → entire balance to requester"
-        ],
-        "testnetAddress": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
-        "codeHash": "28f676708b3b16d39c5a5c926b3cda39d95c4c357ce7e783220bbff98c6fe001",
-        "bocBytes": 1148,
-        "codeBoc64": "te6ccgECFgEAA1EAART/APSkE/S88sgLAQIBYgIDBPbQ+JGOUdMfMdcLH4IQRVNDBbqOQe1E0PpI+kj6ANYg1PQF+JIhgQEL9ApvoZP6ANGSMHDi+JL4lxKgyAH6AgKBAQv0QQXI+lIU+lJY+gLOzPQAye1U4OAg1ywiKpoYFOMC1ywiKpoYHOMC1ywiKpoYJOMC1ywiKpoYBDEEBQYHAgEgDA0C/DHtRND6SPpI+gDWH9IAINdM+JImxwXy4N4C8tDgAdD6SNP/0//THzHRCNM/0//6SPoA+gD0BPQFUFe68uDfJcj0APkWUA268uEZUxnHBfLRGFMUgQEL9ApvoTHy4RlwUwOBAQv0gm+lkIroXwM1UwugUAWgKLvy4OIpyPpSGQgJAHZb7UTQ+kj6SPoA0x/SAAHy0OD4IyK+8uDhJMj6UhT6Ulj6Assfz4POye1UyM+FCPpScM8LbsmBAIL7AAC6Me1E0AHTP/pIMAL6SPpI+gDWINT0BVNwgQEL9Ary4OL6ANEgwgDy4OJSgoEBC/RZMAbI+lIV+lJQA/oCzswS9ADJ7VTIz4WIE/pSWPoCghBFU0MFzwuKyz/JcfsAABSRMOCEDwHHAPL0AEwCpCDBIfLhGlMogQEL9ApvoTHy4RkB+gDRE6BRFYEBC/R0b6UQNAL++lJQB/oCFc7PgxPOye1Uggr68IBw+wIhwgCOG8jPhYgV+lIB+gKCEEVTQwXPC4ohzws/yXH7AJI0MOIkwgCOHMjPhYgT+lJQBPoCghBFU0MFzwuKIc8LP8lx+wCSMjPiIoEBC/SCb6WQiuhbMsjPhYj6UoIQRVNDBc8Ljss/yQoLAGJSAvoA0SDCAI4byM+FiBP6Ulj6AoIQRVNDBc8LiiLPCz/JcfsAkjAx4iOBAQv0dG+lAAiDBvsAAgFIDg8CAUgQEQAptnsdqJoa6ZofSQY6f/p/5jpj5jowACm2Gd2omhrpmh9JBjp/5jp/5jpj+jACASASEwAptD29qJoa6ZofSQY6f+Y6f/pj5jowAgFmFBUAQbKdO1E0PpIMfpIMfoA0x/SANdM0PpIMdP/MdP/MdMf0YAAPp73aiaH0kGEARaat2omh9JBj9JBj9ABjpkBjqGPoCwICF+gU30MkYOHD9AGj",
-        "verify": {
-          "codeHash": "60c9f21aa3146cfa0a77b28098865118080b67f9cdf700f7c5dedc984bd77e71",
-          "url": "https://verifier.ton.org/0QAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjjV9?testnet",
-          "verified": true,
-          "alreadyVerified": true,
-          "failed": false
-        },
-        "opcodes": [
-          {
-            "hex": "0x45534300",
-            "name": "OP_ESCROW_TOPUP",
-            "value": 1163084544,
-            "desc": "fund a freshly-deployed escrow"
-          },
-          {
-            "hex": "0x45534302",
-            "name": "OP_ESCROW_SETTLE",
-            "value": 1163084546,
-            "desc": "arbiter-only HTLC release keyed on quorum result hash; ≤ escrow B"
-          },
-          {
-            "hex": "0x45534303",
-            "name": "OP_ESCROW_REFUND",
-            "value": 1163084547,
-            "desc": "permissionless refund-on-timeout (entire balance → requester)"
-          }
-        ]
-      },
-      {
-        "name": "RecordAnchor",
-        "role": "Per-epoch Merkle-root anchor + dispute contract. Permissionless keepers anchor a per-epoch root chained to the previous one, gated by a stake-weighted threshold. Anyone can open a bonded dispute with an inclusion proof; an authority resolves it (upheld → bond returned + slash on the vault; rejected → bond forfeited).",
-        "doc": "§7 · §7.2 · §11",
-        "upgradeable": "authority-gated SETCODE (no timelock; only bonds + chain)",
-        "storage": [
-          [
-            "currentEpoch",
-            "uint32",
-            "last anchored epoch (0 = none)"
-          ],
-          [
-            "lastRoot",
-            "uint256",
-            "prev_root for the next epoch (chains history)"
-          ],
-          [
-            "nextDisputeId",
-            "uint32",
-            "dispute counter"
-          ],
-          [
-            "disputes",
-            "map<uint32,DisputeInfo>",
-            "open/resolved disputes"
-          ],
-          [
-            "config",
-            "^AnchorConfig",
-            "minStakeWeight, disputeBondMin, verdictAuthority, treasury"
-          ],
-          [
-            "codeVersion",
-            "uint32",
-            "monotonic (0 = original)"
-          ]
-        ],
-        "getMethods": [
-          [
-            "get_anchor_state",
-            "{ currentEpoch, lastRoot, nextDisputeId }"
-          ],
-          [
-            "verify_inclusion(leaf,root,proof)",
-            "bool"
-          ],
-          [
-            "compute_root(leaf,proof)",
-            "int"
-          ],
-          [
-            "get_dispute(id)",
-            "DisputeInfo? "
-          ],
-          [
-            "get_code_version",
-            "int"
-          ]
-        ],
-        "guards": [
-          "submit: epoch == currentEpoch+1, prevRoot == lastRoot, stakeWeight ≥ min",
-          "dispute requires value ≥ disputeBondMin and a valid inclusion proof",
-          "resolve: verdictAuthority-only; upheld → refund bond, rejected → forfeit to treasury"
-        ],
-        "testnetAddress": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
-        "codeHash": "11f776bc4950de4fbef8ca2c247a8aa3ceb806676f90ea4abc8f909e14d1496e",
-        "bocBytes": 1112,
-        "codeBoc64": "te6ccgECFQEAAzYAART/APSkE/S88sgLAQIBYgIDAgLPBAUCASANDgTvPiRjlbTHzHTHwGCEEFOQwW6jkXXCx/tRNCBAUDXGPQEUzGAIPQOb6GOKvpI0x/T//oA0wEx0QPI+lISyx/L/wH6As+EgFBCgCD0QwHIzvQAzsntVJJfBeLgMOAg1ywiCnIYDOMC1ywiCnIYFOMC1ywiCnIYHOMCgBgcICQBtAHIy//5FnCTIm6zjiakIMEh8uD5AtDTANP/9ATRApjIy/8Sy//5FpkCyMv/Esv/+RbiWOgwMYADqMe1E0NMf0//WH/QE9AQg10zQ+gD6APpIMdTR0PpIMfpI+kgx0fiSxwXy4PqCCJiWgL7y4PwH0z8x0x/T/9P/+gAwIvLg+wmkI7ry4PFQB7ry4PBQZ77y4PJTU8jL/1BygCD0QwXIyx8Ty//O9AAS9ADOye1UANYx7UTQgQEg1xjTH/QEIPQE10zQ+gAx+gD6SDHUMdH4l7vy4PQF0z8x0x/T//QFUiiAIPQO8uD40//RUhjwAVAHuvLg8yOk+JL4lwHI+lITyx8Xy/8B+gLPhIBagCD0QwLIzhPLH/QAzsntVALcMe1E0IEBQNcY9AQg9AHXTND6ADH6ADH6SNTR+JJYxwXy4PYE0z8x0x/XCgBTE4Ag9A7y4PX6SNMf0//6ANMB0fLQ9ySRcZFy4iTI+lIUyx8Sy/8h+gISywFUIEeAIPRDBsjOFvQAE87J7VQB4w8KCwGoidcnjkYx7UTQgQFA1xj0BPQE1NcLHyHQ+gAx+gAx+kgx1NH4kgHQ+kgx+kgx+kjRxwXy4RsF10z7BASkA8jOEvQA9AASzMsfye1U4DCEDwHHAPL0DAA0M8jPhYgS+lIB+gKCEEFOQwXPC4rLH8lx+wAASDIC0PpI+kgx+kgx0cjPhYj6Ulj6AoIQQU5DBc8LissfyXH7AAAIQU5DBAIBIA8QAgFmExQAGbrNztRNDTH9P/1wsfgCASAREgAJtvJ+ADAAU7aQ3aiaECAoGuQ+gLAEHoHN9DLmDa2tra2uHD9JGmP6f/9AGmA6MCAQsAAjsId7UTQgQFA1yH0AfQB1wsfgAA2z2ES8AG6g",
-        "verify": {
-          "codeHash": "187743596e72426b5156e234fe4b12b7cf4887217fd99b249d024eb89f2270af",
-          "url": "https://verifier.ton.org/0QDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6G1Z?testnet",
-          "verified": true,
-          "alreadyVerified": true,
-          "failed": false
-        },
-        "opcodes": [
-          {
-            "hex": "0x414e4301",
-            "name": "OP_ANCHOR_SUBMIT",
-            "value": 1095648001,
-            "desc": "permissionless keeper anchors epoch root (chained, stake-weighted)"
-          },
-          {
-            "hex": "0x414e4304",
-            "name": "OP_ANCHOR_UPGRADE_CODE",
-            "value": 1095648004,
-            "desc": "verdict-authority SETCODE (no timelock; holds only bonds+chain)"
-          }
-        ]
-      },
-      {
-        "name": "GlobalParams",
-        "role": "The single ecosystem-wide config contract (singleton). Holds the economic parameters every node/contract reads. Editable IN PLACE with a stable address (update_params mutates storage, bounds-validated on-chain) so others can hard-pin it; code is upgradable in place too.",
-        "doc": "§12 · §12.1",
-        "upgradeable": "admin-gated SETCODE (no timelock; no user funds)",
-        "storage": [
-          [
-            "admin",
-            "address",
-            "single key today; designed for multisig"
-          ],
-          [
-            "feeRecipient",
-            "address",
-            "platform fee sink"
-          ],
-          [
-            "params",
-            "^EcoParams",
-            "all bps + stake + windows + selection + weights"
-          ],
-          [
-            "blocklist",
-            "map<uint256,uint1>",
-            "governance blocklist (additive)"
-          ],
-          [
-            "paramsVersion",
-            "uint32",
-            "monotonic; bumped on every update"
-          ],
-          [
-            "codeVersion",
-            "uint32",
-            "monotonic; bumped on every SETCODE"
-          ]
-        ],
-        "getMethods": [
-          [
-            "get_params",
-            "{ admin, feeRecipient, params, paramsVersion }"
-          ],
-          [
-            "get_params_version",
-            "int"
-          ],
-          [
-            "get_code_version",
-            "int"
-          ],
-          [
-            "get_platform_fee_bps / get_participation_commission_bps / …",
-            "scalar policy reads"
-          ],
-          [
-            "get_blocklisted(subject)",
-            "bool"
-          ]
-        ],
-        "guards": [
-          "all mutators admin-only; validateEcoParams enforced on every update",
-          "slash split sums to 10000; unbondingSecs ≥ challengeWindowSecs",
-          "paramsVersion / codeVersion are contract-controlled (admin can't set directly)"
-        ],
-        "testnetAddress": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
-        "codeHash": "bc752b1f7ab0ffcd3705ce0255ab985e99849c1d2fee0378a9f5338c4be1b8a7",
-        "bocBytes": 2296,
-        "codeBoc64": "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",
-        "verify": {
-          "codeHash": "88cc70a4101f804fad9c053cda8e67fa986367ae4218f96f512fe13a844dd98e",
-          "url": "https://verifier.ton.org/0QB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tg5E?testnet",
-          "verified": true,
-          "alreadyVerified": true,
-          "failed": false
-        },
-        "opcodes": [
-          {
-            "hex": "0x47504101",
-            "name": "OP_UPDATE_PARAMS",
-            "value": 1196441857,
-            "desc": "admin-only; bounds-validated on-chain; bumps paramsVersion"
-          },
-          {
-            "hex": "0x47504102",
-            "name": "OP_UPDATE_ADMIN",
-            "value": 1196441858,
-            "desc": "admin rotation (single-key → multisig handoff)"
-          },
-          {
-            "hex": "0x47504104",
-            "name": "OP_UPGRADE_CODE",
-            "value": 1196441860,
-            "desc": "admin-only in-place SETCODE (no timelock; no user funds)"
-          }
-        ]
-      }
-    ],
-    "deployments": {
-      "StakeVault": "kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
-      "JobEscrow": "kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
-      "RecordAnchor": "kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
-      "GlobalParams": "kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB"
-    },
-    "deployLogs": {
-      "stake": [
-        "Deployed StakeVault to kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K",
-        "owner       = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
-        "min stake   = 0",
-        "receipt for = kQBQUNpbA-k3sNKPot4DT0tYd4kX4hUXgv0eHZlW5deT06HA"
-      ],
-      "anchor": [
-        "Deployed RecordAnchor to kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc",
-        "verdict authority = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
-        "min stake weight  = 100000000000"
-      ],
-      "escrow": [
-        "Deployed JobEscrow to kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4",
-        "escrow amount = 50000000",
-        "deadline      = 1781430809"
-      ],
-      "globalParams": [
-        "Deployed GlobalParams to kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB",
-        "admin         = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
-        "fee recipient = kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422"
-      ]
-    },
-    "e2e": [
-      "wallet=kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422",
-      "globalparams_update::PASS::fee_bps=250::addr_stable=true",
-      "globalparams_blocklist::PASS::blocked=true::cleared=false",
-      "stake_deposit::staked=50000000::eligible=true",
-      "jetton::minted=50000000::staked=50000000::locked=true",
-      "duckton_metadata::PASS::name=Duckton::symbol=DUCKTON::decimals=9",
-      "escrow_settle::settled=true",
-      "anchor_submit::epoch=1::prev_epoch=0",
-      "inclusion::verified=true",
-      "multileaf_inclusion::PASS::epoch=2::included=true::tampered_rejected=true",
-      "dispute::id=0::status=1",
-      "done"
-    ],
-    "gas": [
-      {
-        "op": "StakeSlash",
-        "minGas": 1795,
-        "maxGas": 10634,
-        "avgGas": 10361,
-        "samples": 135
-      },
-      {
-        "op": "StakeDeposit",
-        "minGas": 1013,
-        "maxGas": 5672,
-        "avgGas": 5629,
-        "samples": 212
-      },
-      {
-        "op": "EscrowSettle",
-        "minGas": 1013,
-        "maxGas": 13226,
-        "avgGas": 4650,
-        "samples": 74
-      },
-      {
-        "op": "StakeKeeperWithdraw",
-        "minGas": 1176,
-        "maxGas": 7764,
-        "avgGas": 4605,
-        "samples": 4
-      },
-      {
-        "op": "ProvideWalletAddress",
-        "minGas": 3933,
-        "maxGas": 4459,
-        "avgGas": 4196,
-        "samples": 2
-      },
-      {
-        "op": "AnchorOpenDispute",
-        "minGas": 1438,
-        "maxGas": 5697,
-        "avgGas": 4009,
-        "samples": 7
-      },
-      {
-        "op": "UpdateParams",
-        "minGas": 945,
-        "maxGas": 6164,
-        "avgGas": 3825,
-        "samples": 95
-      },
-      {
-        "op": "AnchorResolveDispute",
-        "minGas": 1477,
-        "maxGas": 5505,
-        "avgGas": 3395,
-        "samples": 4
-      },
-      {
-        "op": "StakeWithdraw",
-        "minGas": 1145,
-        "maxGas": 6292,
-        "avgGas": 2608,
-        "samples": 4
-      },
-      {
-        "op": "SetBlocklisted",
-        "minGas": 985,
-        "maxGas": 2540,
-        "avgGas": 2189,
-        "samples": 5
-      },
-      {
-        "op": "AnchorSubmitRoot",
-        "minGas": 1503,
-        "maxGas": 2282,
-        "avgGas": 2091,
-        "samples": 11
-      },
-      {
-        "op": "ReceiptBurn",
-        "minGas": 1262,
-        "maxGas": 2079,
-        "avgGas": 2069,
-        "samples": 137
-      },
-      {
-        "op": "JettonInternalTransfer",
-        "minGas": 897,
-        "maxGas": 3831,
-        "avgGas": 1907,
-        "samples": 212
-      },
-      {
-        "op": "StakeRequestUnbond",
-        "minGas": 936,
-        "maxGas": 2056,
-        "avgGas": 1601,
-        "samples": 73
-      },
-      {
-        "op": "EscrowRefund",
-        "minGas": 892,
-        "maxGas": 2903,
-        "avgGas": 1594,
-        "samples": 3
-      },
-      {
-        "op": "UpdateAdmin",
-        "minGas": 840,
-        "maxGas": 1507,
-        "avgGas": 1174,
-        "samples": 2
-      },
-      {
-        "op": "ReceiptTopUp",
-        "minGas": 914,
-        "maxGas": 1072,
-        "avgGas": 993,
-        "samples": 2
-      },
-      {
-        "op": "0xdeadbeef",
-        "minGas": 729,
-        "maxGas": 1195,
-        "avgGas": 925,
-        "samples": 5
-      },
-      {
-        "op": "EscrowTopUp",
-        "minGas": 606,
-        "maxGas": 606,
-        "avgGas": 606,
-        "samples": 1
-      },
-      {
-        "op": "JettonTransfer",
-        "minGas": 592,
-        "maxGas": 592,
-        "avgGas": 592,
-        "samples": 3
-      },
-      {
-        "op": "TakeWalletAddress",
-        "minGas": 309,
-        "maxGas": 309,
-        "avgGas": 309,
-        "samples": 2
-      },
-      {
-        "op": "JettonTransferNotification",
-        "minGas": 309,
-        "maxGas": 309,
-        "avgGas": 309,
-        "samples": 1
-      }
-    ],
-    "economicsToml": "# Generated by scripts/testnet_e2e.sh — node [economics] snippet for the live\n# testnet. Point your node config at it via P2P_CONFIG, or merge the keys.\n#\n# crates/config's [economics.<net>.contracts] block is now wired (the live TON\n# client reads it via p2p_settlement::resolve_ton_wiring + economics.guard_mainnet),\n# so the deployed addresses are recorded directly below for the active network.\n[economics]\nenabled         = true\nsettlement      = \"onchain\"\ncustody         = \"noncustodial\"\naccounting_unit = \"ton\"\nchain           = \"ton\"\nnetwork         = \"testnet\"\ndefault_payment = \"paid\"\nfee_recipient   = \"kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422\"\n\n[economics.testnet.contracts]\nstake_vault   = \"kQCaP_8Kw6j4Oyesc9uV8Lr5OcHYOpwkuUb1lIu21hcJm84K\"\njob_escrow    = \"kQAcXt7fyp3NdSfJU7RQ87Rhmj8Z_oH6OXvxZyusGSMLjmi4\"\nrecord_anchor = \"kQDccDppcJBwt1mFprymqXE8fDk-w9udKlaeA81bgysW6DCc\"\nglobal_params = \"kQB-HK_vWQuXvKE_VGo2ZOxDqeLUgNJLjzvR80Hmkks7tlOB\"\n",
-    "canonical": {
-      "source": "docs/TESTNET.md",
-      "globalParams": "kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna",
-      "stakeVault": "kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp",
-      "ducktonHolder": "kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r",
-      "recordAnchor": "kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3",
-      "jobEscrow": "0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23",
-      "setcode": {
-        "address": "kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF",
-        "from": "GlobalParams (codeVersion 1)",
-        "to": "GlobalParamsV2 (codeVersion 2)",
-        "addressStable": true,
-        "newGetter": "get_surcharge_bps",
-        "newGetterValue": 500,
-        "note": "SETCODE swapped code in place — address unchanged, paramsVersion/fee/admin preserved."
-      },
-      "duckton": {
-        "name": "Duckton",
-        "symbol": "DUCKTON",
-        "decimals": 9,
-        "balance": "0.2",
-        "transferLocked": true
-      }
-    },
-    "deployFlow": {
-      "build": [
-        "acton build",
-        "acton test",
-        "acton test --coverage"
-      ],
-      "deploy": [
-        "STAKE_BINDING_HASH=0x… acton script scripts/deploy_stake.tolk --net testnet",
-        "ANCHOR_BOND_MIN=100000000 acton script scripts/deploy_anchor.tolk --net testnet",
-        "ESCROW_AMOUNT=300000000 ESCROW_EXPECTED_HASH=0x… acton script scripts/deploy_escrow.tolk --net testnet",
-        "GP_FEE_RECIPIENT=<addr> acton script scripts/deploy_global_params.tolk --net testnet"
-      ],
-      "verify": [
-        "acton verify GlobalParams --address <addr> --net testnet",
-        "acton verify RecordAnchor --address <addr> --net testnet",
-        "acton verify JobEscrow --address <addr> --net testnet"
-      ],
-      "live": "cargo test -p p2p-settlement --features ton-live --test testnet_live -- --nocapture"
     }
   },
   "transport": {
@@ -3677,48 +2989,6 @@
       "max_result_parts": 1024,
       "parallel_min_bytes": 1048576,
       "parallelism": 1
-    },
-    "bench": {
-      "rows": 80000,
-      "sweep": [
-        {
-          "parallelism": 1,
-          "rowsPerSec": 52203,
-          "mbPerSec": 3.7,
-          "p50Ms": 5.326
-        },
-        {
-          "parallelism": 2,
-          "rowsPerSec": 115835,
-          "mbPerSec": 8.3,
-          "p50Ms": 4.884
-        },
-        {
-          "parallelism": 4,
-          "rowsPerSec": 115295,
-          "mbPerSec": 8.3,
-          "p50Ms": 4.901
-        },
-        {
-          "parallelism": 8,
-          "rowsPerSec": 114902,
-          "mbPerSec": 8.2,
-          "p50Ms": 5.004
-        }
-      ],
-      "best": {
-        "parallelism": 2,
-        "rowsPerSec": 115835,
-        "mbPerSec": 8.3,
-        "p50Ms": 4.884
-      },
-      "command": "cargo test -p p2p-node --test benches -- --nocapture",
-      "envKnobs": [
-        "P2P_BENCH_ROWS",
-        "P2P_BENCH_PARALLELISM",
-        "P2P_BENCH_COMPRESSION",
-        "P2P_BENCH_CONGESTION"
-      ]
     }
   },
   "trust": {
@@ -3752,7 +3022,7 @@
     },
     "formula": "effective_trust = gate(level ≥ min_level) · clamp(α·R + β·age + γ·voucher + δ·stake − penalties) + exploration",
     "halfLifeSecs": 604800,
-    "minTrust": 0,
+    "minTrust": 0.0,
     "quorum": {
       "agreedHash": "f6116d5870a95ea75478786b76496275714f81c6553714c6bccd1987160dc11b",
       "agreement": 3,
@@ -3774,184 +3044,184 @@
   },
   "workers": [
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "frost-owl",
       "attestation": "L2",
       "behavior": "honest",
       "correct": 21,
       "delayMs": 12,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:74819cb9fa86aff29f101af997ab6c4237a16a3f56e9d9f38e5f941509f56f65",
+      "id": "b3:879e53d90af585b897bc7ee84438f25edff0cd0bd71910874b3875377312ea90",
       "jobsParticipated": 21,
       "maxJobs": 12,
       "observations": 21,
       "online": true,
       "p50LatencyMs": 13,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.741507847985494,
       "soft": 0.7515224842768918,
       "stakeFactor": 0.7246699068704621,
       "stakeNanoton": "4200000000000",
       "stakeTon": 4200,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 68719476736,
       "totalThreads": 32,
       "trust": 0.7515224842768918,
       "voucherTrust": 0.6,
-      "wallet": "0:ca8203c3d8756e5fd5e656363581493f74a95c4539f969a575d65a63c9ab85ae"
+      "wallet": "0:04b3116724a6e23c419484904bb94b1776aac39a7e520c0bb5be23ee39103daf"
     },
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "harbor-vole",
       "attestation": "L2",
       "behavior": "honest",
       "correct": 24,
       "delayMs": 22,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:19e8af9285cb78a61a8cb6fe7c553747488774a38d7b63a9945bd6ffceffe87b",
+      "id": "b3:0632909f115333927d68fa150fb784911b0b7b292342d687d51b8a9bf52f9e09",
       "jobsParticipated": 24,
       "maxJobs": 10,
       "observations": 24,
       "online": true,
       "p50LatencyMs": 23,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.7663002270926939,
       "soft": 0.7447129066820869,
       "stakeFactor": 0.6830274771720122,
       "stakeNanoton": "2600000000000",
       "stakeTon": 2600,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 103079215104,
       "totalThreads": 40,
       "trust": 0.7447129066820869,
       "voucherTrust": 0.4,
-      "wallet": "0:1a124f7ca2ade1cdfe2d8623e241c72d03bb84d80e55ae4d3a6a2b74edc3f9e8"
+      "wallet": "0:0730587e21b0e094df692fd041e9f4297b8d9db617a10d651b4ad15be9f7a4d8"
     },
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "tidal-fox",
       "attestation": "L1",
       "behavior": "honest",
       "correct": 24,
       "delayMs": 30,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:e5b65d2d09408c38e22023e0c39752bd35f93eb98981fb536353174bbd357e44",
+      "id": "b3:14bb4b87758e6ac7c6cd8b67b5e32417b8910885ce0a7313aa543db55570da3b",
       "jobsParticipated": 24,
       "maxJobs": 6,
       "observations": 24,
       "online": true,
       "p50LatencyMs": 31,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.7663002270926939,
       "soft": 0.7199377176306906,
       "stakeFactor": 0.6352755866580494,
       "stakeNanoton": "1500000000000",
       "stakeTon": 1500,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 34359738368,
       "totalThreads": 16,
       "trust": 0.7199377176306906,
       "voucherTrust": 0.2,
-      "wallet": "0:b897b81a5c3c36bf5e086b6b3682a894fbc1832c464615ae1f893be50076cbb4"
+      "wallet": "0:07285182483f839833e59b24dc17f892a309ec2708f8237e186b8fabf162591c"
     },
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "amber-mole",
       "attestation": "L1",
       "behavior": "honest",
       "correct": 24,
       "delayMs": 45,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:6d2c20384fb856abc7a6da590c0ce035aa3ca9ca46a29fb98a9633c7af6b0fff",
+      "id": "b3:4f72dfc12505cea237a66f787ec4768ae46d2ee6005a46b3a028b4941e5f60ee",
       "jobsParticipated": 24,
       "maxJobs": 4,
       "observations": 24,
       "online": true,
       "p50LatencyMs": 46,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.7663002270926939,
       "soft": 0.6944827588456032,
       "stakeFactor": 0.580725998807176,
       "stakeNanoton": "800000000000",
       "stakeTon": 800,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 25769803776,
       "totalThreads": 12,
       "trust": 0.6944827588456032,
-      "voucherTrust": 0,
-      "wallet": "0:619e3d5ad3f822568416619ead0158b93e924f23d6501be79f5ad84b2d69d6f2"
+      "voucherTrust": 0.0,
+      "wallet": "0:bc0b04832c538ff3389a298300ca62c55e06df188ed7f8808281b4deadcec2cc"
     },
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "pine-marten",
       "attestation": "L0",
       "behavior": "honest",
       "correct": 23,
       "delayMs": 60,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:4a3ea6f47d3128e25690aaac14b74edf2d880f33519bce8711d010b8f5a86a85",
+      "id": "b3:738458b107bcca9274d0b66725b861d31a161b7605df041ca136e1f5e40b013d",
       "jobsParticipated": 23,
       "maxJobs": 4,
       "observations": 23,
       "online": true,
       "p50LatencyMs": 61,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.7585805251948495,
       "soft": 0.680577654491414,
       "stakeFactor": 0.49571286855019464,
       "stakeNanoton": "300000000000",
       "stakeTon": 300,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 17179869184,
       "totalThreads": 8,
       "trust": 0.680577654491414,
-      "voucherTrust": 0,
-      "wallet": "0:9e0cf2ed9559143b1fbfb070fc333d9faca0faceb5da57c4819425cf39ac3577"
+      "voucherTrust": 0.0,
+      "wallet": "0:61b7c75a285db96bec837bea62104bc44d54c3a1bdc2a473aa976b968fab7f94"
     },
     {
-      "ageFactor": 1,
+      "ageFactor": 1.0,
       "alias": "slate-heron",
       "attestation": "L0",
       "behavior": "honest",
       "correct": 24,
       "delayMs": 110,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:76a831ce0e26818d753ea00e4c7f94df9d7b3e82dc8965ff44e613dccb281f3a",
+      "id": "b3:bbdfdcf3ab92cecd34553b0b34ad12ee2708faad00435bd936bc294e29704227",
       "jobsParticipated": 24,
       "maxJobs": 2,
       "observations": 24,
       "online": true,
       "p50LatencyMs": 111,
-      "penalty": 0,
-      "reputation": 1,
+      "penalty": 0.0,
+      "reputation": 1.0,
       "reputationConfident": 0.7663002270926939,
       "soft": 0.6780658301897392,
       "stakeFactor": 0.416556712248536,
       "stakeNanoton": "120000000000",
       "stakeTon": 120,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 8589934592,
       "totalThreads": 4,
       "trust": 0.6780658301897392,
-      "voucherTrust": 0,
-      "wallet": "0:8cd57d0aff5fc60354e436fb62aead7396b748098db3f71648a208b4eda7953b"
+      "voucherTrust": 0.0,
+      "wallet": "0:0c6e583e94743c1dd87e09c494d41f176e3c6d4f81df2c346be3b6e76d157dfa"
     },
     {
       "ageFactor": 0.05,
@@ -3961,56 +3231,56 @@
       "correct": 0,
       "delayMs": 18,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 1,
-      "id": "b3:0fdfccb0b14ee5434f6dbfe9761fc18858ac79a3ce194a5dc3ca8d896cbc07d7",
+      "id": "b3:6bc06c0771ab571f78adbc12c8101a8ad4391de41a7d79669feffc96b791fb0a",
       "jobsParticipated": 1,
       "maxJobs": 2,
       "observations": 1,
       "online": true,
       "p50LatencyMs": 0,
       "penalty": 0.5,
-      "reputation": 0,
+      "reputation": 0.0,
       "reputationConfident": 0.045586062644636216,
-      "soft": 0,
-      "stakeFactor": 0,
+      "soft": 0.0,
+      "stakeFactor": 0.0,
       "stakeNanoton": "0",
       "stakeTon": 0,
-      "successRate": 0,
+      "successRate": 0.0,
       "totalMemBytes": 8589934592,
       "totalThreads": 4,
-      "trust": 0,
-      "voucherTrust": 0,
+      "trust": 0.0,
+      "voucherTrust": 0.0,
       "wallet": null
     },
     {
-      "ageFactor": 0,
+      "ageFactor": 0.0,
       "alias": "cobalt-stoat",
       "attestation": "L0",
       "behavior": "fail",
       "correct": 0,
       "delayMs": 25,
       "engineVersion": "mock-1",
-      "explorationBonus": 0,
+      "explorationBonus": 0.0,
       "faults": 0,
-      "id": "b3:bb102d06ea250718b4a785cd582d013238d5b1ecc582a6c6ce6ee9b394e86a2d",
+      "id": "b3:309e88f463398df38d77f5a7bae6ffa6fdbbef3507edb5dfe7054e864c8d2736",
       "jobsParticipated": 3,
       "maxJobs": 1,
       "observations": 0,
       "online": false,
       "p50LatencyMs": 0,
-      "penalty": 0,
+      "penalty": 0.0,
       "reputation": null,
       "reputationConfident": 0.1,
       "soft": 0.06999999999999999,
-      "stakeFactor": 0,
+      "stakeFactor": 0.0,
       "stakeNanoton": "0",
       "stakeTon": 0,
-      "successRate": 1,
+      "successRate": 1.0,
       "totalMemBytes": 4294967296,
       "totalThreads": 2,
       "trust": 0.06999999999999999,
-      "voucherTrust": 0,
+      "voucherTrust": 0.0,
       "wallet": null
     }
   ]
