@@ -38,7 +38,10 @@ fun main() {
     // treasury collects the platform fee. All three are the funded deployer here.
     val requester = deployer.address;
     val arbiter = deployer.address;
-    val treasury = deployer.address;
+    // Platform-fee recipient. A DEDICATED active wallet (distinct from the
+    // requester/arbiter/deployer) makes the fee-landing delta cleanly isolated:
+    // its balance moves by EXACTLY the platform fee and nothing else.
+    val treasury = env<address>("TREASURY") ?? deployer.address;
 
     val escrowAmount = env<coins>("ESCROW_AMOUNT") ?? ton("0.3");
     val winnerAmount = env<coins>("WINNER_AMOUNT") ?? ton("0.05");
