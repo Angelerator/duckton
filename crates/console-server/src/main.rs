@@ -47,6 +47,10 @@ const TON: Amount = 1_000_000_000;
 const JOBS_CAP: usize = 40;
 const RECEIPTS_CAP: usize = 60;
 const SERIES_CAP: usize = 60;
+/// Default escrow bound `B` when the caller gives no `maxEscrow`: the computed
+/// job cost scaled by a small safety margin, so the lock covers the payout with
+/// slack to refund — NOT a flat 100 TON.
+const ESCROW_SAFETY_FACTOR: f64 = 1.5;
 
 // --------------------------------------------------------------------------
 // Grid bring-up (mirrors crates/node/tests/console_export.rs)
@@ -62,6 +66,10 @@ struct WorkerHandle {
     max_jobs: u32,
     delay_ms: u64,
     behavior: &'static str,
+    /// Advertised unit price (whole TON) this host bids on a paid job. The
+    /// winning host's price is the base reward the escrow settles (see
+    /// [`settle_escrow`]); a trivial query costs ~this, NOT a flat 100.
+    price: u64,
     _transport: Arc<QuicTransport>,
     _task: tokio::task::JoinHandle<()>,
 }
@@ -74,6 +82,8 @@ struct Spec {
     max_jobs: u32,
     delay_ms: u64,
     behavior: &'static str,
+    /// Advertised unit price (whole TON) — see [`WorkerHandle::price`].
+    price: u64,
 }
 
 fn idcfg() -> IdentityConfig {
@@ -196,6 +206,7 @@ async fn spawn_worker(spec: &Spec, attestor_authority: &SigningKey) -> WorkerHan
         max_jobs: budget.max_jobs,
         delay_ms: spec.delay_ms,
         behavior: spec.behavior,
+        price: spec.price,
         _transport: transport,
         _task: task,
     }
@@ -246,6 +257,55 @@ fn class_payment(data_class: &str) -> PaymentPref {
     }
 }
 
+/// The escrow settlement breakdown for one paid job (all in whole TON).
+struct EscrowSettlement {
+    /// Actual job cost = winner base + platform fee + participation commissions.
+    cost: f64,
+    /// Escrow bound `B` actually locked (the cap).
+    cap: f64,
+    /// Released to providers + treasury (`min(cost, B)`).
+    settled: f64,
+    /// Returned to the requester (`B − settled`).
+    refunded: f64,
+}
+
+/// Compute the real escrow settlement for a paid job (§10.1 payout shape) — the
+/// fix for the bug where every paid job hardcoded `escrowTon: 100`.
+///
+/// * `base` — the winning host's advertised bid price (the winner base reward).
+/// * `agreeing_non_winners` — agreeing replicas other than the winner, each paid
+///   a fixed participation commission `κ·base`.
+/// * `fee_pct` / `commission_frac` — the configured platform fee and κ.
+/// * `max_escrow` — the caller's `maxEscrow` cap if any; else the cost is bounded
+///   by [`ESCROW_SAFETY_FACTOR`].
+///
+/// Settlement releases `settled = min(cost, B)` and refunds `B − settled`, so the
+/// invariant `cap == settled + refunded` always holds.
+fn settle_escrow(
+    base: f64,
+    agreeing_non_winners: usize,
+    fee_pct: f64,
+    commission_frac: f64,
+    max_escrow: Option<f64>,
+) -> EscrowSettlement {
+    let round = |x: f64| (x * 1e4).round() / 1e4;
+    let platform_fee = base * fee_pct;
+    let commissions = base * commission_frac * agreeing_non_winners as f64;
+    let cost = round(base + platform_fee + commissions);
+    let cap = round(match max_escrow {
+        Some(m) if m > 0.0 => m,
+        _ => cost * ESCROW_SAFETY_FACTOR,
+    });
+    let settled = round(cost.min(cap));
+    let refunded = round(cap - settled);
+    EscrowSettlement {
+        cost,
+        cap,
+        settled,
+        refunded,
+    }
+}
+
 // --------------------------------------------------------------------------
 // Rolling accumulator + live JSON
 // --------------------------------------------------------------------------
@@ -270,6 +330,10 @@ struct Grid {
     reg: Arc<InMemoryStakeRegistry>,
     coord: Coordinator,
     stakes: BTreeMap<&'static str, u64>,
+    /// Platform fee fraction and participation commission κ from the active
+    /// economics config — drive the paid-job escrow settlement cost model.
+    fee_pct: f64,
+    commission_frac: f64,
     acc: Acc,
 }
 
@@ -298,6 +362,7 @@ impl Grid {
         requester: &str,
         extras: QueryExtras,
     ) -> J {
+        let max_escrow = extras.max_escrow;
         let (min_att, min_trust) = class_policy(data_class);
         let mut ov = QueryOverrides::default();
         ov.replicas = Some(replicas);
@@ -435,7 +500,7 @@ impl Grid {
                             "workerId": r.worker_id.0, "alias": self.alias_of(&r.worker_id),
                             "attestation": w.map(|w| w.attestation.as_str()).unwrap_or("L0"),
                             "state": state, "verdict": format!("{:?}", r.verdict),
-                            "etaMs": r.latency_ms, "price": 0,
+                            "etaMs": r.latency_ms, "price": w.map(|w| w.price).unwrap_or(0),
                             "progressPct": if r.verdict.is_correct() || r.verdict == p2p_proto::Verdict::Incorrect { 100 } else { 0 },
                             "committedHash": if r.result_hash.is_empty() { J::Null } else { json!(r.result_hash) },
                             "commitLatencyMs": r.latency_ms,
@@ -473,6 +538,30 @@ impl Grid {
                     self.acc.failed += 1;
                 }
 
+                // Real escrow settlement (replaces the hardcoded `escrowTon: 100`).
+                // Only a PAID job that actually produced a winner settles; the cost
+                // is the winning host's bid price + platform fee + a participation
+                // commission to each agreeing non-winner, bounded by the escrow cap.
+                let settle = if paid {
+                    winner.as_ref().and_then(|w| {
+                        self.workers.iter().find(|x| &x.node_id == w).map(|x| {
+                            settle_escrow(
+                                x.price as f64,
+                                o.agreement.saturating_sub(1),
+                                self.fee_pct,
+                                self.commission_frac,
+                                max_escrow,
+                            )
+                        })
+                    })
+                } else {
+                    None
+                };
+                let (settled_ton, escrow_cap_ton, refunded_ton) = settle
+                    .as_ref()
+                    .map(|s| (s.settled, s.cap, s.refunded))
+                    .unwrap_or((0.0, 0.0, 0.0));
+
                 json!({
                     "id": o.job_id.0, "sql": sql, "fn": "p2p_query",
                     "dataClass": data_class, "verifyMode": verify_label, "policy": policy_json.clone(),
@@ -480,7 +569,15 @@ impl Grid {
                     "status": if o.verified { "verified" } else { "failed" },
                     "paid": paid, "requester": requester, "createdAtMs": created,
                     "rowCount": o.result.row_count(), "resultHash": o.agreed_hash,
-                    "latencyMs": lat, "escrowTon": if paid { 100 } else { 0 },
+                    "latencyMs": lat,
+                    // Truthful settlement numbers. `escrowTon` retained (= the cap B)
+                    // for back-compat with the current web display; the web will
+                    // switch to settledTon/refundedTon separately.
+                    "escrowTon": escrow_cap_ton,
+                    "settledTon": settled_ton,
+                    "escrowCapTon": escrow_cap_ton,
+                    "refundedTon": refunded_ton,
+                    "costTon": settle.as_ref().map(|s| s.cost).unwrap_or(0.0),
                     "winner": winner.as_ref().map(|w| self.alias_of(w)),
                     "winnerId": winner.as_ref().map(|w| w.0.clone()),
                     "source": "live in-process grid (loopback)",
@@ -517,7 +614,8 @@ impl Grid {
                     "dataClass": data_class, "verifyMode": verify_label, "policy": policy_json,
                     "quorum": quorum, "k": 0,
                     "status": "failed", "paid": false, "requester": requester, "createdAtMs": created,
-                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat, "escrowTon": 0,
+                    "rowCount": 0, "resultHash": J::Null, "latencyMs": lat,
+                    "escrowTon": 0, "settledTon": 0, "escrowCapTon": 0, "refundedTon": 0, "costTon": 0,
                     "winner": J::Null, "winnerId": J::Null, "source": "live in-process grid",
                     "candidates": [], "timeline": [], "result": {"columns": [], "rows": []},
                     "error": error_msg,
@@ -774,6 +872,9 @@ struct QueryExtras {
     groups: Option<Vec<String>>,
     regions: Option<Vec<String>>,
     require_staked_hosts: Option<bool>,
+    /// Per-call escrow cap `B` (whole TON). `None` ⇒ default to the job cost
+    /// scaled by [`ESCROW_SAFETY_FACTOR`].
+    max_escrow: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -805,6 +906,8 @@ struct QueryBody {
     regions: Option<Vec<String>>,
     #[serde(default, rename = "requireStakedHosts")]
     require_staked_hosts: Option<bool>,
+    #[serde(default, rename = "maxEscrow")]
+    max_escrow: Option<f64>,
 }
 
 /// Parse the loose camelCase override strings into the typed [`QueryExtras`].
@@ -856,6 +959,8 @@ fn parse_extras(body: &QueryBody) -> QueryExtras {
         groups: clean(&body.groups),
         regions: clean(&body.regions),
         require_staked_hosts: body.require_staked_hosts,
+        // Ignore non-positive caps (treat as "not provided").
+        max_escrow: body.max_escrow.filter(|m| *m > 0.0),
     }
 }
 
@@ -940,6 +1045,7 @@ async fn main() {
             max_jobs: 12,
             delay_ms: 12,
             behavior: "honest",
+            price: 7,
         },
         Spec {
             alias: "harbor-vole",
@@ -949,6 +1055,7 @@ async fn main() {
             max_jobs: 10,
             delay_ms: 22,
             behavior: "honest",
+            price: 8,
         },
         Spec {
             alias: "tidal-fox",
@@ -958,6 +1065,7 @@ async fn main() {
             max_jobs: 6,
             delay_ms: 30,
             behavior: "honest",
+            price: 6,
         },
         Spec {
             alias: "marsh-otter",
@@ -967,6 +1075,7 @@ async fn main() {
             max_jobs: 8,
             delay_ms: 18,
             behavior: "honest",
+            price: 7,
         },
         Spec {
             alias: "amber-mole",
@@ -976,6 +1085,7 @@ async fn main() {
             max_jobs: 4,
             delay_ms: 45,
             behavior: "honest",
+            price: 5,
         },
         Spec {
             alias: "pine-marten",
@@ -985,6 +1095,7 @@ async fn main() {
             max_jobs: 4,
             delay_ms: 60,
             behavior: "honest",
+            price: 4,
         },
         Spec {
             alias: "slate-heron",
@@ -994,6 +1105,7 @@ async fn main() {
             max_jobs: 2,
             delay_ms: 110,
             behavior: "honest",
+            price: 3,
         },
         Spec {
             alias: "rust-shrike",
@@ -1003,6 +1115,7 @@ async fn main() {
             max_jobs: 2,
             delay_ms: 18,
             behavior: "cheat",
+            price: 5,
         },
         Spec {
             alias: "cobalt-stoat",
@@ -1012,6 +1125,7 @@ async fn main() {
             max_jobs: 1,
             delay_ms: 25,
             behavior: "fail",
+            price: 5,
         },
     ];
     // Shared demo attestation authority (console-server DEMO only): every L1/L2
@@ -1114,6 +1228,8 @@ async fn main() {
         reg,
         coord,
         stakes,
+        fee_pct: eco.fees.platform_fee_pct,
+        commission_frac: eco.fees.participation_commission_frac,
         acc: Acc::default(),
     };
 
