@@ -48,9 +48,28 @@ fun main() {
     val paramsVersion = (env<int>("ESCROW_PARAMS_VERSION") ?? 0) as uint32;
 
     // B1: the requester pre-commits to the payout-eligible candidate set; settle
-    // can only pay members of it. Provide the commitment (hash of the candidate
-    // map cell) via env; `0` = unbound (no candidate restriction set yet).
-    val candidatesHash = env<int>("ESCROW_CANDIDATES_HASH") ?? 0;
+    // can only pay members of it. Two ways to bind it:
+    //   * ESCROW_CANDIDATES_HASH — a precomputed commitment, used verbatim; or
+    //   * ESCROW_WINNER (+ optional ESCROW_PARTICIPANT, included iff
+    //     ESCROW_PARTICIPANT_AMOUNT > 0) — this script then computes
+    //     candidatesCommitment over the SAME set the settle will present, so the
+    //     on-chain B1 check (candidatesCommitment(settle.candidates) ==
+    //     terms.candidatesHash) holds. The set is built IDENTICALLY to
+    //     scripts/e2e_testnet.tolk (winner always; participant iff its amount > 0),
+    //     so a deploy + settle driven from the same env vars round-trip cleanly.
+    // `0` = unbound (no candidate restriction set yet — the legacy default).
+    var candidatesHash = env<int>("ESCROW_CANDIDATES_HASH") ?? 0;
+    val candidateWinner = env<address>("ESCROW_WINNER");
+    if (candidatesHash == 0 && candidateWinner != null) {
+        val candidateParticipant = env<address>("ESCROW_PARTICIPANT");
+        val candidateParticipantAmount: coins = env<coins>("ESCROW_PARTICIPANT_AMOUNT") ?? ton("0");
+        var candidates: map<address, uint1> = createEmptyMap();
+        candidates.set(candidateWinner!, 1);
+        if (candidateParticipant != null && candidateParticipantAmount > 0) {
+            candidates.set(candidateParticipant!, 1);
+        }
+        candidatesHash = candidatesCommitment(candidates);
+    }
 
     val terms: EscrowTerms = {
         treasury: treasury,

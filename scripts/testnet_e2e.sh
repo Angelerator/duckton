@@ -226,6 +226,24 @@ WALLET_ADDR="$(acton wallet list --json 2>/dev/null | jq -r --arg n "$WALLET_NAM
 ok "wallet address: $WALLET_ADDR"
 log "balance:"; acton wallet list --balance 2>/dev/null | sed 's/^/    /' || warn "balance lookup failed (continuing)"
 
+# A DISTINCT winner wallet. JobEscrow's B1 invariant forbids the arbiter (= the
+# deployer here, the only party authorized to settle) from also being the
+# `winner`, and every payee must be a member of the requester's pre-committed
+# candidate set. We only need the winner's ADDRESS — the escrow PAYS it; it never
+# signs — so a generated wallet suffices and is reused across runs once created.
+WINNER_NAME="${WINNER_NAME:-winner}"
+if acton wallet list --json 2>/dev/null | jq -e --arg n "$WINNER_NAME" '.wallets[]?|select(.name==$n)' >/dev/null; then
+  ok "winner wallet '$WINNER_NAME' already configured (reusing)"
+else
+  log "creating winner wallet '$WINNER_NAME' (escrow payout target; never signs)"
+  acton wallet new --name "$WINNER_NAME" --global --version "$WALLET_VERSION" --secure false >/dev/null 2>&1 \
+    || die "could not create winner wallet '$WINNER_NAME'"
+fi
+WINNER_ADDR="$(acton wallet list --json 2>/dev/null | jq -r --arg n "$WINNER_NAME" '.wallets[]?|select(.name==$n)|.address' | head -1)"
+[[ -n "$WINNER_ADDR" && "$WINNER_ADDR" != "null" ]] || die "could not resolve winner wallet address for '$WINNER_NAME'"
+[[ "$WINNER_ADDR" != "$WALLET_ADDR" ]] || die "winner wallet must differ from the deployer/arbiter (B1)"
+ok "winner address: $WINNER_ADDR"
+
 # ----------------------------------------------------------------------------
 # 1. Build contracts
 # ----------------------------------------------------------------------------
@@ -313,8 +331,16 @@ ok "RecordAnchor: $ANCHOR_ADDR"
 #     result hash. A fresh deadline each run yields a fresh, unsettled escrow.
 ESCROW_DEADLINE=$(( $(date +%s) + ESCROW_WINDOW_SECS ))
 log "deploying JobEscrow (B=$ESCROW_AMOUNT nanoton, deadline=$ESCROW_DEADLINE, lock=$RESULT_HASH) ..."
+# The escrow is opened bound to the requester-committed candidate set
+# {winner, participant}. deploy_escrow.tolk computes candidatesCommitment over
+# EXACTLY this set (winner always; participant iff its amount > 0), matching the
+# set the settle in scripts/e2e_testnet.tolk presents, so the on-chain B1 check
+# (candidatesCommitment(settle.candidates) == terms.candidatesHash) holds and the
+# settle releases the HTLC instead of bouncing with SETTLE_POLICY_MISMATCH (281).
 ESCROW_ADDR="$( ESCROW_AMOUNT="$ESCROW_AMOUNT" ESCROW_DEADLINE="$ESCROW_DEADLINE" \
   ESCROW_EXPECTED_HASH="$RESULT_HASH" ESCROW_TREASURY="$WALLET_ADDR" \
+  ESCROW_WINNER="$WINNER_ADDR" ESCROW_PARTICIPANT="$WALLET_ADDR" \
+  ESCROW_PARTICIPANT_AMOUNT="$SETTLE_PARTICIPANT_AMOUNT" \
   deploy_addr JobEscrow scripts/deploy_escrow.tolk "$LOG_DIR/deploy_escrow.log" )"
 [[ -n "$ESCROW_ADDR" ]] || die "failed to parse JobEscrow address (see $LOG_DIR/deploy_escrow.log)"
 ok "JobEscrow: $ESCROW_ADDR"
@@ -379,11 +405,31 @@ ok "wrote $GEN_TOML"
 # ----------------------------------------------------------------------------
 step "6. acton verify"
 verify_one() {  # verify_one <Contract> <addr>
-  local c="$1" a="$2"
-  if ( cd "$TON_DIR" && acton verify "$c" --address "$a" --net "$NET" ) >"$LOG_DIR/verify_$c.log" 2>&1; then
-    ok "$c verified"; checkmark "verify $c" 1
+  local c="$1"; local a="$2"; local log="$LOG_DIR/verify_$c.log"
+  if ( cd "$TON_DIR" && acton verify "$c" --address "$a" --net "$NET" ) >"$log" 2>&1; then
+    ok "$c verified (TON Verifier backend; source<->bytecode)"; checkmark "verify $c" 1
+    return
+  fi
+  # The public TON Verifier backend (verifier-testnet.tonstudio.io) recompiles the
+  # UPLOADED sources but does NOT register Acton's `@acton` stdlib path alias, so a
+  # contract whose collected sources import `@acton/...` (only StakeVault here, via
+  # stake_types.tolk -> "@acton/tolk-stdlib/tvm-dicts") fails the backend with
+  # "path mapping @acton was not registered". That is a backend limitation, NOT a
+  # problem with our deploy. Fall back to the canonical, self-contained
+  # source<->bytecode proof: the code hash of the LOCALLY compiled source (printed
+  # by `acton verify` before upload) must equal the deployed on-chain code hash.
+  # Equality proves the deployed bytecode IS exactly this source, independent of
+  # the third-party web verifier.
+  local local_hash onchain_hash
+  local_hash="$(grep -oiE 'code hash:[[:space:]]*0x[0-9a-f]+' "$log" | head -1 | grep -oiE '0x[0-9a-f]+' | tr 'A-F' 'a-f')"
+  onchain_hash="$( ( cd "$TON_DIR" && acton rpc info "$a" --net "$NET" ) 2>/dev/null \
+    | grep -oiE 'code hash:[[:space:]]*0x[0-9a-f]+' | head -1 | grep -oiE '0x[0-9a-f]+' | tr 'A-F' 'a-f')"
+  if [[ -n "$local_hash" && "$local_hash" == "$onchain_hash" ]]; then
+    warn "$c: TON Verifier backend cannot ingest the @acton stdlib path alias (multi-source); verified via LOCAL code-hash match instead"
+    ok "$c source<->bytecode verified (local code-hash match: $local_hash)"
+    checkmark "verify $c" 1
   else
-    warn "$c verify did not complete (see $LOG_DIR/verify_$c.log) — may be a transient verifier-backend issue"
+    warn "$c verify did not complete (backend failed AND code-hash fallback inconclusive: local=$local_hash onchain=$onchain_hash; see $log)"
     checkmark "verify $c" 0
   fi
 }
@@ -441,10 +487,10 @@ set +e
   VAULT_ADDR="$VAULT_ADDR" ESCROW_ADDR="$ESCROW_ADDR" ANCHOR_ADDR="$ANCHOR_ADDR" \
   GLOBAL_PARAMS_ADDR="$GLOBAL_PARAMS_ADDR" \
   STAKE_DEPOSIT_AMOUNT="$STAKE_DEPOSIT_AMOUNT" \
-  SETTLE_WINNER="$WALLET_ADDR" SETTLE_WINNER_AMOUNT="$SETTLE_WINNER_AMOUNT" \
+  SETTLE_WINNER="$WINNER_ADDR" SETTLE_WINNER_AMOUNT="$SETTLE_WINNER_AMOUNT" \
   SETTLE_FEE="$SETTLE_FEE" SETTLE_PARTICIPANT="$WALLET_ADDR" \
   SETTLE_PARTICIPANT_AMOUNT="$SETTLE_PARTICIPANT_AMOUNT" SETTLE_RESULT_HASH="$RESULT_HASH" \
-  ANCHOR_ROOT="$RESULT_HASH" ANCHOR_LEAF="$RESULT_HASH" \
+  ANCHOR_LEAF="$RESULT_HASH" \
   E2E_RUN_DISPUTE="$([[ "$E2E_RUN_DISPUTE" == "1" ]] && echo true || echo false)" \
   DISPUTE_BOND="${DISPUTE_BOND:-200000000}" \
   acton script scripts/e2e_testnet.tolk --net "$NET" --explorer tonviewer ) 2>&1 | tee "$E2E_LOG"

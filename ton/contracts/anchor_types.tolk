@@ -6,9 +6,13 @@
 //
 // Hash domain note (ALIGNED, end-to-end): the off-chain epoch tree and this
 // on-chain verifier use the SAME internal-node hash so a proof built off-chain
-// reproduces the anchored root here. Leaves are BLAKE3(canonical JobRecord)
-// 256-bit commitments (Rust side, p2p-settlement::types::JobRecord::leaf) and are
-// folded RAW (no on-chain leaf re-hash). Each parent is the TON cell
+// reproduces the anchored root here. A raw leaf is a BLAKE3(canonical JobRecord)
+// 256-bit commitment (Rust side, p2p-settlement::types::JobRecord::leaf); before
+// it is folded it is DOMAIN-SEPARATED via `hashLeaf` below — the cell
+// representation hash of a ref-less cell holding one 256-bit int,
+// `sha256(0x00 0x40 ‖ leaf)` (the A7 second-preimage fix, mirrored by the Rust
+// `hash_leaf`), so a leaf value can never equal an interior node. Each parent is
+// the TON cell
 // representation hash of an ordinary ref-less cell holding `left ‖ right` (two
 // 256-bit big-endian ints) — `hashPair` below. The Rust side reproduces this as
 // `sha256(0x00 0x80 ‖ left ‖ right)` (see crates/settlement/src/merkle.rs); the
