@@ -36,9 +36,31 @@ function isOfflineFetchRejection(reason: unknown): boolean {
 let warnedOffline = false;
 
 /**
+ * Resolve the TonConnect manifest URL. A wallet (often on a different device)
+ * must be able to FETCH this, so it has to be an ABSOLUTE, reachable URL — never
+ * a bare relative path or `localhost` that a phone can't reach.
+ *
+ * Precedence:
+ *   1. NEXT_PUBLIC_TONCONNECT_MANIFEST_URL — set this to a public origin's
+ *      manifest when serving behind a tunnel (cloudflared/ngrok) or in prod.
+ *   2. `${window.location.origin}/tonconnect-manifest.json` — absolute URL built
+ *      from the current origin at runtime (works on dev, a LAN IP, or prod).
+ *   3. The relative path (SSR only; the provider re-resolves on the client).
+ */
+function resolveManifestUrl(): string {
+  const fromEnv = process.env.NEXT_PUBLIC_TONCONNECT_MANIFEST_URL;
+  if (fromEnv) return fromEnv;
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/tonconnect-manifest.json`;
+  }
+  return "/tonconnect-manifest.json";
+}
+
+/**
  * Wraps the app in the TON Connect context so any page can connect a wallet and
  * send transactions (deploys). The manifest is served from /public; the URL is
- * resolved from the current origin at runtime so it works on any host/port.
+ * resolved from the current origin at runtime (or NEXT_PUBLIC_TONCONNECT_MANIFEST_URL)
+ * so it works on any host/port and behind a public tunnel.
  *
  * We also absorb the SDK's offline init rejection (see
  * {@link isOfflineFetchRejection}) so it degrades quietly instead of logging an
@@ -47,10 +69,7 @@ let warnedOffline = false;
  * built-in wallet list when it isn't — so opening the modal still works.
  */
 export function TonConnectProvider({ children }: { children: React.ReactNode }) {
-  const manifestUrl =
-    typeof window === "undefined"
-      ? "/tonconnect-manifest.json"
-      : `${window.location.origin}/tonconnect-manifest.json`;
+  const manifestUrl = resolveManifestUrl();
 
   React.useEffect(() => {
     const onUnhandledRejection = (event: PromiseRejectionEvent) => {

@@ -94,6 +94,25 @@ mainnet — your wallet signs and broadcasts. Highlights:
 > faucet. The wallet-connect/build/encode/verify path is `src/lib/ton-connect.tsx`,
 > `src/lib/ton-build.ts`, and `src/app/deploy/`.
 
+### TonConnect manifest (QR / real-device connect)
+
+When you connect a wallet, the wallet **fetches** `tonconnect-manifest.json` and validates
+it — a phone scanning the Tonkeeper QR cannot reach `http://localhost`, and a manifest whose
+`url`/`iconUrl` don't resolve is rejected with **"wrong manifest"**. So:
+
+- The manifest lives at `public/tonconnect-manifest.json` (`url`, `name: "Duckton"`, and an
+  absolute `iconUrl` → `public/duckton-icon.png`, a 512×512 PNG). Required fields are `url`,
+  `name`, `iconUrl`; the icon must be an absolute URL the wallet can fetch.
+- The `manifestUrl` passed to `TonConnectUIProvider` is resolved from
+  `NEXT_PUBLIC_TONCONNECT_MANIFEST_URL` if set, otherwise from the current origin at runtime —
+  never a bare relative/localhost path.
+- **Testing wallet-connect on a real phone locally:** `localhost` is unreachable from the
+  phone. Either expose the dev app via a public tunnel (`cloudflared tunnel --url
+  http://localhost:3000`, or `ngrok http 3000`) or deploy it, then set
+  `NEXT_PUBLIC_TONCONNECT_MANIFEST_URL` **and** the manifest's `url`/`iconUrl` to that public
+  origin. The simplest no-tunnel path is the **Tonkeeper browser extension** on the same
+  machine, which can reach `http://localhost:3000`.
+
 ## Explanations
 
 Every page opens with a plain-language **Explainer** callout (what it shows + how it

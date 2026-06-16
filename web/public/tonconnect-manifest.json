@@ -1,7 +1,5 @@
 {
-  "url": "https://duckgrid.example",
-  "name": "DuckGrid Console",
-  "iconUrl": "https://ton.org/download/ton_symbol.png",
-  "termsOfUseUrl": "https://duckgrid.example/terms",
-  "privacyPolicyUrl": "https://duckgrid.example/privacy"
+  "url": "http://localhost:3000",
+  "name": "Duckton",
+  "iconUrl": "http://localhost:3000/duckton-icon.png"
 }
