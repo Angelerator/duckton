@@ -123,12 +123,14 @@ fn offer(requester: &str, cost_hint_rows: Option<u64>, class: DataClass) -> Offe
         requester_id: NodeId(requester.into()),
         query_hash: QueryHash::compute("SELECT 1", "mock-1"),
         cost_hint_rows,
+        cost_hint_bytes: None,
         data_class: class,
         nonce: 1,
         network: None,
         groups: Vec::new(),
         regions: Vec::new(),
         group_proof: None,
+        input_fingerprint_hint: None,
     }
 }
 

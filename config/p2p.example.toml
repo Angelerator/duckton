@@ -327,11 +327,15 @@ max_local_latency_ms      = 10000           # latency budget for the local path 
 # The boundary AROUND job execution, complementing DuckDB's own lockdown
 # (enable_external_access / lock_configuration / allowed_directories / ephemeral
 # temp). DuckDB CANNOT scope network egress to specific endpoints — the OS must.
-# OFF by default: with enabled = false this is a no-op and the node behaves
-# exactly as today. Turn it on (and pick a backend) on workers that enable
-# remote storage reads (storage.enable_remote_access = true).
+# SECURE BY DEFAULT for the HOST serving path: enabled + process_per_job default
+# ON, so a node that serves OTHER peers' jobs runs them OS-sandboxed in a child
+# process. This does NOT affect the requester's OWN local self-run path (it runs
+# in-process and needs no protection from yourself). backend = auto degrades to a
+# no-op on platforms with no OS sandbox, so a node never crashes; where OS
+# confinement can't be applied the host fails SAFE (keeps the DuckDB SQL lockdown,
+# refuses to serve remote-access jobs unconfined).
 [sandbox]
-enabled        = false                     # master switch (false = no-op sandbox)
+enabled        = true                      # master switch (false = no-op sandbox)
 backend        = "auto"                    # auto | none | rlimit | cgroups-seccomp |
                                            #  macos-seatbelt | windows-jobobject |
                                            #  android | ios
@@ -339,6 +343,9 @@ backend        = "auto"                    # auto | none | rlimit | cgroups-secc
                                            #  macOS->Seatbelt, Windows->Job Objects,
                                            #  Android->app sandbox+seccomp, iOS->app
                                            #  sandbox (in-process only), else rlimit
+process_per_job = true                     # run each FOREIGN job in an OS-sandboxed
+                                           #  child (needs P2P_JOB_EXEC; else falls
+                                           #  back to in-process under the lockdown)
 egress_mode    = "inherit_storage"         # inherit_storage | explicit
                                            #  inherit_storage derives the allow-list
                                            #  from [storage] endpoints/providers

@@ -19,15 +19,17 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+use std::time::Duration;
+
 use p2p_config::{
-    DataClassCfg, GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides,
-    SettlementRail,
+    DataClassCfg, GridConfig, IdentityConfig, PaymentPref, PinningMode, PricingModel,
+    QueryOverrides, SettlementRail,
 };
 use p2p_node::{
     AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
-    WorkerParams,
+    WorkerParams, WorkingSetEstimate,
 };
-use p2p_proto::{Attestation, JobId, NodeId};
+use p2p_proto::{Attestation, JobId, NodeId, QueryHash, Receipt, Verdict};
 use p2p_settlement::types::{Amount, SlashError};
 use p2p_settlement::{
     merkle, settle_if_paid, EscrowHandle, Hash32, InMemoryRecordAnchor, InMemoryStakeRegistry,
@@ -413,6 +415,7 @@ async fn paid_job_settles_split_and_anchors_record() {
             epoch: 1,
             prev_root: [0u8; 32],
             params_version: 0,
+            input_fingerprint: String::new(),
         });
     }
     anchor.append(&JobRecord {
@@ -424,6 +427,7 @@ async fn paid_job_settles_split_and_anchors_record() {
         epoch: 1,
         prev_root: [0u8; 32],
         params_version: 0,
+        input_fingerprint: String::new(),
     });
     let root = anchor.epoch_root();
     let proof = anchor
@@ -1716,4 +1720,311 @@ async fn sybil_min_stake_without_registry_fails_closed() {
         matches!(err, p2p_node::CoordinatorError::NoCandidates),
         "Sybil stake floor with no registry must fail closed, got {err:?}",
     );
+}
+
+// --------------------------------------------------------------------------
+// Time-based (usage) pricing: metered settle + refund, hard cap-deadline
+// abort (no slash), up-front underfunded rejection, perf prioritization.
+// --------------------------------------------------------------------------
+
+/// Spawn a worker that advertises METERED pricing (a per-second rate + the cap
+/// multiplier) so its bids carry `rate_per_second`/`cap_seconds`. The engine can
+/// be a delayed `MockEngine` to control measured processing latency.
+async fn spawn_worker_metered(
+    engine: Arc<dyn QueryEngine>,
+    rate_per_second: u64,
+    cap_multiplier: u64,
+) -> WorkerHandle {
+    let net = GridConfig::default().network;
+    let transport =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let mut cfg = GridConfig::default();
+    cfg.economics.pricing.model = PricingModel::Metered;
+    cfg.economics.pricing.rate_per_second = rate_per_second;
+    cfg.economics.pricing.cap_multiplier = cap_multiplier;
+    let admission = AdmissionController::new(&cfg.budget);
+    let params = WorkerParams::from_config(&cfg);
+    let node_id = transport.local_node_id().clone();
+    let addr = transport.local_addr().unwrap();
+    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let task = worker.spawn();
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
+}
+
+/// A paid grid config priced under the METERED model (per-second rate + 5× cap),
+/// with `max_bid` (the requester's maxEscrow ceiling) in whole TON.
+fn metered_cfg(
+    replicas: usize,
+    quorum: usize,
+    rate_per_second: u64,
+    cap_multiplier: u64,
+    max_bid_ton: u64,
+) -> GridConfig {
+    let mut c = paid_cfg(replicas, quorum);
+    c.economics.pricing.model = PricingModel::Metered;
+    c.economics.pricing.rate_per_second = rate_per_second;
+    c.economics.pricing.cap_multiplier = cap_multiplier;
+    c.economics.pricing.max_bid = max_bid_ton;
+    c.validate().unwrap();
+    c
+}
+
+fn estimate_bytes(bytes: u64) -> WorkingSetEstimate {
+    WorkingSetEstimate {
+        scanned_uncompressed_bytes: bytes,
+        estimated_rows: 0,
+        scan_buffer_bytes: 0,
+        group_by_bytes: 0,
+        join_build_bytes: 0,
+        sort_bytes: 0,
+        peak_working_set_bytes: 0,
+        estimated_runtime_ms: 0,
+    }
+}
+
+/// Seed a worker's COUNTERPARTY-MEASURED perf aggregate + reputation by recording
+/// `n` verified-`Correct` receipts with the given measured latency / workload
+/// bytes (the same path real signed receipts take). Distinct job ids so each is
+/// folded once (replay-deduped).
+fn seed_perf(st: &InMemoryTrustStore, worker: &NodeId, n: usize, latency_ms: u64, bytes: u64) {
+    for i in 0..n {
+        let r = Receipt {
+            job_id: JobId(format!("seed-{}-{i}", worker.as_str())),
+            worker_id: worker.clone(),
+            requester_id: NodeId("b3:seed-requester".into()),
+            query_hash: QueryHash::compute("seed", "v"),
+            result_hash: "h".into(),
+            verdict: Verdict::Correct,
+            latency_ms,
+            ts: now_ts(),
+            observed_input_bytes: bytes,
+            observed_result_rows: 0,
+            observed_result_bytes: 0,
+            input_fingerprint: String::new(),
+            requester_pubkey: String::new(),
+            sig: String::new(),
+        };
+        st.record(&r);
+        st.observe_capability(&r);
+        st.observe_perf(&r);
+    }
+}
+
+/// METERED settle: the coordinator sizes the escrow to the worst-case `cap_base`
+/// (`rate × cap_seconds`), bills `base = rate × min(actual_seconds, cap_seconds)`,
+/// applies the φ=15% / κ=5% split, and REFUNDS the unused over-reservation (the
+/// settle total is far below the cap-sized escrow `B`). The 16 MiB/s cold-start
+/// throughput × a controlled estimate makes `cap_seconds` deterministic.
+#[tokio::test]
+async fn metered_job_bills_actual_seconds_and_refunds_unused_escrow() {
+    const TON: Amount = 1_000_000_000;
+    let rate = TON as u64; // 1 TON / second
+                           // ~16 GiB estimate ⇒ estimated_seconds = 1000, cap_seconds = 5000.
+    let est_bytes = 16 * 1024 * 1024 * 1000u64;
+    // A ~600ms execution ⇒ ceil(0.6s)=1 billed second (well under the 5000 cap).
+    let engine = || Arc::new(MockEngine::deterministic().with_delay(Duration::from_millis(600)));
+    let w1 = spawn_worker_metered(engine(), rate, 5).await;
+    let w2 = spawn_worker_metered(engine(), rate, 5).await;
+    let st = store();
+    // maxEscrow comfortably covers the worst case (cap_base 5000 TON + fees).
+    let cfg = metered_cfg(2, 2, rate, 5, 10_000);
+    let settlement = Arc::new(CapturingSettlement::new());
+
+    let coord = coordinator(&[&w1, &w2], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_settlement(settlement.clone());
+
+    let outcome = coord
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(estimate_bytes(est_bytes)),
+        )
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+
+    // cap_seconds = ceil(16GiB / 16MiB/s) × 5 = 1000 × 5 = 5000; cap_base = rate×cap.
+    let cap_base = rate as Amount * 5000;
+    let expected_b = p2p_settlement::required_escrow_total(cap_base, 1, 1500, 500);
+
+    let opened = settlement.opened.lock().unwrap().clone();
+    assert_eq!(opened, vec![expected_b], "escrow sized to the worst-case cap_base");
+
+    let settled = settlement.settled.lock().unwrap().clone();
+    assert_eq!(settled.len(), 1);
+    let (b, split) = &settled[0];
+    assert_eq!(*b, expected_b);
+
+    // base = rate × actual ≤ cap_base; a ~600ms job bills 1–2 whole seconds.
+    let base = split.base;
+    assert!(base > 0 && base % rate as Amount == 0, "base is a whole-second multiple of the rate: {base}");
+    assert!(base <= cap_base, "base must not exceed the cap base");
+    assert!(base <= 2 * rate as Amount, "≈1s job bills ~1 second, not the cap");
+    // The winner has a wallet ⇒ paid exactly the metered base.
+    assert_eq!(split.winner.amount, base);
+    // Correct 15% / 5% split.
+    assert_eq!(split.platform_fee, base * 1500 / 10_000);
+    assert_eq!(split.participants.len(), 1);
+    assert_eq!(split.participants[0].amount, base * 500 / 10_000);
+    // The full split fits B AND leaves a large refund (cap over-reservation − actual).
+    let total = split.total();
+    assert!(total <= *b);
+    assert!(*b - total > 0, "unused escrow (cap − actual) refunds to the requester");
+    assert!(total < cap_base, "actual spend is far below the worst-case cap");
+}
+
+/// HARD cap deadline: a metered job whose execution exceeds `cap_seconds` is
+/// ABORTED at the cap (no grace) and classified as a resource/job fault. With a
+/// consensus of providers overrunning, the query is `Infeasible` — NO escrow is
+/// opened/settled and NO stake is slashed (the data was simply too big for the
+/// bid cap; the providers are blameless).
+#[tokio::test]
+async fn metered_overrun_past_cap_aborts_with_no_settle_and_no_slash() {
+    const TON: Amount = 1_000_000_000;
+    let rate = TON as u64;
+    // Tiny estimate ⇒ estimated_seconds = 1, cap_multiplier 1 ⇒ cap_seconds = 1
+    // (cap deadline = 1000ms). The engine takes 2500ms ⇒ a hard cap overrun.
+    let engine = || Arc::new(MockEngine::deterministic().with_delay(Duration::from_millis(2500)));
+    let w1 = spawn_worker_metered(engine(), rate, 1).await;
+    let w2 = spawn_worker_metered(engine(), rate, 1).await;
+    let st = store();
+    let cfg = metered_cfg(2, 2, rate, 1, 1_000); // ample maxEscrow (not the point here)
+
+    let reg = Arc::new(InMemoryStakeRegistry::new(0, 0, 0, 100_000 * TON));
+    reg.set_stake(&w1.node_id, 1_000 * TON);
+    reg.set_stake(&w2.node_id, 1_000 * TON);
+    let settlement = Arc::new(CapturingSettlement::new());
+
+    let coord = coordinator(&[&w1, &w2], cfg, st.clone() as Arc<dyn TrustStore>)
+        .await
+        .with_stake_registry(reg.clone())
+        .with_settlement(settlement.clone());
+
+    let err = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(estimate_bytes(1_000)))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, p2p_node::CoordinatorError::Infeasible { .. }),
+        "a consensus cap overrun is a job fault (Infeasible), got {err:?}",
+    );
+
+    // NO escrow opened/settled (the job never reached a verified quorum).
+    assert!(settlement.opened.lock().unwrap().is_empty(), "no escrow on an aborted job");
+    assert!(settlement.settled.lock().unwrap().is_empty(), "nothing settled on an aborted job");
+    // NO slash: the cap overrun is a resource/job fault, never a provider penalty.
+    assert_eq!(reg.stake_of(&w1.node_id), 1_000 * TON, "overrun must not slash w1");
+    assert_eq!(reg.stake_of(&w2.node_id), 1_000 * TON, "overrun must not slash w2");
+    // The overrunning nodes accrue no fault observation either.
+    assert_eq!(st.observation_count(&w1.node_id), 0);
+    assert_eq!(st.observation_count(&w2.node_id), 0);
+}
+
+/// UP-FRONT underfunded rejection: when the requester's maxEscrow cannot cover the
+/// worst-case `cap_base + φ + κ·N` of the selected metered bids, the job is
+/// REJECTED before any dispatch with the human-readable insufficient-escrow error
+/// — and nothing is ever opened/settled.
+#[tokio::test]
+async fn metered_underfunded_job_is_rejected_up_front() {
+    const TON: Amount = 1_000_000_000;
+    let rate = TON as u64;
+    let est_bytes = 16 * 1024 * 1024 * 1000u64; // ⇒ cap_seconds 5000 ⇒ cap_base 5000 TON
+    let w1 = spawn_worker_metered(Arc::new(MockEngine::deterministic()), rate, 5).await;
+    let w2 = spawn_worker_metered(Arc::new(MockEngine::deterministic()), rate, 5).await;
+    let st = store();
+    // maxEscrow only 100 TON — far short of cap_base (5000 TON) + fees.
+    let cfg = metered_cfg(2, 2, rate, 5, 100);
+    let settlement = Arc::new(CapturingSettlement::new());
+
+    let coord = coordinator(&[&w1, &w2], cfg, st as Arc<dyn TrustStore>)
+        .await
+        .with_settlement(settlement.clone());
+
+    let err = coord
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(estimate_bytes(est_bytes)),
+        )
+        .await
+        .unwrap_err();
+    match err {
+        p2p_node::CoordinatorError::InsufficientEscrow(msg) => {
+            assert!(msg.contains("insufficient escrow"), "got: {msg}");
+        }
+        other => panic!("expected InsufficientEscrow, got {other:?}"),
+    }
+    // Rejected before any dispatch ⇒ nothing opened/settled.
+    assert!(settlement.opened.lock().unwrap().is_empty());
+    assert!(settlement.settled.lock().unwrap().is_empty());
+}
+
+/// PERFORMANCE PRIORITIZATION (latency): with equal reputation, the node whose
+/// COUNTERPARTY-MEASURED commit latency is low (`perf_sample`) out-ranks a node
+/// measured slow — so the faster honest node wins dispatch deterministically.
+#[tokio::test]
+async fn perf_prioritization_picks_measured_fast_over_slow() {
+    let fast = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let slow = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    // Equal reputation (10 verified successes each); only the MEASURED latency
+    // differs — fast 100ms vs slow 4900ms over the same 1 GiB workload.
+    let gib = 1024 * 1024 * 1024u64;
+    seed_perf(&st, &fast.node_id, 10, 100, gib);
+    seed_perf(&st, &slow.node_id, 10, 4900, gib);
+
+    for _ in 0..5 {
+        let coord = coordinator(&[&fast, &slow], base_cfg(1, 1), st.clone() as Arc<dyn TrustStore>).await;
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.winner.as_ref(),
+            Some(&fast.node_id),
+            "the measured-fast node must out-rank the measured-slow peer",
+        );
+    }
+}
+
+/// PERFORMANCE PRIORITIZATION (anti-game): both nodes self-report the SAME ETA in
+/// their bids (each CLAIMS to be equally fast), yet the one COUNTERPARTY-MEASURED
+/// to be slow is demoted — selection scores on `perf_sample` (receipt-driven),
+/// never on the self-reported ETA. A node that over-claims speed but delivers
+/// slow loses the race. Also exercises the throughput term (higher measured
+/// bytes/second ⇒ higher rank).
+#[tokio::test]
+async fn perf_prioritization_demotes_node_measured_slow_despite_equal_self_report() {
+    let honest = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let overclaimer = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let st = store();
+    // Identical reputation. Same measured latency, but the honest node is measured
+    // pushing far more bytes/second (higher throughput) than the over-claimer.
+    seed_perf(&st, &honest.node_id, 10, 1000, 10 * 1024 * 1024 * 1024);
+    seed_perf(&st, &overclaimer.node_id, 10, 1000, 64 * 1024 * 1024);
+    // Both workers bid the SAME self-reported ETA (the offer carries no cost hint),
+    // so the only differentiator is the counterparty-measured perf.
+    for _ in 0..5 {
+        let coord = coordinator(
+            &[&honest, &overclaimer],
+            base_cfg(1, 1),
+            st.clone() as Arc<dyn TrustStore>,
+        )
+        .await;
+        let outcome = coord
+            .run_query("SELECT 1", QueryOverrides::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.winner.as_ref(),
+            Some(&honest.node_id),
+            "measured throughput/latency must decide, not the self-reported ETA",
+        );
+    }
 }

@@ -276,7 +276,7 @@ function WorkerSheet({ w }: { w: Worker }) {
         <div>
           <SectionTitle>Capacity</SectionTitle>
           <dl className="divide-y">
-            <KV label="donated RAM">{bytes(w.totalMemBytes, 0)}</KV>
+            <KV label="donated RAM">{bytes(w.donatedMemBytes, 0)}</KV>
             <KV label="threads">{w.totalThreads}</KV>
             <KV label="max concurrent jobs">{w.maxJobs}</KV>
           </dl>
@@ -453,7 +453,7 @@ export function WorkersClient() {
                         <div className="flex flex-col">
                           <span className="text-xs tabular-nums">
                             {w.totalThreads} thr ·{" "}
-                            {bytes(w.totalMemBytes, 0)}
+                            {bytes(w.donatedMemBytes, 0)}
                           </span>
                           <span className="text-muted-foreground text-xs tabular-nums">
                             max {w.maxJobs} jobs

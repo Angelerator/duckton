@@ -139,6 +139,7 @@ async fn parquet_modular_encryption_roundtrip() {
     let ctx = JobContext {
         credential: None,
         parquet_keys: vec![(key_name.to_string(), key_bytes.clone())],
+        input_snapshot: None,
     };
 
     // Write an encrypted Parquet file (footer + columns encrypted with the key).
@@ -219,6 +220,7 @@ async fn scoped_s3_secret_installs_when_httpfs_available() {
             expires_at: u64::MAX,
         }),
         parquet_keys: Vec::new(),
+        input_snapshot: None,
     };
 
     // List secrets — succeeds only if httpfs registered the s3 secret type and
@@ -312,6 +314,7 @@ async fn sealed_minio_credential_installs_scoped_secret() {
     let ctx = JobContext {
         credential: Some(scoped),
         parquet_keys: Vec::new(),
+        input_snapshot: None,
     };
 
     let rs = eng

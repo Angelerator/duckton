@@ -161,12 +161,118 @@ where
     }
 }
 
+/// One committed `(input_fingerprint, result_hash)` pair from a single provider,
+/// for fingerprint-aware quorum (deterministic-input verification).
+#[derive(Debug, Clone, Copy)]
+pub struct CommitKey<'a> {
+    /// The input snapshot the provider reported reading. Empty ⇒ unknown (an
+    /// older worker, or a job with no pin) — treated as "on the pinned snapshot",
+    /// never counted as drift, so an old peer can never trigger a false penalty.
+    pub input_fingerprint: &'a str,
+    /// The canonical result hash the provider committed.
+    pub result_hash: &'a str,
+}
+
+/// The outcome of a fingerprint-aware quorum tally.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FingerprintQuorumOutcome {
+    /// Quorum over the result hashes of the commits that read the **pinned**
+    /// snapshot (or all commits, when there is no pin). Drive the existing
+    /// success/disagreement/verdict logic from this exactly as before.
+    pub pinned: QuorumOutcome,
+    /// How many commits read a **different**, non-empty snapshot than the pinned
+    /// one — i.e. the source data changed between replica executions. `> 0` ⇒
+    /// benign input drift: re-pin + re-dispatch, never a provider penalty.
+    pub drifted: usize,
+}
+
+/// Tally committed result hashes **grouped by the input snapshot they read**
+/// (deterministic-input verification, architecture §7.4 + §11 step 5).
+///
+/// Splits the commits into two groups against `pinned`:
+///  * **on-pinned** — `input_fingerprint == pinned`, OR an *empty* fingerprint
+///    (an older worker / unpinned job: treated as on-pinned so a missing
+///    fingerprint is never a false drift), OR `pinned == None` (no pin at all:
+///    every commit is on-pinned and this degrades to plain [`evaluate_quorum`]).
+///  * **drifted** — a non-empty fingerprint that differs from `pinned`.
+///
+/// Quorum is then evaluated over the on-pinned group's result hashes only, so a
+/// minority that read newer bytes (a *different* fingerprint) is NOT mixed into
+/// the equivocation/disagreement check — it is surfaced as [`drifted`] instead.
+/// A split with the SAME fingerprint but different hashes is still a genuine
+/// equivocation (flagged by the inner [`QuorumOutcome::split`]); a split across
+/// DIFFERENT fingerprints is drift.
+pub fn evaluate_quorum_on_commits(
+    commits: &[CommitKey<'_>],
+    pinned: Option<&str>,
+    quorum: usize,
+) -> FingerprintQuorumOutcome {
+    let mut on_pinned: Vec<&str> = Vec::with_capacity(commits.len());
+    let mut drifted = 0usize;
+    for c in commits {
+        match pinned {
+            Some(p) if !c.input_fingerprint.is_empty() && c.input_fingerprint != p => {
+                drifted += 1;
+            }
+            _ => on_pinned.push(c.result_hash),
+        }
+    }
+    FingerprintQuorumOutcome {
+        pinned: evaluate_quorum(on_pinned, quorum),
+        drifted,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn rs(rows: Vec<Vec<Value>>) -> ResultSet {
         ResultSet::new(vec!["a".into(), "b".into()], rows)
+    }
+
+    fn ck<'a>(fp: &'a str, h: &'a str) -> CommitKey<'a> {
+        CommitKey {
+            input_fingerprint: fp,
+            result_hash: h,
+        }
+    }
+
+    #[test]
+    fn no_pin_degrades_to_plain_quorum() {
+        let commits = [ck("", "h1"), ck("", "h1"), ck("", "h2")];
+        let out = evaluate_quorum_on_commits(&commits, None, 2);
+        assert_eq!(out.drifted, 0);
+        assert_eq!(out.pinned.agreed_hash.as_deref(), Some("h1"));
+    }
+
+    #[test]
+    fn minority_on_different_fingerprint_is_drift_not_disagreement() {
+        // 2 read F0 and agree on h1; 1 read F1 (newer bytes) and got h2. With F0
+        // pinned, the F1 commit is drift — not folded into the quorum tally.
+        let commits = [ck("F0", "h1"), ck("F0", "h1"), ck("F1", "h2")];
+        let out = evaluate_quorum_on_commits(&commits, Some("F0"), 2);
+        assert_eq!(out.drifted, 1);
+        assert_eq!(out.pinned.agreed_hash.as_deref(), Some("h1"));
+        assert!(!out.pinned.split);
+    }
+
+    #[test]
+    fn same_fingerprint_split_is_genuine_equivocation() {
+        // Same pinned snapshot, two distinct hashes each reach quorum ⇒ split.
+        let commits = [ck("F0", "h1"), ck("F0", "h1"), ck("F0", "h2"), ck("F0", "h2")];
+        let out = evaluate_quorum_on_commits(&commits, Some("F0"), 2);
+        assert_eq!(out.drifted, 0);
+        assert!(out.pinned.split);
+    }
+
+    #[test]
+    fn empty_fingerprint_is_not_drift() {
+        // An older worker reports an empty fingerprint: never counted as drift.
+        let commits = [ck("F0", "h1"), ck("", "h1")];
+        let out = evaluate_quorum_on_commits(&commits, Some("F0"), 2);
+        assert_eq!(out.drifted, 0);
+        assert_eq!(out.pinned.agreement, 2);
     }
 
     #[test]

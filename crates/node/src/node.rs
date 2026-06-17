@@ -280,7 +280,45 @@ impl Node {
     /// it donates resources and executes queries for others. The advertised
     /// budget/attestation come from the resolved [`GridConfig`].
     pub fn spawn_host(&self) -> tokio::task::JoinHandle<()> {
+        // Non-GDPR system-metadata capture (architecture: machine-class analytics
+        // + routing HINT). Collect a signed `SystemProfile` on host start and
+        // refresh it on the configured interval. A self-reported hint only — it
+        // never feeds trust/selection scoring (kept out by construction).
+        self.spawn_metadata_collection();
         self.host_worker().spawn()
+    }
+
+    /// Collect + persist this host's signed [`p2p_proto::SystemProfile`] once on
+    /// startup, then refresh it every `[metadata].refresh_interval_secs`. Detached
+    /// best-effort task (collection/persist failures are logged and ignored).
+    /// `refresh_interval_secs == 0` runs the one-shot startup collection only.
+    fn spawn_metadata_collection(&self) {
+        let interval_secs = self.config.metadata.refresh_interval_secs;
+        let transport = self.coordinator.transport();
+        let budget = self.config.budget.clone();
+        let engine_version = self.engine.version();
+        let extension_version = env!("CARGO_PKG_VERSION").to_string();
+        tokio::spawn(async move {
+            // The signer borrows the identity owned by the (Arc-held) transport,
+            // which the task keeps alive for its whole lifetime.
+            let signer = crate::signer::IdentitySigner(transport.identity());
+            let store = crate::system_store::SystemStore::open();
+            loop {
+                let profile = crate::system_collect::collect_system_profile(
+                    &signer,
+                    &budget,
+                    &engine_version,
+                    &extension_version,
+                );
+                if let Err(e) = store.store(&signer, profile) {
+                    tracing::debug!("system profile persist failed: {e}");
+                }
+                if interval_secs == 0 {
+                    break; // one-shot startup collection only
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+            }
+        });
     }
 
     /// Assemble the configured host [`Worker`] (without spawning it). Wires the
@@ -325,12 +363,53 @@ impl Node {
             };
             worker = worker.with_antiabuse(&self.config, blocklist, rate_limiter);
         }
-        // OS-level execution sandbox policy (architecture §9.4). Defaults to the
-        // noop backend (no OS isolation; in-process), so a zero-config host behaves
-        // identically; a configured `[sandbox]` backend + egress allow-list now
-        // actually applies on the live host.
+        // OS-level execution sandbox policy (architecture §9.4). A configured
+        // `[sandbox]` backend + egress allow-list applies on the live host; the
+        // hard, kill-the-job-not-the-node enforcement is the process-per-job
+        // `SubprocessEngine` path wired in `host_engine`.
         worker = worker.with_sandbox(&self.config);
+
+        // Fail-safe remote-access guard (architecture §9.4, G8): a host that
+        // opted into remote object-store reads (`storage.enable_remote_access`)
+        // but has NO active OS egress filter would let a foreign query reach
+        // ARBITRARY network endpoints (DuckDB's `enable_external_access` is
+        // all-or-nothing; the in-process lockdown cannot scope egress). Rather
+        // than silently allow open egress (an SSRF footgun) or crash, REFUSE to
+        // serve: the host keeps running under the DuckDB lockdown but declines
+        // every offer with a clear reason. Confinement requires the OS-sandboxed
+        // process-per-job path with an egress-capable backend AND a configured
+        // child executor; see `host_remote_egress_confined`.
+        if self.config.storage.enable_remote_access && !self.host_remote_egress_confined() {
+            let reason = "host refuses to serve: storage.enable_remote_access=true without an \
+                 active OS egress filter (enable [sandbox] with process_per_job + an \
+                 egress-capable backend and set P2P_JOB_EXEC, or run behind an OS-level egress \
+                 firewall). Serving foreign jobs unconfined with open egress is an SSRF risk.";
+            tracing::warn!("{reason}");
+            worker = worker.refusing_to_serve(reason);
+        }
         worker
+    }
+
+    /// Whether the host can confine a remote-access job's network EGRESS to the
+    /// pinned storage endpoints (architecture §9.4). Egress is only actually
+    /// filtered on the OS-sandboxed process-per-job path, so this requires: the
+    /// sandbox enabled, `process_per_job` on, an egress-capable backend for this
+    /// platform, AND a configured `P2P_JOB_EXEC` child executor (without it
+    /// `host_engine` falls back to in-process, where egress is unfiltered).
+    fn host_remote_egress_confined(&self) -> bool {
+        use p2p_config::SandboxBackend::*;
+        let sb = &self.config.sandbox;
+        if !sb.enabled || !sb.process_per_job {
+            return false;
+        }
+        let egress_capable = matches!(
+            crate::sandbox::effective_backend(sb.backend),
+            MacosSeatbelt | CgroupsSeccomp | Android | WindowsJobObject
+        );
+        let have_executor = std::env::var("P2P_JOB_EXEC")
+            .map(|p| !p.trim().is_empty())
+            .unwrap_or(false);
+        egress_capable && have_executor
     }
 
     /// The engine the host (worker) executes jobs with. Defaults to this node's
@@ -523,12 +602,14 @@ mod tests {
             requester_id: NodeId("b3:req".into()),
             query_hash: QueryHash::compute("SELECT 1", "v"),
             cost_hint_rows: Some(rows),
+            cost_hint_bytes: None,
             data_class: DataClass::Public,
             nonce: 0,
             network: None,
             groups: Vec::new(),
             regions: Vec::new(),
             group_proof: None,
+            input_fingerprint_hint: None,
         };
         assert!(
             matches!(worker.bid_for(&mk(1_000)).decision, BidDecision::Reject { .. }),
@@ -552,12 +633,14 @@ mod tests {
             requester_id: NodeId("b3:req".into()),
             query_hash: QueryHash::compute("SELECT 1", "v"),
             cost_hint_rows: Some(1),
+            cost_hint_bytes: None,
             data_class: DataClass::Public,
             nonce: 0,
             network: network.map(String::from),
             groups: groups.into_iter().map(String::from).collect(),
             regions: regions.into_iter().map(String::from).collect(),
             group_proof: None,
+            input_fingerprint_hint: None,
         };
         let build = |f: &dyn Fn(&mut GridConfig)| {
             let mut cfg = GridConfig::default();
@@ -644,12 +727,14 @@ mod tests {
             requester_id: req_id.clone(),
             query_hash: QueryHash::compute("SELECT 1", "v"),
             cost_hint_rows: Some(1),
+            cost_hint_bytes: None,
             data_class: DataClass::Public,
             nonce: 0,
             network: None,
             groups: declared.into_iter().map(String::from).collect(),
             regions: Vec::new(),
             group_proof: proof,
+            input_fingerprint_hint: None,
         };
         let reject = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Reject { .. });
 
@@ -676,6 +761,68 @@ mod tests {
             Some(serde_json::to_string(&stolen).unwrap()),
             vec![]
         ))));
+    }
+
+    #[tokio::test]
+    async fn host_refuses_remote_access_without_egress_confinement() {
+        // Fail-safe guard (§9.4, G8): a host that enabled remote object-store
+        // reads but has NO active OS egress filter (no `P2P_JOB_EXEC` ⇒ in-process,
+        // unfiltered egress) must REFUSE every offer rather than allow open egress
+        // (an SSRF footgun). It does not crash and keeps the DuckDB lockdown.
+        let mk_offer = || Offer {
+            job_id: JobId::new(),
+            requester_id: NodeId("b3:req".into()),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(1),
+            cost_hint_bytes: None,
+            data_class: DataClass::Public,
+            nonce: 0,
+            network: None,
+            groups: Vec::new(),
+            regions: Vec::new(),
+            group_proof: None,
+            input_fingerprint_hint: None,
+        };
+
+        let mut cfg = GridConfig::default(); // sandbox enabled + process_per_job
+        cfg.storage.enable_remote_access = true;
+        cfg.validate().unwrap();
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        assert!(
+            !node.host_remote_egress_confined(),
+            "no P2P_JOB_EXEC ⇒ egress is not confined"
+        );
+        let worker = node.host_worker();
+        assert!(
+            matches!(
+                worker.bid_for(&mk_offer()).decision,
+                BidDecision::Reject { .. }
+            ),
+            "remote-access host without egress confinement must refuse to serve"
+        );
+
+        // The requester's OWN local self-run path is UNAFFECTED (no protection
+        // from yourself): a local query still runs unconfined and returns a row.
+        let outcome = node
+            .query("SELECT 1 AS x", p2p_config::QueryOverrides::default())
+            .await
+            .unwrap();
+        assert!(
+            outcome.executed_locally,
+            "self-run local path must stay usable for the requester"
+        );
+
+        // A host WITHOUT remote access serves normally (the guard is conditional,
+        // not a blanket refusal) — same secure defaults, no open-egress risk.
+        let node2 = Node::with_config(
+            GridConfig::default(),
+            Arc::new(MockEngine::deterministic()),
+        )
+        .unwrap();
+        assert!(matches!(
+            node2.host_worker().bid_for(&mk_offer()).decision,
+            BidDecision::Accept
+        ));
     }
 
     #[test]

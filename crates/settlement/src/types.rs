@@ -328,6 +328,12 @@ pub struct JobRecord {
     /// job — all parties (host, requester, coordinator) agree. `0` = unbound
     /// (free/legacy jobs, or no `GlobalParams` wired); fully additive.
     pub params_version: u32,
+    /// The input-snapshot fingerprint the verified result was computed over
+    /// (deterministic-input verification). Bound into the anchored leaf so a
+    /// dispute references the EXACT external inputs, not just the query text and
+    /// answer. Empty (default / unpinned or legacy job) ⇒ unbound; fully additive.
+    #[serde(default)]
+    pub input_fingerprint: String,
 }
 
 impl JobRecord {
@@ -349,6 +355,9 @@ impl JobRecord {
         // `params_version == 0` record matches the legacy encoding only in value,
         // not length — disputes commit to the exact params set in force).
         out.extend_from_slice(&self.params_version.to_le_bytes());
+        // Bind the input fingerprint (deterministic-input verification) last, so
+        // an empty fingerprint is value-compatible with legacy leaves.
+        field(self.input_fingerprint.as_bytes(), &mut out);
         out
     }
 
@@ -504,6 +513,7 @@ mod record_tests {
             epoch: 3,
             prev_root: [0u8; 32],
             params_version,
+            input_fingerprint: String::new(),
         }
     }
 
@@ -518,10 +528,30 @@ mod record_tests {
         assert_ne!(a.leaf(), b.leaf());
         // Deterministic for a fixed version.
         assert_eq!(record(1).leaf(), record(1).leaf());
-        // The version is the trailing 4 bytes (LE) of the canonical encoding.
+        // The version precedes the trailing length-prefixed input_fingerprint
+        // field (empty here ⇒ a 4-byte length of 0), so it occupies the 4 bytes
+        // just before that 4-byte length suffix.
         let bytes = record(0x0102_0304).canonical_bytes();
-        let tail = &bytes[bytes.len() - 4..];
-        assert_eq!(tail, &0x0102_0304u32.to_le_bytes());
+        assert_eq!(&bytes[bytes.len() - 4..], &0u32.to_le_bytes(), "empty fingerprint length");
+        let ver = &bytes[bytes.len() - 8..bytes.len() - 4];
+        assert_eq!(ver, &0x0102_0304u32.to_le_bytes());
+    }
+
+    #[test]
+    fn input_fingerprint_is_bound_into_the_record_leaf() {
+        // Two records identical except for the input fingerprint must hash to
+        // different leaves (deterministic-input verification: the anchored record
+        // commits to the exact inputs the verified result was computed over).
+        let a = JobRecord {
+            input_fingerprint: "fp-A".into(),
+            ..record(1)
+        };
+        let b = JobRecord {
+            input_fingerprint: "fp-B".into(),
+            ..record(1)
+        };
+        assert_ne!(a.canonical_bytes(), b.canonical_bytes());
+        assert_ne!(a.leaf(), b.leaf());
     }
 }
 

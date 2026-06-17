@@ -69,6 +69,74 @@ pub struct ProvenCapability {
     pub last_ts: u64,
 }
 
+/// Bounded, O(1) **per-worker performance aggregate** (architecture: per-job
+/// perf measurement). A time-decayed EWMA of measured latency / workload bytes /
+/// throughput from each verified-success receipt, so a later prioritization /
+/// pricing worker can rank by recent observed performance.
+///
+/// This is a CAPTURE-and-EXPOSE signal only: it is built from the same
+/// requester-MEASURED magnitudes as `ProvenCapability` and MUST NOT (yet) feed
+/// selection scoring — that stays receipt/`capability_confidence`-driven.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PerfAggregate {
+    /// Time-decayed EWMA of observed latency (ms).
+    pub ewma_latency_ms: f64,
+    /// Time-decayed EWMA of observed workload bytes (estimated scanned input).
+    pub ewma_bytes: f64,
+    /// Time-decayed EWMA of observed throughput (bytes/second).
+    pub ewma_throughput_bps: f64,
+    /// Number of verified-success samples folded in.
+    pub obs_count: u64,
+    /// Timestamp (unix-seconds) of the most recent folded sample.
+    pub last_ts: u64,
+}
+
+/// Minimum weight a fresh sample gets in the time-decayed EWMA, so back-to-back
+/// (same-second) samples still move the aggregate rather than being ignored when
+/// the elapsed-time decay is ~1.0.
+const PERF_MIN_ALPHA: f64 = 0.1;
+
+/// Fold one sample into a time-decayed EWMA. The new sample's weight grows with
+/// the time elapsed since the last sample (older accumulator ⇒ staler ⇒ trust the
+/// new value more), floored at [`PERF_MIN_ALPHA`]. `half_life_secs <= 0` disables
+/// decay (every sample gets full weight beyond the floor's complement).
+pub(crate) fn ewma_fold(prev: f64, sample: f64, dt_secs: f64, half_life_secs: f64) -> f64 {
+    let decay = if half_life_secs > 0.0 {
+        0.5f64.powf(dt_secs.max(0.0) / half_life_secs)
+    } else {
+        0.0
+    };
+    let alpha = (1.0 - decay).max(PERF_MIN_ALPHA);
+    prev * (1.0 - alpha) + sample * alpha
+}
+
+/// Update a [`PerfAggregate`] in place with a verified-success sample.
+pub(crate) fn perf_fold(
+    agg: &mut PerfAggregate,
+    latency_ms: u64,
+    bytes: u64,
+    ts: u64,
+    half_life_secs: f64,
+) {
+    let lat = latency_ms as f64;
+    let by = bytes as f64;
+    // Throughput in bytes/sec from this single observation (`0` latency ⇒ treat
+    // as 1ms so a sub-millisecond job doesn't divide by zero).
+    let tput = by / (latency_ms.max(1) as f64 / 1000.0);
+    if agg.obs_count == 0 {
+        agg.ewma_latency_ms = lat;
+        agg.ewma_bytes = by;
+        agg.ewma_throughput_bps = tput;
+    } else {
+        let dt = ts.saturating_sub(agg.last_ts) as f64;
+        agg.ewma_latency_ms = ewma_fold(agg.ewma_latency_ms, lat, dt, half_life_secs);
+        agg.ewma_bytes = ewma_fold(agg.ewma_bytes, by, dt, half_life_secs);
+        agg.ewma_throughput_bps = ewma_fold(agg.ewma_throughput_bps, tput, dt, half_life_secs);
+    }
+    agg.obs_count = agg.obs_count.saturating_add(1);
+    agg.last_ts = agg.last_ts.max(ts);
+}
+
 /// Pluggable reputation/receipt store.
 ///
 /// Implementations must be cheap to share (`Arc<dyn TrustStore>`); methods take
@@ -87,6 +155,20 @@ pub trait TrustStore: Send + Sync {
     /// The peer's measured proven capability, or `None` if nothing was ever
     /// observed. Default `None` (stores that don't track capability).
     fn proven_capability(&self, _worker: &NodeId) -> Option<ProvenCapability> {
+        None
+    }
+
+    /// Fold a verified-success receipt's MEASURED latency + workload bytes into
+    /// the peer's rolling [`PerfAggregate`] (EWMA, time-decayed). Only `Correct`
+    /// receipts contribute, deduped by the same `(job, requester)` fingerprint as
+    /// [`Self::observe_capability`] so replays cannot skew it. Default no-op so
+    /// existing stores/tests compile unchanged. CAPTURE-only — see
+    /// [`PerfAggregate`]; it does NOT feed selection scoring.
+    fn observe_perf(&self, _receipt: &Receipt) {}
+
+    /// The peer's rolling performance aggregate, or `None` if nothing was ever
+    /// observed. Default `None`.
+    fn perf_aggregate(&self, _worker: &NodeId) -> Option<PerfAggregate> {
         None
     }
 
@@ -179,6 +261,11 @@ struct WorkerState {
     /// with a FIFO order so the set stays bounded by the observation cap.
     cap_seen: HashSet<u64>,
     cap_seen_order: VecDeque<u64>,
+    /// Rolling per-job performance aggregate (EWMA, time-decayed).
+    perf: PerfAggregate,
+    /// Fingerprints already folded into `perf` (replay dedup), bounded FIFO.
+    perf_seen: HashSet<u64>,
+    perf_seen_order: VecDeque<u64>,
 }
 
 impl WorkerState {
@@ -191,6 +278,9 @@ impl WorkerState {
             capability: ProvenCapability::default(),
             cap_seen: HashSet::new(),
             cap_seen_order: VecDeque::new(),
+            perf: PerfAggregate::default(),
+            perf_seen: HashSet::new(),
+            perf_seen_order: VecDeque::new(),
         }
     }
 }
@@ -332,6 +422,42 @@ impl TrustStore for InMemoryTrustStore {
             None
         } else {
             Some(cap)
+        }
+    }
+
+    fn observe_perf(&self, receipt: &Receipt) {
+        // Only verified successes carry a meaningful latency/throughput sample.
+        if !receipt.verdict.is_correct() {
+            return;
+        }
+        let cap = self.max_obs_per_worker;
+        let fp = receipt_fingerprint(receipt);
+        let latency = receipt.latency_ms;
+        let bytes = receipt.observed_input_bytes;
+        let ts = receipt.ts;
+        let half_life = self.half_life_secs;
+        self.with_worker(&receipt.worker_id, |state| {
+            // Replay defense: fold each unique (job, requester) receipt once.
+            if !state.perf_seen.insert(fp) {
+                return;
+            }
+            state.perf_seen_order.push_back(fp);
+            while state.perf_seen_order.len() > cap {
+                if let Some(old) = state.perf_seen_order.pop_front() {
+                    state.perf_seen.remove(&old);
+                }
+            }
+            perf_fold(&mut state.perf, latency, bytes, ts, half_life);
+        });
+    }
+
+    fn perf_aggregate(&self, worker: &NodeId) -> Option<PerfAggregate> {
+        let inner = self.inner.lock().unwrap();
+        let perf = inner.workers.get(worker)?.perf;
+        if perf.obs_count == 0 {
+            None
+        } else {
+            Some(perf)
         }
     }
 
@@ -578,6 +704,7 @@ mod tests {
             observed_input_bytes: 0,
             observed_result_rows: 0,
             observed_result_bytes: 0,
+            input_fingerprint: String::new(),
             requester_pubkey: String::new(),
             sig: String::new(),
         }
@@ -759,6 +886,43 @@ mod tests {
             s.capability_confidence(&NodeId("b3:none".into()), 1.0, 2.0, 1.96),
             0.0
         );
+    }
+
+    #[test]
+    fn observe_perf_builds_ewma_dedups_and_ignores_failures() {
+        let s = store();
+        let w = NodeId("b3:w".into());
+        assert!(s.perf_aggregate(&w).is_none(), "no history => None");
+
+        // First verified success seeds the EWMA exactly.
+        let mut r = receipt("b3:w", Verdict::Correct, 1000);
+        r.latency_ms = 100;
+        r.observed_input_bytes = 1_000_000; // 1 MB in 100 ms => 10 MB/s
+        s.observe_perf(&r);
+        s.observe_perf(&r); // replay of the SAME receipt is deduped
+        let p = s.perf_aggregate(&w).unwrap();
+        assert_eq!(p.obs_count, 1, "replay must not inflate the sample count");
+        assert!((p.ewma_latency_ms - 100.0).abs() < 1e-9);
+        assert!((p.ewma_bytes - 1_000_000.0).abs() < 1e-9);
+        assert!((p.ewma_throughput_bps - 10_000_000.0).abs() < 1e-6);
+
+        // A distinct, slower sample moves the EWMA toward the new value but the
+        // count increments by exactly one.
+        let mut r2 = receipt("b3:w", Verdict::Correct, 1000 + 7 * 24 * 3600);
+        r2.latency_ms = 300;
+        r2.observed_input_bytes = 1_000_000;
+        s.observe_perf(&r2);
+        let p2 = s.perf_aggregate(&w).unwrap();
+        assert_eq!(p2.obs_count, 2);
+        assert!(
+            p2.ewma_latency_ms > 100.0 && p2.ewma_latency_ms <= 300.0,
+            "EWMA latency should move toward the new sample, got {}",
+            p2.ewma_latency_ms
+        );
+
+        // A non-Correct verdict never contributes a perf sample.
+        s.observe_perf(&receipt("b3:w", Verdict::Incorrect, 2000));
+        assert_eq!(s.perf_aggregate(&w).unwrap().obs_count, 2);
     }
 
     #[test]

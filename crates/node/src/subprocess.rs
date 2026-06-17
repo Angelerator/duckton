@@ -18,8 +18,10 @@
 //! the flag is on AND an executor binary is configured (`P2P_JOB_EXEC`); the
 //! worker code itself is unchanged (it just runs whatever `QueryEngine` it holds).
 //!
-//! Scoped credentials travel INSIDE the request frame (over the pipe) — never via
-//! argv/env — so a secret is never exposed in the process table or logs.
+//! Scoped credentials AND the pinned input snapshot travel INSIDE the request
+//! frame (over the pipe) — never via argv/env — so a secret is never exposed in
+//! the process table or logs, and the sandboxed child enforces the input pin
+//! exactly like the in-process path.
 
 use std::ffi::OsString;
 use std::sync::Arc;
@@ -27,7 +29,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use p2p_config::{SandboxConfig, StorageConfig};
-use p2p_proto::{ResultSet, ScopedCredential};
+use p2p_proto::{InputSnapshot, ResultSet, ScopedCredential};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc::UnboundedSender;
@@ -50,6 +52,10 @@ pub struct JobRequest {
     pub credential: Option<ScopedCredential>,
     /// At-rest Parquet key material (`name` → raw bytes).
     pub parquet_keys: Vec<(String, Vec<u8>)>,
+    /// The pinned input snapshot for this job (deterministic-input
+    /// verification). Carried in-band so the sandboxed child reads the pinned
+    /// object VERSIONS, exactly like the in-process path. `None` ⇒ unpinned.
+    pub input_snapshot: Option<InputSnapshot>,
     /// How often (ms) the child emits a [`JobProgress`] heartbeat while executing
     /// (so stall detection sees liveness under `process_per_job`). `0` ⇒ only the
     /// leading "executing" heartbeat is sent.
@@ -122,6 +128,9 @@ where
     let ctx = JobContext {
         credential: req.credential,
         parquet_keys: req.parquet_keys,
+        // The pinned input snapshot is carried in-band over the pipe, so the
+        // sandboxed child enforces the pin exactly like the in-process path.
+        input_snapshot: req.input_snapshot,
     };
     let lease = ExecLease {
         memory_bytes: req.memory_bytes,
@@ -280,6 +289,7 @@ impl SubprocessEngine {
             threads: lease.threads,
             credential: ctx.credential.clone(),
             parquet_keys: ctx.parquet_keys.clone(),
+            input_snapshot: ctx.input_snapshot.clone(),
             progress_interval_ms: self.progress_interval_ms,
         };
         let bytes = p2p_proto::to_bytes(&req)
@@ -352,6 +362,69 @@ impl QueryEngine for SubprocessEngine {
 mod tests {
     use super::*;
     use crate::engine::MockEngine;
+    use std::sync::Mutex;
+
+    /// An engine that records the [`JobContext`] it was handed, so a test can
+    /// prove `serve_job` threads the pinned input snapshot through to execution.
+    struct RecordingEngine {
+        seen: Arc<Mutex<Option<JobContext>>>,
+    }
+
+    #[async_trait]
+    impl QueryEngine for RecordingEngine {
+        async fn execute(&self, _sql: &str, _lease: ExecLease) -> Result<ResultSet, EngineError> {
+            Ok(ResultSet::new(vec!["x".into()], vec![]))
+        }
+        async fn execute_job(
+            &self,
+            sql: &str,
+            lease: ExecLease,
+            ctx: &JobContext,
+        ) -> Result<ResultSet, EngineError> {
+            *self.seen.lock().unwrap() = Some(ctx.clone());
+            self.execute(sql, lease).await
+        }
+        fn version(&self) -> String {
+            "recording-1".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_job_forwards_pinned_input_snapshot_to_engine() {
+        // The pin is carried in-band over the pipe and must reach the child
+        // engine's JobContext (so the sandboxed child reads the pinned versions
+        // exactly like the in-process path).
+        let seen = Arc::new(Mutex::new(None));
+        let engine = RecordingEngine {
+            seen: Arc::clone(&seen),
+        };
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let snapshot = InputSnapshot {
+            fingerprint: "fp-pinned-123".into(),
+            objects: vec![],
+        };
+        let req = JobRequest {
+            sql: "SELECT 1".into(),
+            memory_bytes: 64 << 20,
+            threads: 1,
+            credential: None,
+            parquet_keys: vec![],
+            input_snapshot: Some(snapshot.clone()),
+            progress_interval_ms: 0,
+        };
+        write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())
+            .await
+            .unwrap();
+        let (mut sr, mut sw) = tokio::io::split(server);
+        serve_job(&engine, &mut sr, &mut sw).await.unwrap();
+
+        let ctx = seen.lock().unwrap().clone().expect("engine ran a job");
+        assert_eq!(
+            ctx.input_snapshot.map(|s| s.fingerprint),
+            Some("fp-pinned-123".to_string()),
+            "the pinned input snapshot must reach the child engine"
+        );
+    }
 
     #[tokio::test]
     async fn serve_job_round_trips_request_and_result() {
@@ -366,6 +439,7 @@ mod tests {
             threads: 1,
             credential: None,
             parquet_keys: vec![],
+            input_snapshot: None,
             progress_interval_ms: 0,
         };
         let bytes = p2p_proto::to_bytes(&req).unwrap();
@@ -407,6 +481,7 @@ mod tests {
             threads: 1,
             credential: None,
             parquet_keys: vec![],
+            input_snapshot: None,
             progress_interval_ms: 0,
         };
         write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())
@@ -439,6 +514,7 @@ mod tests {
             threads: 1,
             credential: None,
             parquet_keys: vec![],
+            input_snapshot: None,
             progress_interval_ms: 20,
         };
         write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())
@@ -465,13 +541,19 @@ mod tests {
     async fn subprocess_engine_spawn_failure_is_an_error_not_a_panic() {
         // Pointing at a non-existent executor must surface a clean EngineError
         // (the worker then treats it like any other engine failure), never panic.
-        let sandbox = crate::sandbox::build(&SandboxConfig::default());
+        // Use an explicitly-disabled (no-op) sandbox so this exercises spawn-failure
+        // handling deterministically, independent of the host's default backend.
+        let cfg = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
+        let sandbox = crate::sandbox::build(&cfg);
         let eng = SubprocessEngine::new(
             sandbox,
             "/nonexistent/p2p-job-exec-xyz",
             vec![],
             "duckdb-subprocess",
-            SandboxConfig::default(),
+            cfg,
             StorageConfig::default(),
             0,
         );

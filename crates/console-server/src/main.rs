@@ -28,8 +28,9 @@ use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, PreferMode, QueryOverrides, VerifyModeCfg,
 };
 use p2p_node::{
-    AdmissionController, Candidate, Coordinator, CoordinatorError, DuckDbEngine, MockEngine,
-    QueryEngine, StaticDiscovery, StorageSetup, Worker, WorkerParams,
+    collect_system_profile, AdmissionController, Candidate, Coordinator, CoordinatorError,
+    DuckDbEngine, IdentitySigner, MockEngine, QueryEngine, StaticDiscovery, StorageSetup, Worker,
+    WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
 use p2p_settlement::types::Amount;
@@ -210,6 +211,46 @@ async fn spawn_worker(spec: &Spec, attestor_authority: &SigningKey) -> WorkerHan
         _transport: transport,
         _task: task,
     }
+}
+
+/// Collect one base (host) `SystemProfile` — machine class is identical for all
+/// in-process workers on this host; only the donated budget differs per worker.
+fn base_system_profile() -> p2p_proto::SystemProfile {
+    let id = NodeIdentity::generate().unwrap();
+    let signer = IdentitySigner(&id);
+    collect_system_profile(
+        &signer,
+        &GridConfig::default().budget,
+        "mock-1",
+        env!("CARGO_PKG_VERSION"),
+    )
+}
+
+/// Per-worker `systemProfile` JSON: the host's non-GDPR machine CLASS plus THIS
+/// worker's donated compute budget (distinct from the machine's physical RAM).
+fn worker_system_profile(
+    base: &p2p_proto::SystemProfile,
+    donated_mem: u64,
+    donated_threads: u32,
+) -> J {
+    json!({
+        "physicalRamBytes": base.ram_total_bytes,
+        "ramAvailableBytes": base.ram_available_bytes,
+        "donatedMemBytes": donated_mem,
+        "donatedThreads": donated_threads,
+        "cpuArch": base.cpu_arch,
+        "cpuModel": base.cpu_model,
+        "cpuPhysicalCores": base.cpu_physical_cores,
+        "cpuLogicalCores": base.cpu_logical_cores,
+        "cpuFeatures": base.cpu_features,
+        "diskKind": base.disk_kind,
+        "diskTotalBytes": base.disk_total_bytes,
+        "osName": base.os_name,
+        "osVersion": base.os_version,
+        "kernelVersion": base.kernel_version,
+        "virtHint": base.virt_hint,
+        "numaNodes": base.numa_nodes,
+    })
 }
 
 fn unix_ms() -> u64 {
@@ -471,7 +512,12 @@ impl Grid {
                         "jobId": r.job_id.0, "workerId": r.worker_id.0,
                         "workerAlias": self.alias_of(&r.worker_id), "requesterId": r.requester_id.0,
                         "verdict": format!("{:?}", r.verdict), "fault": fault,
-                        "latencyMs": r.latency_ms, "tsMs": r.ts * 1000,
+                        "latencyMs": r.latency_ms,
+                        // Per-job MEASURED magnitude (per-job perf signal); `0` = unknown.
+                        "observedInputBytes": r.observed_input_bytes,
+                        "observedResultRows": r.observed_result_rows,
+                        "observedResultBytes": r.observed_result_bytes,
+                        "tsMs": r.ts * 1000,
                         "resultHash": if r.result_hash.is_empty() { "—".to_string() } else { r.result_hash.clone() },
                         "sig": format!("ed25519:{}…", &r.sig.get(0..8).unwrap_or("")),
                         "verified": p2p_trust::verify_receipt(r), "gossiped": true,
@@ -670,6 +716,8 @@ impl Grid {
         let cfg = GridConfig::default();
         let eco = cfg.economics;
         let weights = &cfg.trust.weights;
+        // One host machine-class profile (non-GDPR); donated budget differs per worker.
+        let base_profile = base_system_profile();
 
         let workers: Vec<J> = self
             .workers
@@ -707,7 +755,11 @@ impl Grid {
                     "ageFactor": age_factor(obs, 20), "voucherTrust": vouch, "stakeFactor": sf,
                     "penalty": penalty, "explorationBonus": expl, "stakeTon": stake,
                     "stakeNanoton": (stake as Amount * TON).to_string(),
-                    "totalMemBytes": w.budget_mem, "totalThreads": w.budget_threads, "maxJobs": w.max_jobs,
+                    // Donated compute budget (what the host OFFERS) — renamed from
+                    // the misleading `totalMemBytes` to make clear it is the donated
+                    // budget, NOT the machine's physical RAM (see systemProfile).
+                    "donatedMemBytes": w.budget_mem, "totalThreads": w.budget_threads, "maxJobs": w.max_jobs,
+                    "systemProfile": worker_system_profile(&base_profile, w.budget_mem, w.budget_threads),
                     "jobsParticipated": *self.acc.parts.get(&id).unwrap_or(&0),
                     "correct": c, "faults": f, "successRate": success, "p50LatencyMs": p50,
                     "delayMs": w.delay_ms, "online": w.behavior != "fail", "engineVersion": "mock-1",

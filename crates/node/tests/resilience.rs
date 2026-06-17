@@ -177,6 +177,10 @@ fn accept_bid(offer: &Offer, worker_id: &NodeId) -> Bid {
         free_mem_bytes: 1 << 30,
         free_threads: 4,
         region_proof: None,
+        rate_per_second: 0,
+        rate_per_gb: 0,
+        estimated_seconds: 0,
+        cap_seconds: 0,
     }
 }
 

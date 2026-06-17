@@ -951,7 +951,10 @@ mod tests {
 
     #[test]
     fn disabled_config_builds_noop() {
-        let cfg = SandboxConfig::default(); // enabled = false
+        let cfg = SandboxConfig {
+            enabled: false,
+            ..SandboxConfig::default()
+        };
         let sb = build(&cfg);
         assert_eq!(sb.backend(), SandboxBackend::None);
         assert_eq!(sb.name(), "noop");

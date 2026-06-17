@@ -403,6 +403,7 @@ async fn scenario_reputation_evolves_with_recency() {
         observed_input_bytes: 0,
         observed_result_rows: 0,
         observed_result_bytes: 0,
+        input_fingerprint: String::new(),
         requester_pubkey: String::new(),
         sig: String::new(),
     };

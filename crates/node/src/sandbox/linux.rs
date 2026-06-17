@@ -219,6 +219,15 @@ impl SeccompPolicy {
 /// DNS). When `allow_network` is false, ALL egress is dropped. Pure + testable;
 /// a Linux executor pipes this into `nft -f -` for the job's network namespace.
 ///
+/// Hard SSRF / metadata defense applied FIRST, unconditionally (even before the
+/// allow-list, and even when `allow_network` is true): the job can NEVER reach
+/// the cloud instance-metadata endpoint / link-local range (`169.254.0.0/16`,
+/// incl. `169.254.169.254`), IPv6 link-local (`fe80::/10`), or loopback
+/// (`127.0.0.0/8`, `::1`) — so it cannot exfiltrate IAM/instance credentials or
+/// pivot to host-local admin services. NOTE: because loopback egress is dropped,
+/// a Linux executor must give the job a non-loopback DNS resolver (e.g. inside
+/// the job's network namespace) rather than relying on `127.0.0.53`.
+///
 /// Host-name based rules cannot be expressed in nftables directly (it matches
 /// IPs/ports); we emit per-port `tcp dport` accepts and rely on the scoped,
 /// short-lived credentials + DNS pinning for host scoping. Resolved IPs can be
@@ -228,8 +237,12 @@ pub fn nftables_egress_rules(egress: &EgressAllowList, allow_network: bool) -> V
         "table inet p2p_sandbox {".to_string(),
         "  chain output {".to_string(),
         "    type filter hook output priority 0; policy drop;".to_string(),
-        // Always allow loopback + established/related.
-        "    oif \"lo\" accept".to_string(),
+        // SSRF / metadata / loopback defense, FIRST so it wins over any accept.
+        "    ip daddr 169.254.0.0/16 drop".to_string(),
+        "    ip daddr 127.0.0.0/8 drop".to_string(),
+        "    ip6 daddr fe80::/10 drop".to_string(),
+        "    ip6 daddr ::1 drop".to_string(),
+        // Allow return traffic of already-permitted connections.
         "    ct state established,related accept".to_string(),
     ];
     if allow_network && !egress.is_empty() {
@@ -357,6 +370,9 @@ mod tests {
         assert!(joined.contains("policy drop"));
         assert!(!joined.contains("tcp dport 443"));
         assert!(!joined.contains("dport 53"));
+        // The SSRF/metadata/loopback drops are present even with network denied.
+        assert!(joined.contains("ip daddr 169.254.0.0/16 drop"));
+        assert!(joined.contains("ip daddr 127.0.0.0/8 drop"));
     }
 
     #[test]
@@ -369,5 +385,31 @@ mod tests {
         assert!(joined.contains("tcp dport 9000 accept"));
         assert!(joined.contains("udp dport 53 accept")); // DNS
         assert!(!joined.contains("tcp dport 21"));
+    }
+
+    #[test]
+    fn nftables_blocks_metadata_and_loopback_even_when_network_allowed() {
+        // Even with egress permitted to storage, the cloud metadata endpoint,
+        // link-local range, and loopback must be unreachable (SSRF / IMDS
+        // credential-theft defense). The drops must precede the dport accepts.
+        let s = spec(None, None, true, &[443]);
+        let rules = nftables_egress_rules(&s.egress, s.allow_network);
+        let joined = rules.join("\n");
+        assert!(joined.contains("ip daddr 169.254.0.0/16 drop"));
+        assert!(joined.contains("ip daddr 127.0.0.0/8 drop"));
+        assert!(joined.contains("ip6 daddr fe80::/10 drop"));
+        assert!(joined.contains("ip6 daddr ::1 drop"));
+        let meta_drop = rules
+            .iter()
+            .position(|r| r.contains("169.254.0.0/16 drop"))
+            .unwrap();
+        let port_accept = rules
+            .iter()
+            .position(|r| r.contains("tcp dport 443 accept"))
+            .unwrap();
+        assert!(
+            meta_drop < port_accept,
+            "metadata drop must precede the port accepts so it cannot be bypassed"
+        );
     }
 }

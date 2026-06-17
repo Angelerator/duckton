@@ -23,12 +23,14 @@ fn make_offer(requester: &NodeId) -> Offer {
         requester_id: requester.clone(),
         query_hash: QueryHash::compute("SELECT 1", "test"),
         cost_hint_rows: Some(1),
+        cost_hint_bytes: None,
         data_class: DataClass::Public,
         nonce: 7,
         network: None,
         groups: Vec::new(),
         regions: Vec::new(),
         group_proof: None,
+        input_fingerprint_hint: None,
     }
 }
 

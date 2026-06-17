@@ -50,6 +50,23 @@ struct PersistObs {
     fp: u64,
 }
 
+/// Durable mirror of the in-memory `PerfAggregate` (time-decayed EWMA of
+/// measured latency / bytes / throughput). `#[serde(default)]` keeps older
+/// on-disk records readable.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+struct PersistPerf {
+    #[serde(default)]
+    ewma_latency_ms: f64,
+    #[serde(default)]
+    ewma_bytes: f64,
+    #[serde(default)]
+    ewma_throughput_bps: f64,
+    #[serde(default)]
+    obs_count: u64,
+    #[serde(default)]
+    last_ts: u64,
+}
+
 /// Durable mirror of the in-memory `ProvenCapability` aggregate (O(1) maxima +
 /// success count). `#[serde(default)]` keeps older on-disk records readable.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -83,6 +100,11 @@ struct PersistWorker {
     capability: PersistCapability,
     #[serde(default)]
     cap_seen: Vec<u64>,
+    /// Rolling per-job performance aggregate + its dedup fingerprints (bounded).
+    #[serde(default)]
+    perf: PersistPerf,
+    #[serde(default)]
+    perf_seen: Vec<u64>,
 }
 
 impl Default for PersistWorker {
@@ -95,6 +117,8 @@ impl Default for PersistWorker {
             seq: 0,
             capability: PersistCapability::default(),
             cap_seen: Vec::new(),
+            perf: PersistPerf::default(),
+            perf_seen: Vec::new(),
         }
     }
 }
@@ -285,6 +309,57 @@ impl TrustStore for RedbTrustStore {
         })
     }
 
+    fn observe_perf(&self, receipt: &Receipt) {
+        if !receipt.verdict.is_correct() {
+            return;
+        }
+        let cap_limit = self.max_obs_per_worker;
+        let fp = crate::reputation::receipt_fingerprint(receipt);
+        let latency = receipt.latency_ms;
+        let bytes = receipt.observed_input_bytes;
+        let ts = receipt.ts;
+        let half_life = self.half_life_secs;
+        let _ = self.mutate(&receipt.worker_id, |s| {
+            // Replay defense: fold each unique (job, requester) receipt once.
+            if s.perf_seen.contains(&fp) {
+                return;
+            }
+            s.perf_seen.push(fp);
+            while s.perf_seen.len() > cap_limit {
+                s.perf_seen.remove(0);
+            }
+            let mut agg = crate::reputation::PerfAggregate {
+                ewma_latency_ms: s.perf.ewma_latency_ms,
+                ewma_bytes: s.perf.ewma_bytes,
+                ewma_throughput_bps: s.perf.ewma_throughput_bps,
+                obs_count: s.perf.obs_count,
+                last_ts: s.perf.last_ts,
+            };
+            crate::reputation::perf_fold(&mut agg, latency, bytes, ts, half_life);
+            s.perf = PersistPerf {
+                ewma_latency_ms: agg.ewma_latency_ms,
+                ewma_bytes: agg.ewma_bytes,
+                ewma_throughput_bps: agg.ewma_throughput_bps,
+                obs_count: agg.obs_count,
+                last_ts: agg.last_ts,
+            };
+        });
+    }
+
+    fn perf_aggregate(&self, worker: &NodeId) -> Option<crate::reputation::PerfAggregate> {
+        let state = self.read_worker(worker).ok().flatten()?;
+        if state.perf.obs_count == 0 {
+            return None;
+        }
+        Some(crate::reputation::PerfAggregate {
+            ewma_latency_ms: state.perf.ewma_latency_ms,
+            ewma_bytes: state.perf.ewma_bytes,
+            ewma_throughput_bps: state.perf.ewma_throughput_bps,
+            obs_count: state.perf.obs_count,
+            last_ts: state.perf.last_ts,
+        })
+    }
+
     fn reputation(&self, worker: &NodeId, now: u64) -> Option<f64> {
         let state = self.read_worker(worker).ok().flatten()?;
         if state.obs.is_empty() {
@@ -371,6 +446,7 @@ mod tests {
             observed_input_bytes: 0,
             observed_result_rows: 0,
             observed_result_bytes: 0,
+            input_fingerprint: String::new(),
             requester_pubkey: String::new(),
             sig: String::new(),
         }

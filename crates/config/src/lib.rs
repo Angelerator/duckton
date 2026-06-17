@@ -43,7 +43,7 @@ pub use binding::{BindingEntry, BindingStore};
 pub use blocklist::{BlockEntry, BlockKind, BlocklistStore};
 pub use economics::{
     ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,
-    PricingEconomics, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
+    PricingEconomics, PricingModel, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
     SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics, TonNetwork,
     WalletConfig,
 };
@@ -113,6 +113,9 @@ pub struct GridConfig {
     /// so existing behavior is unchanged — a no-op sandbox. This is the
     /// complement DuckDB cannot provide (it cannot scope network egress).
     pub sandbox: SandboxConfig,
+    /// Non-GDPR system-metadata capture cadence (CPU/RAM/disk/OS machine class,
+    /// a self-reported analytics/routing HINT — never a trust/selection input).
+    pub metadata: MetadataConfig,
 }
 
 /// Protocol versioning & compatibility policy (architecture §5.1). Centralized
@@ -790,6 +793,28 @@ impl Default for WorkerConfig {
     }
 }
 
+/// `[metadata]` — non-GDPR system-metadata capture (architecture: machine-class
+/// analytics + routing HINT). On host start the node collects a signed
+/// [`p2p_proto::SystemProfile`] (CPU/RAM/disk/OS class, donated budget, resource
+/// ceilings) and refreshes it on this interval. The profile is a SELF-REPORTED
+/// hint only and never feeds trust/selection scoring.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MetadataConfig {
+    /// How often (seconds) a host re-collects its [`p2p_proto::SystemProfile`].
+    /// `0` disables periodic refresh (a one-shot collection still runs on host
+    /// start). Default `3600` (hourly).
+    pub refresh_interval_secs: u64,
+}
+
+impl Default for MetadataConfig {
+    fn default() -> Self {
+        Self {
+            refresh_interval_secs: 3600,
+        }
+    }
+}
+
 /// `[membership]` — request-scoping / routing labels for this node (architecture
 /// §7.5 selection). All DEFAULT to a no-constraint posture so a zero-config node
 /// behaves exactly as today: it serves the implicit `"default"` partition, claims
@@ -1413,8 +1438,12 @@ impl Default for SandboxLimitsConfig {
 /// OS-level execution sandbox configuration (`[sandbox]`, architecture §9.4).
 ///
 /// Layers like everything else: defaults → TOML → `P2P_SANDBOX_*` env →
-/// per-call. Off by default so a node behaves exactly as today (no-op sandbox)
-/// until an operator opts in.
+/// per-call. SECURE BY DEFAULT for the HOST serving path (`enabled` +
+/// `process_per_job` default ON) — a node that serves OTHER peers' jobs runs
+/// them OS-sandboxed in a child process; `backend = auto` degrades to a no-op on
+/// platforms with no OS sandbox so a node never crashes, and where confinement
+/// can't be applied the host fails SAFE. The requester's OWN local self-run path
+/// is never process-isolated (it runs in-process under the DuckDB lockdown).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxConfig {
@@ -1441,27 +1470,40 @@ pub struct SandboxConfig {
     /// rlimits / Seatbelt / cgroups+seccomp / Job Object — so a job that exceeds
     /// its lease is killed without taking down the node.
     ///
-    /// `false` (default) keeps the current, fully-tested **in-process** engine
-    /// (`HostEngine`/`DuckDbEngine`) behavior under the DuckDB configuration
-    /// lockdown — zero behavior change. NOTE: the enforced child-execution path
-    /// (a sandboxed DuckDB subprocess + its result/credential transfer protocol)
-    /// is not yet wired; enabling this flag today logs a one-time warning and
-    /// falls back to in-process. See `docs/ARCHITECTURE.md` §9.4 for the remaining
-    /// protocol work.
+    /// When `false` the host runs jobs in the current **in-process** engine
+    /// (`HostEngine`/`DuckDbEngine`) under the DuckDB configuration lockdown. The
+    /// enforced child-execution path is wired end-to-end (`Node::host_engine`
+    /// swaps in the OS-sandboxed `SubprocessEngine` via `crate`-external
+    /// `Sandbox::command`); it activates only when a `P2P_JOB_EXEC` child
+    /// executor binary is configured, otherwise the host logs a one-time warning
+    /// and falls back to in-process. The requester's OWN local self-run path is
+    /// never process-isolated (it runs `self.engine` directly). Defaults ON for
+    /// the host serving path (secure-by-default); see `docs/ARCHITECTURE.md` §9.4.
     pub process_per_job: bool,
 }
 
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            // Secure-by-default for the HOST serving path (architecture §9.4): a
+            // node that serves OTHER peers' jobs runs them OS-sandboxed,
+            // process-per-job, by default. This does NOT affect the requester's
+            // OWN local self-run path (which runs `self.engine` in-process and is
+            // never process-isolated — you need no protection from yourself).
+            // Where OS confinement can't be applied (no child executor / an
+            // unsupported backend) the host fails SAFE: it keeps the DuckDB SQL
+            // lockdown and falls back to in-process for FREE/local jobs, but
+            // refuses to serve remote-access jobs unconfined (see
+            // `Node::host_remote_egress_confined`). `backend = auto` degrades to a
+            // no-op on platforms with no OS sandbox, so this never crashes.
+            enabled: true,
             backend: SandboxBackend::Auto,
             limits: SandboxLimitsConfig::default(),
             egress_mode: SandboxEgressMode::InheritStorage,
             egress_allowlist: Vec::new(),
             temp_dir_policy: SandboxTempDirPolicy::Ephemeral,
             temp_dir: None,
-            process_per_job: false,
+            process_per_job: true,
         }
     }
 }
@@ -1728,6 +1770,9 @@ impl GridConfig {
                 "P2P_BUDGET_MEMORY_BYTES" => self.budget.memory_bytes = parse(k, v)?,
                 "P2P_BUDGET_THREADS" => self.budget.threads = parse(k, v)?,
                 "P2P_BUDGET_MAX_JOBS" => self.budget.max_jobs = parse(k, v)?,
+                "P2P_METADATA_REFRESH_INTERVAL_SECS" => {
+                    self.metadata.refresh_interval_secs = parse(k, v)?
+                }
                 "P2P_MIN_TRUST" => self.trust.min_trust = parse(k, v)?,
                 "P2P_MIN_ATTESTATION" => self.trust.min_attestation = v.clone(),
                 "P2P_CANARY_RATE" => self.trust.canary_rate = parse(k, v)?,
@@ -2635,9 +2680,14 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_defaults_are_off_and_valid() {
+    fn sandbox_defaults_are_secure_for_hosts_and_valid() {
+        // Secure-by-default for the host serving path (§9.4): OS sandbox +
+        // process-per-job default ON. `backend = auto` degrades to a no-op on
+        // platforms with no OS sandbox, so a node never crashes; the requester's
+        // own self-run path is unaffected (it runs in-process regardless).
         let cfg = GridConfig::default();
-        assert!(!cfg.sandbox.enabled);
+        assert!(cfg.sandbox.enabled);
+        assert!(cfg.sandbox.process_per_job);
         assert_eq!(cfg.sandbox.backend, SandboxBackend::Auto);
         assert_eq!(cfg.sandbox.egress_mode, SandboxEgressMode::InheritStorage);
         assert_eq!(cfg.sandbox.limits.mode, SandboxLimitsMode::InheritBudget);

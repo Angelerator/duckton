@@ -4,17 +4,21 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use p2p_config::{GridConfig, IdentityConfig, PinningMode};
+use async_trait::async_trait;
+
+use p2p_config::{GridConfig, IdentityConfig, PinningMode, QueryOverrides};
 use p2p_node::{
-    AdmissionController, Candidate, Coordinator, CoordinatorError, MockEngine, QueryEngine,
-    StaticDiscovery, Worker, WorkerParams,
+    estimate_working_set, AdmissionController, Candidate, Coordinator, CoordinatorError,
+    InputObservation, InputReader, InputResolveError, InputResolver, MockEngine, QueryEngine,
+    QueryShape, ScanEstimate, StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_node::{IdentitySigner, MembershipTable};
 use p2p_proto::AttestationLevel;
-use p2p_proto::{Attestation, NodeId, Verdict};
+use p2p_proto::{Attestation, InputSnapshot, NodeId, ObjectVersion, PinnedObject, Verdict};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
 use p2p_trust::sybil::pow_epoch;
 use p2p_trust::{
@@ -507,4 +511,379 @@ mod cancel_timing {
             "losing worker kept computing after being cancelled (no prompt mid-execution abort)"
         );
     }
+}
+
+// ===========================================================================
+// Deterministic-input verification (source-data-drift vs quorum).
+//
+// These exercise the full P0→P3 fix: pinning a versioned input snapshot, the
+// fingerprint-aware quorum, and the three distinct outcomes — benign input
+// drift (re-dispatch, NO penalty), a genuine fault on the SAME inputs (still
+// Incorrect + penalized), and an unfetchable pin (Infeasible, NO penalty) —
+// plus wire back-compat for peers that report no fingerprint.
+// ===========================================================================
+
+/// A resolver that always pins the same fixed snapshot (so the test controls the
+/// coordinator's pinned fingerprint without a live object store).
+struct FixedResolver(InputSnapshot);
+
+#[async_trait]
+impl InputResolver for FixedResolver {
+    async fn resolve(&self, _sql: &str) -> Result<Option<InputSnapshot>, InputResolveError> {
+        Ok(Some(self.0.clone()))
+    }
+}
+
+/// A worker input reader that reports a DIFFERENT fingerprint on its first read
+/// (simulating a node that read newer source bytes), then honors the pin on
+/// every subsequent read (the source stabilized) — used to drive a benign
+/// drift-then-success re-dispatch.
+struct DriftThenHonest {
+    calls: AtomicUsize,
+    drift_fp: String,
+}
+
+#[async_trait]
+impl InputReader for DriftThenHonest {
+    async fn observe(&self, snapshot: Option<&InputSnapshot>) -> InputObservation {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        if n == 0 {
+            InputObservation::Pinned(self.drift_fp.clone())
+        } else {
+            match snapshot {
+                Some(s) => InputObservation::Pinned(s.fingerprint.clone()),
+                None => InputObservation::Unpinned,
+            }
+        }
+    }
+}
+
+/// A reader that always reports the pinned version as unfetchable (the pinned
+/// object/version changed or is gone) → the worker fails the attempt as an input
+/// fault (`Infeasible`), never a wrong result.
+struct UnavailableReader;
+
+#[async_trait]
+impl InputReader for UnavailableReader {
+    async fn observe(&self, _snapshot: Option<&InputSnapshot>) -> InputObservation {
+        InputObservation::Unavailable("pinned object generation no longer exists".into())
+    }
+}
+
+/// Spawn a worker with a custom [`InputReader`] (otherwise identical to
+/// [`spawn_worker`]).
+async fn spawn_worker_with_reader(
+    engine: Arc<dyn QueryEngine>,
+    reader: Arc<dyn InputReader>,
+) -> WorkerHandle {
+    let net = GridConfig::default().network;
+    let transport =
+        Arc::new(QuicTransport::bind(&net, &idcfg(), NodeIdentity::generate().unwrap()).unwrap());
+    let admission = AdmissionController::new(&GridConfig::default().budget);
+    let params = WorkerParams::from_config(&GridConfig::default());
+    let node_id = transport.local_node_id().clone();
+    let addr = transport.local_addr().unwrap();
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    )
+    .with_input_reader(reader);
+    let task = worker.spawn();
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
+}
+
+/// A coordinator wired with an input resolver (deterministic-input verification).
+async fn make_coordinator_pinned(
+    workers: &[&WorkerHandle],
+    cfg: Arc<GridConfig>,
+    store: Arc<dyn TrustStore>,
+    resolver: Arc<dyn InputResolver>,
+) -> Coordinator {
+    make_coordinator(workers, cfg, store)
+        .await
+        .with_input_resolver(resolver)
+}
+
+/// A fixed, fully-concrete S3 snapshot for tests.
+fn test_snapshot() -> InputSnapshot {
+    InputSnapshot::from_objects(vec![PinnedObject {
+        uri: "s3://bucket/events/data.parquet".into(),
+        provider: "s3".into(),
+        version: ObjectVersion::S3 {
+            version_id: Some("v-pinned-001".into()),
+            etag: Some("etag-abc".into()),
+            size: 4096,
+        },
+    }])
+}
+
+// ---------------------------------------------------------------------------
+// Drift: an honest minority that read a DIFFERENT input snapshot on a quorum
+// job is NOT penalized — the attempt is benignly re-dispatched, and once the
+// source stabilizes the job completes (no commitment failure, no slash).
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn input_drift_minority_is_not_penalized_and_redispatches() {
+    let snap = test_snapshot();
+    let pinned_fp = snap.fingerprint.clone();
+    // F1 != pinned: the drifting worker reports it on its FIRST read only.
+    let drift_fp = format!("{pinned_fp}-NEWER");
+
+    let honest1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let honest2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let drifter = spawn_worker_with_reader(
+        Arc::new(MockEngine::deterministic()),
+        Arc::new(DriftThenHonest {
+            calls: AtomicUsize::new(0),
+            drift_fp,
+        }),
+    )
+    .await;
+
+    // replicas=3, quorum=2; allow a couple of re-dispatches.
+    let mut c = (*test_config(3, 2)).clone();
+    c.scheduler.max_retries = 3;
+    c.scheduler.backoff_initial_ms = 1;
+    c.scheduler.backoff_max_ms = 2;
+    c.validate().unwrap();
+    let cfg = Arc::new(c);
+
+    let st = store();
+    let coord = make_coordinator_pinned(
+        &[&honest1, &honest2, &drifter],
+        cfg,
+        st.clone(),
+        Arc::new(FixedResolver(snap)),
+    )
+    .await;
+
+    // The job reaches quorum among the on-pinned replicas; the first attempt sees
+    // the drifter on a different fingerprint → benign re-dispatch; the retry sees
+    // it honor the pin → the job completes.
+    let outcome = coord
+        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .await
+        .expect("benign input drift must re-dispatch and then succeed");
+
+    assert!(outcome.verified, "job verifies once inputs converge");
+    // The previously-drifting honest worker is NEVER penalized for reading newer
+    // bytes, and never recorded as a broken commitment / slash.
+    assert_eq!(
+        st.penalty(&drifter.node_id),
+        0.0,
+        "an honest minority that read drifted inputs must NOT be penalized"
+    );
+    assert_eq!(st.penalty(&honest1.node_id), 0.0);
+    assert_eq!(st.penalty(&honest2.node_id), 0.0);
+    // No participant carries an Incorrect verdict in the winning attempt.
+    assert!(
+        outcome.receipts.iter().all(|r| r.verdict != Verdict::Incorrect),
+        "drift must never produce an Incorrect verdict"
+    );
+    // The verified answer is bound to the pinned input fingerprint.
+    let correct = outcome
+        .receipts
+        .iter()
+        .find(|r| r.verdict == Verdict::Correct)
+        .expect("a correct receipt exists");
+    assert_eq!(correct.input_fingerprint, pinned_fp);
+}
+
+// ---------------------------------------------------------------------------
+// Cheater (fingerprint-aware): a worker that read the SAME pinned inputs but
+// returned a WRONG result is still Incorrect + penalized — pinning must not give
+// a genuine fault a free pass.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn cheater_on_same_inputs_is_still_penalized_when_pinned() {
+    let snap = test_snapshot();
+    let honest1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let honest2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    // Default reader ⇒ echoes the pinned fingerprint (same inputs), but the
+    // engine perturbs the result ⇒ a genuine wrong answer on identical inputs.
+    let cheater = spawn_worker(Arc::new(MockEngine::deterministic().cheating())).await;
+
+    let cfg = test_config(3, 2);
+    let st = store();
+    let coord = make_coordinator_pinned(
+        &[&honest1, &honest2, &cheater],
+        cfg,
+        st.clone(),
+        Arc::new(FixedResolver(snap.clone())),
+    )
+    .await;
+
+    let outcome = coord
+        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .await
+        .unwrap();
+
+    assert!(outcome.verified);
+    assert_eq!(outcome.agreement, 2, "two honest workers agree on pinned inputs");
+    let cheater_receipt = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == cheater.node_id)
+        .expect("cheater participated");
+    assert_eq!(
+        cheater_receipt.verdict,
+        Verdict::Incorrect,
+        "a wrong result on PROVABLY identical inputs is still a fault"
+    );
+    assert!(
+        st.penalty(&cheater.node_id) > 0.0,
+        "the cheater is still penalized (fingerprint-aware quorum)"
+    );
+    // The cheater committed the SAME input fingerprint as the honest majority.
+    assert_eq!(cheater_receipt.input_fingerprint, snap.fingerprint);
+}
+
+// ---------------------------------------------------------------------------
+// Input unavailable: every selected worker cannot fetch the pinned version →
+// the query is Infeasible (a job/input fault), with NO provider penalty.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn unfetchable_pinned_input_is_infeasible_without_penalty() {
+    let snap = test_snapshot();
+    let mk = || {
+        spawn_worker_with_reader(
+            Arc::new(MockEngine::deterministic()),
+            Arc::new(UnavailableReader),
+        )
+    };
+    let a = mk().await;
+    let b = mk().await;
+    let cc = mk().await;
+
+    let mut c = (*test_config(3, 2)).clone();
+    c.scheduler.max_retries = 1;
+    c.validate().unwrap();
+    let cfg = Arc::new(c);
+
+    let st = store();
+    let coord = make_coordinator_pinned(
+        &[&a, &b, &cc],
+        cfg,
+        st.clone(),
+        Arc::new(FixedResolver(snap)),
+    )
+    .await;
+
+    let err = coord
+        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::Infeasible { .. }),
+        "an unfetchable pinned input is a job fault (Infeasible), got {err:?}"
+    );
+    // No provider is penalized for an input that became unavailable.
+    assert_eq!(st.penalty(&a.node_id), 0.0);
+    assert_eq!(st.penalty(&b.node_id), 0.0);
+    assert_eq!(st.penalty(&cc.node_id), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Wire back-compat: with NO resolver wired (the default), workers that report no
+// input fingerprint behave exactly as before — quorum is reached, the genuine
+// cheater is caught, and nothing crashes on the (serde-default) empty field.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn unpinned_jobs_are_unchanged_and_back_compatible() {
+    let honest1 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let honest2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let cheater = spawn_worker(Arc::new(MockEngine::deterministic().cheating())).await;
+
+    let cfg = test_config(3, 2);
+    let st = store();
+    // NO input resolver wired ⇒ pinned fingerprint is None; commits carry the
+    // serde-default empty fingerprint.
+    let coord = make_coordinator(&[&honest1, &honest2, &cheater], cfg, st.clone()).await;
+
+    let outcome = coord.run_query("SELECT 7", Default::default()).await.unwrap();
+    assert!(outcome.verified);
+    let cheater_receipt = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == cheater.node_id)
+        .expect("cheater participated");
+    assert_eq!(cheater_receipt.verdict, Verdict::Incorrect);
+    assert!(st.penalty(&cheater.node_id) > 0.0);
+    // The empty (unknown) fingerprint is carried through receipts without issue.
+    assert!(outcome.receipts.iter().all(|r| r.input_fingerprint.is_empty()));
+}
+
+// ---------------------------------------------------------------------------
+// Per-job perf measurement: the winner's receipt records the estimator's
+// scanned-bytes ESTIMATE (no longer hardcoded 0), which folds into both the
+// proven-capability aggregate AND the rolling perf aggregate exposed for a later
+// prioritization worker via `perf_sample`.
+// ---------------------------------------------------------------------------
+#[tokio::test]
+async fn observed_input_bytes_populated_from_estimate_and_feeds_perf() {
+    let w = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let cfg = test_config(1, 1);
+    let st = store();
+    // No local execution wired ⇒ `run_query_planned` skips the local path and
+    // dispatches to the grid, threading the estimate through to the receipt.
+    let coord = make_coordinator(&[&w], cfg, st.clone()).await;
+
+    let scan = ScanEstimate {
+        scanned_uncompressed_bytes: 4_000_000,
+        total_rows: 10_000,
+        estimated_output_rows: 10_000,
+        avg_row_width_bytes: 400,
+        units_total: 1,
+        units_scanned: 1,
+        projected_columns: 2,
+    };
+    let estimate = estimate_working_set(&scan, &QueryShape::streaming(), &Default::default());
+
+    let outcome = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(estimate))
+        .await
+        .unwrap();
+    assert!(!outcome.executed_locally, "no local exec wired ⇒ grid dispatch");
+
+    let winner = outcome.winner.clone().expect("a winner");
+    // The winner's Correct receipt carries the ESTIMATED scanned bytes, not 0.
+    let wr = outcome
+        .receipts
+        .iter()
+        .find(|r| r.worker_id == winner && r.verdict == Verdict::Correct)
+        .expect("winner receipt");
+    assert_eq!(wr.observed_input_bytes, 4_000_000);
+
+    // It folded into the rolling perf aggregate on the Correct receipt.
+    let perf = st.perf_aggregate(&winner).expect("perf recorded on Correct");
+    assert_eq!(perf.obs_count, 1);
+    assert!((perf.ewma_bytes - 4_000_000.0).abs() < 1e-6);
+
+    // And it folded into the proven-capability size aggregate.
+    let cap = st.proven_capability(&winner).expect("capability recorded");
+    assert_eq!(cap.max_input_bytes, 4_000_000);
+
+    // `perf_sample` exposes it for the (future) prioritization/pricing worker.
+    let sample = coord.perf_sample(&winner).expect("perf_sample available");
+    assert_eq!(sample.bytes_verified, 4_000_000);
+
+    // A plain `run_query` (no estimate) keeps the "unknown" (0) semantics.
+    let plain = coord
+        .run_query("SELECT 2", QueryOverrides::default())
+        .await
+        .unwrap();
+    let pr = plain
+        .receipts
+        .iter()
+        .find(|r| r.verdict == Verdict::Correct)
+        .expect("a correct receipt");
+    assert_eq!(pr.observed_input_bytes, 0, "no estimate ⇒ unknown (0)");
 }

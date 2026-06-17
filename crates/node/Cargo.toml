@@ -36,11 +36,11 @@ futures-util = "0.3.32"
 hex = "0.4.3"
 lz4_flex = { version = "0.11.3", default-features = false, features = ["std"] }
 zstd = "0.13.2"
-p2p-config = { version = "0.3.0", path = "../config" }
-p2p-proto = { version = "0.3.0", path = "../proto" }
-p2p-settlement = { version = "0.3.0", path = "../settlement" }
-p2p-transport = { version = "0.3.0", path = "../transport" }
-p2p-trust = { version = "0.3.0", path = "../trust" }
+p2p-config = { version = "0.4.0", path = "../config" }
+p2p-proto = { version = "0.4.0", path = "../proto" }
+p2p-settlement = { version = "0.4.0", path = "../settlement" }
+p2p-transport = { version = "0.4.0", path = "../transport" }
+p2p-trust = { version = "0.4.0", path = "../trust" }
 # QUIC error codes (`VarInt`) for abruptly RESETting loser/stalled dispatch
 # streams. Pinned to the same version `p2p-transport` uses so the `SendStream`/
 # `RecvStream` types (re-exported from there) and our `VarInt` are identical.
@@ -55,6 +55,10 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.3", features = ["full"] }
 tracing = "0.1.44"
 libp2p = { version = "0.56.0", default-features = false, features = ["tcp", "quic", "tokio", "noise", "yamux", "gossipsub", "kad", "identify", "autonat", "dcutr", "relay", "mdns", "macros"], optional = true }
+# Non-GDPR system-metadata capture (`system_collect.rs`): only the `system`
+# (CPU/RAM/OS) + `disk` probes are needed; default features (network/component/
+# user enumeration) are disabled to keep the surface minimal.
+sysinfo = { version = "0.39.3", default-features = false, features = ["system", "disk"] }
 
 # OS-level sandbox resource enforcement. Unix uses POSIX `setrlimit` (libc);
 # Windows uses Job Objects (windows-sys). Both are target-gated so neither is

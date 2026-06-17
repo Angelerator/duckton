@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::attestation::Attestation;
 use crate::ids::{JobId, NodeId, QueryHash};
+use crate::input::InputSnapshot;
 use crate::value::ResultSet;
 use crate::version::Version;
 
@@ -45,6 +46,13 @@ pub struct Offer {
     pub query_hash: QueryHash,
     /// Optional cost hint (estimated rows scanned) so workers can admission-check.
     pub cost_hint_rows: Option<u64>,
+    /// Optional pre-flight estimate of the SCANNED input bytes for this job (the
+    /// estimator's `scanned_uncompressed_bytes`). A worker uses it to size its
+    /// metered `estimated_seconds`/`cap_seconds` bid (bytes ÷ measured throughput).
+    /// `None` (default / an older requester) ⇒ no hint: the worker falls back to a
+    /// conservative cold-start estimate.
+    #[serde(default)]
+    pub cost_hint_bytes: Option<u64>,
     pub data_class: DataClass,
     /// Fresh random nonce to bind the exchange and prevent replay.
     pub nonce: u64,
@@ -70,6 +78,12 @@ pub struct Offer {
     /// crate stays free of the trust-crate dependency.
     #[serde(default)]
     pub group_proof: Option<String>,
+    /// Optional hint of the input-snapshot fingerprint the requester intends to
+    /// pin for this job (deterministic-input verification). Lets a worker
+    /// early-decline if it already knows it cannot read that exact snapshot.
+    /// `None` ⇒ no hint (the authoritative pin is the [`Dispatch::input_snapshot`]).
+    #[serde(default)]
+    pub input_fingerprint_hint: Option<String>,
 }
 
 /// A worker's decision on an [`Offer`].
@@ -103,6 +117,28 @@ pub struct Bid {
     /// declared tier. Opaque string to keep the wire crate trust-free.
     #[serde(default)]
     pub region_proof: Option<String>,
+    // --- Time-based (usage) pricing terms (additive; `#[serde(default)]` so a Bid
+    //     from an older peer parses with zeros = no metered terms ⇒ the requester
+    //     falls back to fixed/estimate pricing — today's behavior). ---
+    /// Provider's advertised per-second rate in **nanoton/second**. `0` ⇒ this bid
+    /// carries no metered terms (fixed-price / free).
+    #[serde(default)]
+    pub rate_per_second: u64,
+    /// Optional provider per-GiB rate in **nanoton/GiB** of scanned input. `0` ⇒
+    /// no byte term (pure time-based).
+    #[serde(default)]
+    pub rate_per_gb: u64,
+    /// The provider's ESTIMATE of the processing time (seconds) for this job, from
+    /// the data-size hint ÷ its measured throughput. Drives `cap_seconds`. `0` ⇒
+    /// no estimate (older peer / fixed bid).
+    #[serde(default)]
+    pub estimated_seconds: u64,
+    /// The billing-ceiling AND hard execution deadline (seconds):
+    /// `cap_seconds = ceil(estimated_seconds × cap_multiplier)`. The job is billed
+    /// `rate × min(actual, cap_seconds)` and hard-aborted past `cap_seconds`. `0` ⇒
+    /// no cap (older peer / fixed bid).
+    #[serde(default)]
+    pub cap_seconds: u64,
 }
 
 /// A scoped, short-lived storage credential delivered inside a [`Dispatch`]
@@ -143,6 +179,22 @@ pub struct Dispatch {
     /// Per-call wire compression for the result. `None` ⇒ worker default.
     #[serde(default)]
     pub compression: Option<Compression>,
+    /// The pinned, version-identified manifest of the external inputs this job
+    /// reads (deterministic-input verification). The worker reads the pinned
+    /// versions and echoes [`InputSnapshot::fingerprint`] in its [`ResultCommit`]
+    /// so the requester can tell "data changed between replicas" (benign drift)
+    /// apart from "node returned a wrong result" (fault). `None` (default / an
+    /// older requester) ⇒ no pin: verification falls back to result-hash quorum,
+    /// exactly today's behavior.
+    #[serde(default)]
+    pub input_snapshot: Option<InputSnapshot>,
+    /// Hard per-attempt execution deadline (milliseconds) derived from the metered
+    /// `cap_seconds` of the worker's own bid: the worker ABORTS exactly at this cap
+    /// (no grace window) and reports a resource/job fault (no provider penalty, no
+    /// slash). `None` (default / fixed-price / an older requester) ⇒ the worker's
+    /// own `job_timeout` governs, exactly today's behavior.
+    #[serde(default)]
+    pub cap_deadline_ms: Option<u64>,
 }
 
 /// A symmetric data key sealed (encrypted) to a worker/enclave public key
@@ -186,6 +238,14 @@ pub struct ResultCommit {
     pub result_hash: String,
     pub row_count: u64,
     pub latency_ms: u64,
+    /// The fingerprint of the input snapshot this worker actually read
+    /// (deterministic-input verification). Echoes [`Dispatch::input_snapshot`]'s
+    /// fingerprint when the worker honored the pin; differs when the worker read
+    /// a different (e.g. newer) version of the source data — which the requester
+    /// classifies as benign drift, NOT a fault. Empty (default / an older worker)
+    /// ⇒ unknown: treated as "on the pinned snapshot", never a false drift.
+    #[serde(default)]
+    pub input_fingerprint: String,
 }
 
 /// Wire compression codec for result payloads (mirrors `p2p_config::CompressionAlgo`).
@@ -380,6 +440,12 @@ pub struct Receipt {
     pub observed_result_rows: u64,
     #[serde(default)]
     pub observed_result_bytes: u64,
+    /// The input-snapshot fingerprint this job was verified against
+    /// (deterministic-input verification). Signature-covered and bound into the
+    /// anchored `JobRecord` for auditability. Empty (default / an older receipt)
+    /// ⇒ unknown (unpinned job), readable as before.
+    #[serde(default)]
+    pub input_fingerprint: String,
     /// Hex Ed25519 public key of the requester (so verifiers can check `sig`).
     pub requester_pubkey: String,
     /// Hex Ed25519 signature over the canonical signing bytes.
@@ -478,12 +544,14 @@ mod tests {
             requester_id: NodeId("b3:req".into()),
             query_hash: QueryHash::compute("SELECT 1", "1.0"),
             cost_hint_rows: Some(100),
+            cost_hint_bytes: None,
             data_class: DataClass::Public,
             nonce: 42,
             network: None,
             groups: vec![],
             regions: vec![],
             group_proof: None,
+            input_fingerprint_hint: None,
         });
         let bytes = crate::to_bytes(&offer).unwrap();
         let back: Wire = crate::from_bytes(&bytes).unwrap();
@@ -557,6 +625,10 @@ mod tests {
             free_mem_bytes: 1 << 30,
             free_threads: 4,
             region_proof: None,
+            rate_per_second: 0,
+            rate_per_gb: 0,
+            estimated_seconds: 0,
+            cap_seconds: 0,
         };
         assert_eq!(bid.attestation.level, crate::AttestationLevel::L0);
         let w = Wire::Bid(bid.clone());

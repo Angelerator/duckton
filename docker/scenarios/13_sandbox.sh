@@ -28,6 +28,23 @@ assert_have SBX-RELOCK-01 "$out" "configuration has been locked"
 out="$(solo_sql "FROM p2p_query('INSTALL httpfs');")"
 assert_re SBX-INSTALL-01 "$out" 'disabled by configuration|autoinstall|not allowed|Permission'
 
+# SBX-COPY-01 — COPY TO a local path is blocked (no exfiltration to disk).
+out="$(solo_sql "FROM p2p_query('COPY (SELECT 1) TO ''/tmp/p2p_exfil.csv''');")"
+assert_re SBX-COPY-01 "$out" 'LocalFileSystem has been disabled|disabled by configuration|Permission'
+
+# SBX-ATTACH-01 — ATTACH a local database file is blocked.
+out="$(solo_sql "FROM p2p_query('ATTACH ''attack.db''');")"
+assert_re SBX-ATTACH-01 "$out" 'LocalFileSystem has been disabled|disabled by configuration|Permission'
+
+# SBX-EXPORT-01 — EXPORT DATABASE (writes files) is blocked.
+out="$(solo_sql "FROM p2p_query('EXPORT DATABASE ''/tmp/p2p_exp''');")"
+assert_re SBX-EXPORT-01 "$out" 'LocalFileSystem has been disabled|disabled by configuration|Permission'
+
+# SBX-GLOB-01 — filesystem globbing is blocked; passwd listing never leaks.
+out="$(solo_sql "FROM p2p_query('SELECT count(*) FROM glob(''/**'')');")"
+assert_re      SBX-GLOB-01a "$out" 'LocalFileSystem has been disabled|disabled by configuration|Permission'
+assert_missing SBX-GLOB-01b "$out" "root:"
+
 # SBX-* OS-backend / rlimit / seatbelt / scoped-secret cases (SBX-RLIMIT-01,
 # SBX-BACKEND-*, SBX-EGRESS-*, SBX-FIXTURE-ALLOWED-01, SBX-SECRET-SCOPED-01,
 # SBX-TEMPDIR-01, SBX-NOOP-WARN-01) are OS-sandbox library behaviors proven by

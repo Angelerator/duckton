@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "console-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "blake3",
@@ -2873,6 +2873,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ntapi"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3b335231dfd352ffb0f8017f3b6027a4917f7df785ea2143d8af2adc66980ae"
+dependencies = [
+ "winapi",
+]
+
+[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2917,6 +2926,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-foundation"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+dependencies = [
+ "bitflags",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "oid-registry"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2949,7 +2977,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "p2p-config"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "p2p-proto",
  "serde",
@@ -2962,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-extension"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "duckdb",
@@ -2972,13 +3000,14 @@ dependencies = [
  "p2p-proto",
  "p2p-settlement",
  "p2p-trust",
+ "tempfile",
  "tokio",
  "toml",
 ]
 
 [[package]]
 name = "p2p-node"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2999,6 +3028,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "sysinfo",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3009,7 +3039,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "hex",
@@ -3021,7 +3051,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-settlement"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -3038,7 +3068,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-transport"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3062,7 +3092,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-trust"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "blake3",
  "chacha20poly1305",
@@ -4203,6 +4233,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.39.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21d0d938c10fcda3e897e28aaddf4ab462375d411f4378cd63b1c945f69aba96"
+dependencies = [
+ "libc",
+ "memchr",
+ "ntapi",
+ "objc2-core-foundation",
+ "objc2-io-kit",
+ "windows",
 ]
 
 [[package]]

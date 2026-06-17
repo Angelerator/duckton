@@ -163,16 +163,98 @@ pub struct NetworkSettings {
     pub wallet: WalletConfig,
 }
 
-/// Pricing knobs (`[economics.pricing]`). Role-appropriate: providers advertise
-/// `unit_price`; requesters cap spend with `max_bid`. Whole-TON units; `0` =
-/// unset (free / no cap).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The cost model a PAID job is priced under (`[economics.pricing].model`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PricingModel {
+    /// **Time-based (usage) pricing** — the default for paid jobs:
+    /// `cost = rate_per_second × processing_seconds (+ rate_per_gb × bytes)`.
+    /// Falls back to the fixed/`unit_price` lump-sum when NO rate is configured
+    /// (`rate_per_second == 0 && unit_price == 0`), so an economics-off / unpriced
+    /// node behaves exactly as today.
+    #[default]
+    Metered,
+    /// **Fixed** lump-sum price: the winner's quoted `price` (or the requester's
+    /// `max_bid`-derived base) — today's behavior, selectable as a fallback.
+    Fixed,
+}
+
+/// Pricing knobs (`[economics.pricing]`). Role-appropriate: providers advertise a
+/// per-second/per-GB `rate` (or a fixed `unit_price`); requesters cap spend with
+/// `max_bid`. `0` = unset (free / no cap).
+///
+/// ## Metering (the default `model = metered`)
+/// A paid metered job is billed `rate_per_second × min(actual_seconds, cap_seconds)
+/// (+ rate_per_gb × GB)`, where `cap_seconds = ceil(estimated_seconds ×
+/// cap_multiplier)` is BOTH the billing ceiling AND a hard execution deadline. The
+/// escrow is sized to the worst-case `cap_base` so the requester always has enough
+/// up front; the unused remainder refunds. Setting `model = fixed` (or leaving every
+/// rate at `0`) reproduces today's fixed-price / free behavior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PricingEconomics {
-    /// Provider's advertised unit price (whole TON per reference unit). `0`=free.
+    /// The cost model paid jobs are priced under. Defaults to [`PricingModel::Metered`].
+    pub model: PricingModel,
+    /// Provider's advertised fixed unit price (whole TON per reference unit).
+    /// `0` = free. Under the metered model with `rate_per_second == 0` this doubles
+    /// as the **back-compat default per-second rate** (`unit_price` whole TON ⇒
+    /// nanoton/sec) so an existing `unit_price` config keeps working.
     pub unit_price: u64,
-    /// Requester's max bid / budget cap (whole TON). `0` = no cap.
+    /// Requester's max bid / budget cap (whole TON). `0` = no cap. Reused as the
+    /// requester's **maxEscrow** ceiling the metered up-front coverage preflight
+    /// checks `cap_base + φ + κ·N` against.
     pub max_bid: u64,
+    /// Provider's advertised per-second rate in **nanoton/second** (metered model).
+    /// `0` (default) ⇒ fall back to `unit_price` (whole TON → nanoton) as the rate.
+    pub rate_per_second: u64,
+    /// Optional provider per-GB rate in **nanoton/GiB** of scanned input (metered
+    /// model). `0` (default) ⇒ no byte term, pure time-based pricing.
+    pub rate_per_gb: u64,
+    /// Safety multiplier sizing the billing/execution cap from the estimate:
+    /// `cap_seconds = ceil(estimated_seconds × cap_multiplier)`. Default **5**.
+    pub cap_multiplier: u64,
+    /// Anti-overcharge tolerance for the metered cross-check: the billed seconds
+    /// are capped at `median(verifier latencies) × metering_tolerance` so a single
+    /// slow winner cannot over-bill against the quorum's measured latency. Default
+    /// **1.5** (must be `>= 1.0`).
+    pub metering_tolerance: f64,
+}
+
+impl Default for PricingEconomics {
+    fn default() -> Self {
+        Self {
+            model: PricingModel::default(),
+            unit_price: 0,
+            max_bid: 0,
+            rate_per_second: 0,
+            rate_per_gb: 0,
+            cap_multiplier: 5,
+            metering_tolerance: 1.5,
+        }
+    }
+}
+
+/// Nanoton in one whole TON.
+const NANOTON_PER_TON: u128 = 1_000_000_000;
+
+impl PricingEconomics {
+    /// Effective per-second rate in **nanoton** for the metered model: the explicit
+    /// `rate_per_second` when set, else the back-compat `unit_price` (whole TON)
+    /// converted to nanoton. `0` ⇒ no rate configured (metering inert).
+    pub fn effective_rate_per_second(&self) -> u128 {
+        if self.rate_per_second > 0 {
+            self.rate_per_second as u128
+        } else {
+            (self.unit_price as u128).saturating_mul(NANOTON_PER_TON)
+        }
+    }
+
+    /// True when the metered model is selected AND a non-zero rate is configured —
+    /// i.e. time-based pricing is actually engaged. Otherwise the fixed/free path
+    /// (today's behavior) applies.
+    pub fn metered_active(&self) -> bool {
+        matches!(self.model, PricingModel::Metered) && self.effective_rate_per_second() > 0
+    }
 }
 
 /// Top-level `[economics]` section.
@@ -281,6 +363,16 @@ pub struct RankingEconomics {
     pub w_quality: f64,
     pub w_stake: f64,
     pub w_price: f64,
+    /// Weight of the **counterparty-measured latency** term `L ∈ [0,1]` in the
+    /// composite selection score (performance prioritization): a peer measured to
+    /// commit faster (size-normalized) scores higher. Driven by `perf_sample`
+    /// (receipt-derived, anti-game), never self-reported ETA. A cold-start node
+    /// with no perf history uses a neutral `0.5` prior plus the exploration bonus.
+    pub w_latency: f64,
+    /// Weight of the **counterparty-measured throughput** term `T ∈ [0,1]` in the
+    /// composite selection score: a peer measured to push more bytes/second scores
+    /// higher. Same `perf_sample` (anti-game) source as `w_latency`.
+    pub w_throughput: f64,
     /// Cold-start exploration rate ε (BLOCKCHAIN_ECONOMICS §5.2/§6): an
     /// uncertainty bonus added to a candidate's selection score that decays as
     /// the node accrues verified observations, so brand-new honest nodes still
@@ -314,6 +406,13 @@ impl Default for RankingEconomics {
             w_quality: 0.6,
             w_stake: 0.15,
             w_price: 0.25,
+            // Performance prioritization weights. Non-zero by default so a
+            // faster/higher-throughput honest node (per counterparty-measured
+            // `perf_sample`) wins dispatch more often. With NO perf history every
+            // candidate uses the same neutral 0.5 prior, so these terms are a
+            // constant offset that does not reorder a fresh grid (today's behavior).
+            w_latency: 0.15,
+            w_throughput: 0.15,
             exploration_rate: 0.0,
             exploration_saturation: 20,
             capability_weight: 0.0,
@@ -650,7 +749,12 @@ impl EconomicsConfig {
 
         // Ranking weights must be non-negative.
         let r = &self.ranking;
-        if r.w_quality < 0.0 || r.w_stake < 0.0 || r.w_price < 0.0 {
+        if r.w_quality < 0.0
+            || r.w_stake < 0.0
+            || r.w_price < 0.0
+            || r.w_latency < 0.0
+            || r.w_throughput < 0.0
+        {
             return inv("economics.ranking weights must be >= 0".into());
         }
         if r.capability_weight < 0.0 {
@@ -687,6 +791,19 @@ impl EconomicsConfig {
                 "economics.selection: require n_max >= n_default >= n_public >= checksum_min"
                     .into(),
             );
+        }
+
+        // Pricing (metered model). The cap multiplier must be >= 1 (a 5× default
+        // gives generous safety headroom) and the anti-overcharge tolerance >= 1.0
+        // (it only ever RELAXES the median-latency ceiling, never tightens below it).
+        if self.pricing.cap_multiplier < 1 {
+            return inv("economics.pricing.cap_multiplier must be >= 1".into());
+        }
+        if self.pricing.metering_tolerance < 1.0 {
+            return inv(format!(
+                "economics.pricing.metering_tolerance must be >= 1.0, got {}",
+                self.pricing.metering_tolerance
+            ));
         }
 
         // Records.
@@ -853,6 +970,49 @@ mod tests {
         assert!(e.validate().is_err());
         let mut e = EconomicsConfig::default();
         e.reputation.prior_beta = -1.0;
+        assert!(e.validate().is_err());
+    }
+
+    #[test]
+    fn pricing_defaults_are_metered_with_5x_cap_and_inert_without_a_rate() {
+        let e = EconomicsConfig::default();
+        e.validate().unwrap();
+        // Metered is the DEFAULT model, with the 5× safety cap and 1.5 tolerance.
+        assert_eq!(e.pricing.model, PricingModel::Metered);
+        assert_eq!(e.pricing.cap_multiplier, 5);
+        assert!((e.pricing.metering_tolerance - 1.5).abs() < 1e-9);
+        // No rate configured ⇒ metering is INERT (today's fixed/free behavior).
+        assert_eq!(e.pricing.effective_rate_per_second(), 0);
+        assert!(!e.pricing.metered_active());
+    }
+
+    #[test]
+    fn unit_price_is_the_back_compat_default_rate() {
+        let mut e = EconomicsConfig::default();
+        // An existing `unit_price` (whole TON) doubles as the per-second rate.
+        e.pricing.unit_price = 2; // 2 TON/sec
+        assert_eq!(e.pricing.effective_rate_per_second(), 2_000_000_000);
+        assert!(e.pricing.metered_active());
+        // An explicit nanoton rate wins over the whole-TON fallback.
+        e.pricing.rate_per_second = 500_000_000; // 0.5 TON/sec
+        assert_eq!(e.pricing.effective_rate_per_second(), 500_000_000);
+    }
+
+    #[test]
+    fn fixed_model_keeps_metering_inert_even_with_a_rate() {
+        let mut e = EconomicsConfig::default();
+        e.pricing.model = PricingModel::Fixed;
+        e.pricing.rate_per_second = 1_000_000_000;
+        assert!(!e.pricing.metered_active(), "fixed model never engages metering");
+    }
+
+    #[test]
+    fn rejects_bad_cap_multiplier_and_tolerance() {
+        let mut e = EconomicsConfig::default();
+        e.pricing.cap_multiplier = 0;
+        assert!(e.validate().is_err());
+        let mut e = EconomicsConfig::default();
+        e.pricing.metering_tolerance = 0.9;
         assert!(e.validate().is_err());
     }
 

@@ -32,6 +32,10 @@ pub struct ReceiptDraft {
     pub observed_input_bytes: u64,
     pub observed_result_rows: u64,
     pub observed_result_bytes: u64,
+    /// The input-snapshot fingerprint this job was verified against
+    /// (deterministic-input verification); empty = unpinned/unknown.
+    /// Signature-covered.
+    pub input_fingerprint: String,
 }
 
 impl ReceiptDraft {
@@ -57,6 +61,7 @@ impl ReceiptDraft {
             observed_input_bytes: 0,
             observed_result_rows: 0,
             observed_result_bytes: 0,
+            input_fingerprint: String::new(),
         }
     }
 }
@@ -76,6 +81,7 @@ pub fn signing_bytes(
     observed_input_bytes: u64,
     observed_result_rows: u64,
     observed_result_bytes: u64,
+    input_fingerprint: &str,
 ) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(b"duckdb-p2p-receipt-v1");
@@ -87,6 +93,10 @@ pub fn signing_bytes(
     field(worker_id.0.as_bytes());
     field(requester_id.0.as_bytes());
     field(query_hash.0.as_bytes());
+    // Bind the input fingerprint right after the query hash (deterministic-input
+    // verification): the receipt commits to WHICH inputs the verified answer was
+    // computed over, not just the query text.
+    field(input_fingerprint.as_bytes());
     field(result_hash.as_bytes());
     buf.push(verdict_tag(verdict));
     buf.extend_from_slice(&latency_ms.to_le_bytes());
@@ -124,6 +134,7 @@ pub fn sign_receipt(draft: ReceiptDraft, signer: &impl Signer) -> Receipt {
         draft.observed_input_bytes,
         draft.observed_result_rows,
         draft.observed_result_bytes,
+        &draft.input_fingerprint,
     );
     let sig = signer.sign_bytes(&msg);
     Receipt {
@@ -138,6 +149,7 @@ pub fn sign_receipt(draft: ReceiptDraft, signer: &impl Signer) -> Receipt {
         observed_input_bytes: draft.observed_input_bytes,
         observed_result_rows: draft.observed_result_rows,
         observed_result_bytes: draft.observed_result_bytes,
+        input_fingerprint: draft.input_fingerprint,
         requester_pubkey: hex::encode(signer.public_key()),
         sig: hex::encode(sig),
     }
@@ -183,6 +195,7 @@ pub fn verify_receipt(r: &Receipt) -> bool {
         r.observed_input_bytes,
         r.observed_result_rows,
         r.observed_result_bytes,
+        &r.input_fingerprint,
     );
     // `verify_strict` (not `verify`) rejects signature malleability and
     // low-order / small-subgroup public keys, so a valid signature is unique and
@@ -223,6 +236,7 @@ mod tests {
             observed_input_bytes: 0,
             observed_result_rows: 0,
             observed_result_bytes: 0,
+            input_fingerprint: String::new(),
         }
     }
 

@@ -317,6 +317,7 @@ mod tests {
             epoch: 7,
             prev_root: [9u8; 32],
             params_version: 0,
+            input_fingerprint: String::new(),
         };
 
         for count in [4usize, 5, 6, 7, 8] {

@@ -42,9 +42,13 @@ export interface Worker {
   stakeNanoton: string;
   /** advertised unit price (whole TON) the host bids on paid jobs. */
   priceTon?: number;
-  totalMemBytes: number;
+  /** Donated compute budget (bytes) the host OFFERS — NOT the machine's physical
+   * RAM (see `systemProfile.physicalRamBytes`). Renamed from `totalMemBytes`. */
+  donatedMemBytes: number;
   totalThreads: number;
   maxJobs: number;
+  /** Non-GDPR machine-class metadata (analytics/routing HINT only). */
+  systemProfile?: SystemProfileView;
   jobsParticipated: number;
   correct: number;
   faults: number;
@@ -54,6 +58,26 @@ export interface Worker {
   online: boolean;
   engineVersion: string;
   wallet: string | null;
+}
+
+/** Non-GDPR machine-class metadata for a worker (self-reported HINT only). */
+export interface SystemProfileView {
+  physicalRamBytes: number;
+  ramAvailableBytes: number;
+  donatedMemBytes: number;
+  donatedThreads: number;
+  cpuArch: string;
+  cpuModel: string;
+  cpuPhysicalCores: number;
+  cpuLogicalCores: number;
+  cpuFeatures: string[];
+  diskKind: string;
+  diskTotalBytes: number;
+  osName: string;
+  osVersion: string;
+  kernelVersion: string;
+  virtHint: string;
+  numaNodes: number;
 }
 
 export type CandidateState =
@@ -135,6 +159,11 @@ export interface Receipt {
   verdict: Verdict;
   fault: FaultClass;
   latencyMs: number;
+  /** Per-job MEASURED magnitude. `observedInputBytes` is the estimator's
+   * scanned-bytes estimate; `0` = unknown. */
+  observedInputBytes?: number;
+  observedResultRows?: number;
+  observedResultBytes?: number;
   tsMs: number;
   resultHash: string;
   sig: string;

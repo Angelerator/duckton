@@ -11,19 +11,20 @@ use std::time::{Duration, Instant};
 
 use p2p_config::{DataClassCfg, GridConfig, QueryOverrides, VerifyModeCfg};
 use p2p_proto::{
-    Ack, Attestation, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, JobId,
-    NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
+    Ack, Attestation, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, InputSnapshot,
+    JobId, NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
-    ensure_escrow_covers, Amount, JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor,
-    Settlement, SettlementOutcome, SlashReason, StakeRegistry, WalletAddress, BPS_DENOM,
+    ensure_escrow_covers, latency_score, required_escrow_total, throughput_score, Amount, JobRecord,
+    OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement, SettlementOutcome, SlashReason,
+    StakeRegistry, WalletAddress, BPS_DENOM,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
 use p2p_trust::{
     age_factor, attestation_bound_pub, attestation_gate, canonical, classify_failure,
     exploration_bonus, is_nondeterministic, now_ts, requester_trust_weight, sign_receipt,
-    soft_trust_score, AttestationVerifier, ReceiptDraft, TrustInputs, TrustStore,
+    soft_trust_score, AttestationVerifier, CommitKey, ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
 use tracing::debug;
@@ -33,6 +34,7 @@ use crate::canary::CanaryAuditor;
 use crate::discovery::{CandidateFilter, Discovery};
 use crate::engine::ExecLease;
 use crate::estimator::WorkingSetEstimate;
+use crate::input_resolver::{InputResolveError, InputResolver};
 use crate::liveness::{now_ms, LivenessView};
 use crate::planner::{is_resource_exhaustion, LocalExecutor, LocalOrRemotePlanner, PlanRequest};
 use crate::retry::{Backoff, FaultTally, TokenBucket};
@@ -75,6 +77,13 @@ pub enum CoordinatorError {
     NoResult,
     #[error("settlement error: {0}")]
     Settlement(String),
+    /// Up-front escrow coverage failure (time-based pricing): the requester's
+    /// maxEscrow / balance cannot cover the worst-case metered settlement
+    /// (`cap_base + φ platform fee + κ commission × N runners`) for the selected
+    /// providers. The job is REJECTED before any dispatch rather than failing
+    /// mid-settle. The message is the human-readable insufficient-escrow text.
+    #[error("{0}")]
+    InsufficientEscrow(String),
     #[error("local execution failed: {0}")]
     LocalExecution(String),
     #[error("transport error: {0}")]
@@ -154,6 +163,12 @@ enum AttemptResult {
     /// Enough providers committed but their result hashes did not agree — a
     /// genuine verification disagreement (terminal).
     QuorumDisagreement { agreement: usize, quorum: usize },
+    /// One or more providers read a DIFFERENT input snapshot than the one pinned
+    /// at dispatch (the external source data changed between replica executions).
+    /// This is benign — re-pin a fresh snapshot and re-dispatch, NEVER penalizing
+    /// the honest minority that read the newer bytes (deterministic-input
+    /// verification). Retried like `Inconclusive`, but without excluding anyone.
+    InputDrift { reason: String },
     /// No candidates were available to dispatch to this attempt.
     NoCandidates,
     /// Too few providers cleared selection (trust/attestation gate).
@@ -248,6 +263,13 @@ pub struct Coordinator {
     /// wallet) does NOT shed accumulated history. `None` (default) ⇒ per-node
     /// reputation, exactly as before.
     binding_store: Option<Arc<p2p_config::BindingStore>>,
+    /// Optional input resolver (deterministic-input verification). When wired,
+    /// the coordinator pins a version-identified snapshot of the job's external
+    /// inputs at dispatch time and attaches it to each `Dispatch`, so "the source
+    /// data changed between replicas" (benign drift) is distinguishable from "a
+    /// provider returned a wrong result" (fault). `None` (default) ⇒ no pinning:
+    /// verification falls back to result-hash quorum, exactly today's behavior.
+    input_resolver: Option<Arc<dyn InputResolver>>,
 }
 
 /// Cached on-chain `GlobalParams` policy, shared between the periodic sync task
@@ -274,6 +296,126 @@ struct ObservedSize {
     result_bytes: u64,
 }
 
+/// Bytes in one GiB (the unit for the optional metered per-GB byte term).
+const GIB_BYTES: Amount = 1024 * 1024 * 1024;
+
+/// Nanoton in one whole TON (config prices `max_bid`/`unit_price` are whole TON).
+const TON_NANOTON: Amount = 1_000_000_000;
+
+/// The time-based (usage) pricing terms carried by a worker's [`Bid`]: the
+/// per-second / per-GiB rates and the billing/execution `cap_seconds`. Present
+/// only when the bid advertised a non-zero rate (the metered model); otherwise
+/// the coordinator uses the fixed-price path (today's behavior).
+#[derive(Debug, Clone, Copy)]
+struct MeteredTerms {
+    /// Per-second rate in nanoton.
+    rate_per_second: Amount,
+    /// Optional per-GiB rate in nanoton.
+    rate_per_gb: Amount,
+    /// Billing ceiling AND hard execution deadline (seconds).
+    cap_seconds: u64,
+}
+
+impl MeteredTerms {
+    /// Extract the metered terms from a bid, or `None` when it carries no rate
+    /// (an older peer / a fixed-price bid).
+    fn from_bid(bid: &Bid) -> Option<Self> {
+        if bid.rate_per_second == 0 {
+            return None;
+        }
+        Some(Self {
+            rate_per_second: bid.rate_per_second as Amount,
+            rate_per_gb: bid.rate_per_gb as Amount,
+            cap_seconds: bid.cap_seconds.max(1),
+        })
+    }
+
+    /// The optional per-GiB byte term in nanoton for `bytes` scanned input.
+    fn bytes_term(&self, bytes: u64) -> Amount {
+        self.rate_per_gb.saturating_mul(bytes as Amount) / GIB_BYTES
+    }
+
+    /// Worst-case `cap_base = rate × cap_seconds (+ byte term)` — the most the job
+    /// can cost, used to size/verify the escrow up front.
+    fn cap_base(&self, bytes: u64) -> Amount {
+        self.rate_per_second
+            .saturating_mul(self.cap_seconds as Amount)
+            .saturating_add(self.bytes_term(bytes))
+    }
+
+    /// The settled `base = rate × min(billed_seconds, cap_seconds) (+ byte term)`.
+    fn base_for(&self, billed_seconds: u64, bytes: u64) -> Amount {
+        let secs = billed_seconds.min(self.cap_seconds) as Amount;
+        self.rate_per_second
+            .saturating_mul(secs)
+            .saturating_add(self.bytes_term(bytes))
+    }
+}
+
+/// The fully-resolved metered settlement inputs for the WINNER, computed once the
+/// quorum verdict + measured latencies are known. `None` ⇒ the fixed-price path.
+#[derive(Debug, Clone, Copy)]
+struct MeteredSettle {
+    terms: MeteredTerms,
+    /// The cross-checked billed seconds (`min(winner, median × tolerance)`).
+    billed_seconds: u64,
+    /// The estimator's scanned-bytes estimate (the optional byte term basis).
+    bytes: u64,
+}
+
+/// The price signal used to rank a bid (lower = cheaper ⇒ ranked higher): the
+/// per-second rate under the metered model, else the fixed `price`.
+fn bid_price_signal(bid: &Bid) -> u64 {
+    if bid.rate_per_second > 0 {
+        bid.rate_per_second
+    } else {
+        bid.price
+    }
+}
+
+/// Min-max normalize a price into a `[0,1]` score where CHEAPER ⇒ higher. All
+/// candidates equal (or a single candidate) ⇒ neutral `1.0`.
+fn normalize_price(price: u64, pmin: u64, pmax: u64) -> f64 {
+    if pmax <= pmin {
+        return 1.0;
+    }
+    1.0 - (price.saturating_sub(pmin) as f64 / (pmax - pmin) as f64)
+}
+
+/// Median of a slice of latencies (ms); `0` for an empty slice.
+fn median_ms(latencies: &[u64]) -> u64 {
+    if latencies.is_empty() {
+        return 0;
+    }
+    let mut v = latencies.to_vec();
+    v.sort_unstable();
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        (v[n / 2 - 1] + v[n / 2]) / 2
+    }
+}
+
+/// `ceil(ms / 1000)` — whole processing seconds from a millisecond latency.
+fn ceil_secs(ms: u64) -> u64 {
+    ms.div_ceil(1000)
+}
+
+/// The metered **billed seconds**: the requester-observed winner commit latency
+/// (`processing_seconds = ceil(ms/1000)`), cross-checked against the quorum
+/// verifiers' median latency so a single slow/over-reporting winner cannot
+/// over-bill — billed = `min(winner_seconds, ceil(median × tolerance))`.
+fn metered_billed_seconds(winner_ms: u64, agreeing_ms: &[u64], tolerance: f64) -> u64 {
+    let winner_secs = ceil_secs(winner_ms);
+    let median = median_ms(agreeing_ms);
+    if median == 0 {
+        return winner_secs;
+    }
+    let median_cap_secs = ceil_secs((median as f64 * tolerance.max(1.0)).ceil() as u64);
+    winner_secs.min(median_cap_secs)
+}
+
 /// One worker that committed a result hash and whose decision stream is open.
 struct InFlight {
     worker: NodeId,
@@ -281,6 +423,9 @@ struct InFlight {
     recv: RecvStream,
     hash: String,
     latency_ms: u64,
+    /// The input-snapshot fingerprint the worker reported reading (empty when the
+    /// worker reported none — an older peer / unpinned job).
+    input_fingerprint: String,
 }
 
 /// The per-query request-scoping constraints the coordinator stamps into each
@@ -331,7 +476,18 @@ impl Coordinator {
             synced_params: Arc::new(SyncedParams::default()),
             params_source: None,
             attestation_verifier: None,
+            input_resolver: None,
         }
+    }
+
+    /// Wire an input resolver (deterministic-input verification). When set, the
+    /// coordinator pins a version-identified snapshot of each job's external
+    /// inputs at dispatch time, so a benign "data changed between replicas"
+    /// outcome is never mis-attributed as a provider fault. Off by default ⇒ no
+    /// pinning (result-hash quorum exactly as before).
+    pub fn with_input_resolver(mut self, resolver: Arc<dyn InputResolver>) -> Self {
+        self.input_resolver = Some(resolver);
+        self
     }
 
     /// Wire an attestation verifier so a bid claiming `> L0` is honored ONLY with
@@ -688,7 +844,7 @@ impl Coordinator {
         sql: &str,
         overrides: QueryOverrides,
     ) -> Result<QueryOutcome, CoordinatorError> {
-        let mut cfg = overrides.apply(&self.base_config)?;
+        let cfg = overrides.apply(&self.base_config)?;
 
         // Local-first hook (minimal): the routing decision itself lives in the
         // `planner` module; this just acts on it. Runs BEFORE any chain overlay so
@@ -697,6 +853,23 @@ impl Coordinator {
             return Ok(outcome);
         }
 
+        // No pre-flight estimate on this entry point ⇒ the per-job observed input
+        // size stays unknown (`0`). The estimate-aware entry is
+        // [`Coordinator::run_query_planned`].
+        self.dispatch_to_grid(sql, cfg, &overrides, None).await
+    }
+
+    /// Dispatch a query to the grid (the non-local path shared by
+    /// [`Coordinator::run_query`] and [`Coordinator::run_query_planned`]).
+    /// `estimated_input_bytes` is the estimator's scanned-bytes estimate threaded
+    /// through to the per-job observed-size accounting (`None`/`0` = unknown).
+    async fn dispatch_to_grid(
+        &self,
+        sql: &str,
+        mut cfg: GridConfig,
+        overrides: &QueryOverrides,
+        estimated_input_bytes: Option<u64>,
+    ) -> Result<QueryOutcome, CoordinatorError> {
         // Per-job data class from the request (`data_class => ...`), defaulting to
         // Public so the unset path is unchanged. It drives the worker admission
         // gate (`serves_data_class`), the economics free/paid resolution, and the
@@ -738,7 +911,15 @@ impl Coordinator {
         };
 
         self.run_resilient(
-            sql, &cfg, &job_id, &query_hash, paid, min_level, data_class, &scope,
+            sql,
+            &cfg,
+            &job_id,
+            &query_hash,
+            paid,
+            min_level,
+            data_class,
+            &scope,
+            estimated_input_bytes,
         )
         .await
     }
@@ -760,6 +941,7 @@ impl Coordinator {
         min_level: AttestationLevel,
         data_class: DataClass,
         scope: &RequestScope,
+        estimated_input_bytes: Option<u64>,
     ) -> Result<QueryOutcome, CoordinatorError> {
         let mut excluded: HashSet<NodeId> = HashSet::new();
         let mut backoff = Backoff::new(
@@ -779,7 +961,16 @@ impl Coordinator {
         let result = loop {
             let attempt = self
                 .dispatch_attempt(
-                    sql, cfg, job_id, query_hash, paid, min_level, data_class, scope, &excluded,
+                    sql,
+                    cfg,
+                    job_id,
+                    query_hash,
+                    paid,
+                    min_level,
+                    data_class,
+                    scope,
+                    &excluded,
+                    estimated_input_bytes,
                 )
                 .await;
             match attempt {
@@ -863,6 +1054,48 @@ impl Coordinator {
                     }
                     retries += 1;
                 }
+                Ok(AttemptResult::InputDrift { reason }) => {
+                    // Benign input drift (deterministic-input verification): the
+                    // source data changed between replica executions. Re-pin a
+                    // fresh snapshot and re-dispatch WITHOUT excluding anyone — the
+                    // honest minority that read newer bytes is not at fault. The
+                    // re-resolve happens at the top of the next `dispatch_attempt`.
+                    last_reason = format!("attempt {} input drift: {reason}", retries + 1);
+                    debug!("{last_reason}; re-pinning a fresh snapshot and re-dispatching (no penalty)");
+                    // Same stop conditions as the Inconclusive path (max_retries,
+                    // wall-clock cap, retry token bucket) to bound a flapping source.
+                    if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::Exhausted {
+                            attempts: retries + 1,
+                            reason: last_reason,
+                        });
+                    }
+                    if cfg.scheduler.max_total_duration_ms != 0
+                        && started.elapsed()
+                            >= Duration::from_millis(cfg.scheduler.max_total_duration_ms)
+                    {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::Exhausted {
+                            attempts: retries + 1,
+                            reason: format!("{last_reason}; max_total_duration reached"),
+                        });
+                    }
+                    let now = Instant::now();
+                    budget.refill(now.duration_since(last_refill));
+                    last_refill = now;
+                    if !budget.try_take() {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::RetryBudgetExhausted {
+                            attempts: retries + 1,
+                        });
+                    }
+                    let delay = backoff.next_delay();
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    retries += 1;
+                }
             }
         };
         self.progress.clear(job_id);
@@ -885,7 +1118,31 @@ impl Coordinator {
         data_class: DataClass,
         scope: &RequestScope,
         excluded: &HashSet<NodeId>,
+        estimated_input_bytes: Option<u64>,
     ) -> Result<AttemptResult, CoordinatorError> {
+        // 0. Deterministic-input verification: pin a version-identified snapshot
+        //    of this job's external inputs RIGHT NOW (re-resolved per attempt, so
+        //    the TOCTOU window between pinning and dispatch stays small). `None`
+        //    resolver / no pinnable source ⇒ no pin (today's behavior); a source
+        //    that cannot be statically pinned (dynamic SQL) ⇒ treat the job as
+        //    non-verifiable (no penalty); an unreachable source ⇒ Infeasible.
+        let (input_snapshot, inputs_not_pinnable) = match &self.input_resolver {
+            Some(resolver) => match resolver.resolve(sql).await {
+                Ok(snap) => (snap, false),
+                Err(InputResolveError::NotPinnable(reason)) => {
+                    debug!(job = %job_id, "inputs not statically pinnable ({reason}); running non-verifiable (no penalty)");
+                    (None, true)
+                }
+                Err(InputResolveError::Unavailable(reason)) => {
+                    return Ok(AttemptResult::Infeasible {
+                        reason: format!("input source unavailable: {reason}"),
+                    });
+                }
+            },
+            None => (None, false),
+        };
+        let pinned_fingerprint = input_snapshot.as_ref().map(|s| s.fingerprint.clone());
+
         // 1. Discover a bounded candidate set, excluding tried/convicted peers.
         let filter = CandidateFilter {
             data_class,
@@ -989,6 +1246,9 @@ impl Coordinator {
             requester_id: self.transport.local_node_id().clone(),
             query_hash: query_hash.clone(),
             cost_hint_rows: None,
+            // Hand the estimator's scanned-bytes estimate to workers so they can
+            // size their metered `estimated_seconds`/`cap_seconds` bid.
+            cost_hint_bytes: estimated_input_bytes,
             data_class,
             nonce: rand::thread_rng().gen(),
             // Stamp the request-scoping constraints (§7.5) so each host enforces
@@ -998,6 +1258,9 @@ impl Coordinator {
             groups: scope.groups.clone(),
             regions: scope.regions.clone(),
             group_proof: scope.group_proof.clone(),
+            // Hint the pinned input fingerprint so a worker can early-decline if
+            // it already knows it cannot read that exact snapshot.
+            input_fingerprint_hint: pinned_fingerprint.clone(),
         };
 
         let offer_futures = candidates.into_iter().map(|cand| {
@@ -1041,7 +1304,11 @@ impl Coordinator {
         // is only honored with valid evidence bound to this offer's nonce), not on
         // the bid's raw self-reported integer.
         let offer_nonce = offer.nonce.to_le_bytes();
-        let mut scored: Vec<(NodeId, f64, u64)> = accepted
+        // 3a. HARD FLOORS (unchanged): attestation gate, region-attested tier, and
+        //     the `min_trust` floor on the EFFECTIVE TRUST score, plus the auto-block
+        //     side effect. Selection-score prioritization (3b) only ever reorders
+        //     the candidates that already clear these floors.
+        let eligible: Vec<(NodeId, Bid, f64)> = accepted
             .into_iter()
             .filter(|(_, bid)| {
                 attestation_gate(
@@ -1062,9 +1329,9 @@ impl Coordinator {
                 }
                 self.region_proof_ok(worker, bid, &scope.regions, &cfg.membership.region_issuers)
             })
-            .map(|(worker, bid)| {
-                let score = self.effective_trust(&worker, cfg, now, paid);
-                if auto_block && score < ab.blocklist.auto_block_trust_floor {
+            .filter_map(|(worker, bid)| {
+                let trust = self.effective_trust(&worker, cfg, now, paid);
+                if auto_block && trust < ab.blocklist.auto_block_trust_floor {
                     if let Some(bl) = &self.blocklist {
                         bl.block(
                             worker.as_str(),
@@ -1074,11 +1341,34 @@ impl Coordinator {
                         );
                     }
                 }
-                (worker, score, bid.eta_ms)
+                if trust < cfg.trust.min_trust {
+                    return None;
+                }
+                Some((worker, bid, trust))
             })
-            .filter(|(_, score, _)| *score >= cfg.trust.min_trust)
             .collect();
 
+        // Retain each eligible worker's bid for the per-worker metered cap deadline
+        // and the winner's metered settle terms.
+        let bid_by_node: HashMap<NodeId, Bid> =
+            eligible.iter().map(|(w, b, _)| (w.clone(), b.clone())).collect();
+
+        // 3b. COMPOSITE SELECTION SCORE (performance prioritization): blend the
+        //     counterparty-MEASURED perf (size-normalized latency + throughput from
+        //     `perf_sample` — receipt-driven, anti-game), the effective trust /
+        //     quality, and stake, traded off against the normalized bid PRICE.
+        //     Wires economics.ranking.{w_quality,w_price,w_stake,w_latency,
+        //     w_throughput}. A faster/cheaper honest node ranks higher; a node that
+        //     over-claims speed (low ETA) but is MEASURED slow ranks lower because
+        //     its perf_sample reflects reality, not its self-reported ETA. Cold-start
+        //     newcomers use a neutral perf prior + the exploration bonus already
+        //     folded into the effective-trust term.
+        let (pmin, pmax) = eligible
+            .iter()
+            .fold((u64::MAX, 0u64), |(lo, hi), (_, b, _)| {
+                let p = bid_price_signal(b);
+                (lo.min(p), hi.max(p))
+            });
         // Capacity routing hint (NEVER a trust input): when `capability_weight`
         // is opted in (>0, default 0), break ties toward peers whose gossiped,
         // signed self-capability profile proves a larger handled result size. At
@@ -1094,6 +1384,14 @@ impl Coordinator {
                 0
             }
         };
+        let mut scored: Vec<(NodeId, f64, u64)> = eligible
+            .iter()
+            .map(|(worker, bid, trust)| {
+                let price_score = normalize_price(bid_price_signal(bid), pmin, pmax);
+                let comp = self.selection_score(worker, *trust, price_score, cfg, paid);
+                (worker.clone(), comp, bid.eta_ms)
+            })
+            .collect();
         scored.sort_by(|a, b| {
             b.1.partial_cmp(&a.1)
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -1107,6 +1405,41 @@ impl Coordinator {
                 have: scored.len(),
                 quorum: cfg.scheduler.quorum,
             });
+        }
+
+        // 3c. UP-FRONT escrow coverage preflight (time-based pricing): before any
+        //     dispatch, size the escrow to the WORST-CASE `cap_base` among the
+        //     selected metered bids and REJECT the job now if the requester's
+        //     maxEscrow can't cover `cap_base + φ + κ·N`. This forces enough money
+        //     up front (rather than failing mid-settle). Inert unless this is a PAID
+        //     job, the selected bids carry metered terms, AND a maxEscrow ceiling
+        //     (`pricing.max_bid`) is configured.
+        if paid && cfg.economics.enabled && cfg.economics.pricing.max_bid > 0 {
+            let bytes = estimated_input_bytes.unwrap_or(0);
+            let worst_cap_base = scored
+                .iter()
+                .filter_map(|(w, _, _)| bid_by_node.get(w))
+                .filter_map(MeteredTerms::from_bid)
+                .map(|t| t.cap_base(bytes))
+                .max()
+                .unwrap_or(0);
+            if worst_cap_base > 0 {
+                let n_verifiers = scored.len().saturating_sub(1);
+                let fee_bps = to_bps(cfg.economics.fees.platform_fee_pct) as u16;
+                let comm_bps =
+                    to_bps(cfg.economics.fees.participation_commission_frac) as u16;
+                let max_escrow =
+                    (cfg.economics.pricing.max_bid as Amount).saturating_mul(TON_NANOTON);
+                if let Err(e) = ensure_escrow_covers(
+                    max_escrow,
+                    worst_cap_base,
+                    n_verifiers,
+                    fee_bps,
+                    comm_bps,
+                ) {
+                    return Err(CoordinatorError::InsufficientEscrow(e.to_string()));
+                }
+            }
         }
 
         // 4. Dispatch to selected workers and collect commits — progress-stall
@@ -1124,10 +1457,18 @@ impl Coordinator {
         // job's exact data prefix isn't extracted from the SQL here, and delivered
         // UNSEALED (sealing needs the winner's attestation-bound sealing key, which
         // L0 hosts don't ship) — see the report's sealing/prefix gap.
-        let credential = self
-            .credential_provider
-            .as_ref()
-            .map(|p| p.issue("", cfg.storage.credential_ttl_secs));
+        // Scope the credential to the resolved input prefix (deterministic-input
+        // verification): instead of the provider root (`issue("", …)`), derive a
+        // read-only prefix covering exactly the pinned objects, so a leaked
+        // credential reads only this job's inputs. Falls back to the root only
+        // when there is no pinned snapshot (the unchanged unpinned path).
+        let credential = self.credential_provider.as_ref().map(|p| {
+            let prefix = input_snapshot
+                .as_ref()
+                .map(credential_prefix)
+                .unwrap_or_default();
+            p.issue(&prefix, cfg.storage.credential_ttl_secs)
+        });
         let dispatch = Dispatch {
             job_id: job_id.clone(),
             sql: sql.to_string(),
@@ -1141,6 +1482,10 @@ impl Coordinator {
             compression: Some(crate::compression::algo_to_wire(
                 cfg.transport.compression.algorithm,
             )),
+            // The pinned manifest the workers must read (None ⇒ unpinned).
+            input_snapshot: input_snapshot.clone(),
+            // Per-worker hard cap deadline is stamped in the collect loop below.
+            cap_deadline_ms: None,
         };
         let stall_ms = {
             let s = cfg.scheduler.stall_timeout_ms();
@@ -1160,7 +1505,22 @@ impl Coordinator {
 
         let collect_futs = scored.iter().map(|(worker, _, _)| {
             let conn = conns.get(worker).expect("selected worker has a conn");
-            let dispatch = dispatch.clone();
+            let mut dispatch = dispatch.clone();
+            // Per-worker HARD cap deadline from ITS OWN bid's `cap_seconds` (metered
+            // model): the worker aborts exactly at the cap it promised. `None` ⇒ a
+            // fixed/free bid: the worker's own `job_timeout` governs (today).
+            let cap_ms = bid_by_node
+                .get(worker)
+                .and_then(MeteredTerms::from_bid)
+                .map(|t| t.cap_seconds.saturating_mul(1000));
+            dispatch.cap_deadline_ms = cap_ms;
+            // Wait at least the cap (+ stall slack) for a metered worker to commit
+            // OR report its cap-abort; otherwise the configured attempt deadline.
+            let this_attempt_deadline = match cap_ms {
+                Some(ms) => attempt_deadline
+                    .max(Duration::from_millis(ms.saturating_add(stall_ms))),
+                None => attempt_deadline,
+            };
             let worker = worker.clone();
             let progress = self.progress.as_ref();
             async move {
@@ -1169,7 +1529,7 @@ impl Coordinator {
                     &dispatch,
                     worker,
                     stall_to,
-                    attempt_deadline,
+                    this_attempt_deadline,
                     progress,
                 )
                 .await
@@ -1196,12 +1556,55 @@ impl Coordinator {
 
         // 5. Quorum decision (or canary judgement), with fault attribution to
         //    decide retry-vs-stop on a no-quorum outcome.
-        let hashes: Vec<&str> = inflight.iter().map(|f| f.hash.as_str()).collect();
-        let outcome = canonical::evaluate_quorum(hashes, cfg.scheduler.quorum);
         let canary_expected = self.canary.as_ref().and_then(|c| c.expected(query_hash));
-        let non_verifiable = cfg.antiabuse.nondeterminism_active()
-            && canary_expected.is_none()
-            && is_nondeterministic(sql);
+
+        // 5a. Deterministic-input verification: tally quorum GROUPED BY the input
+        //     snapshot each provider read. A minority that read a DIFFERENT
+        //     (non-empty) fingerprint than the one we pinned read newer/older
+        //     bytes — benign input drift, NOT a fault. Re-pin + re-dispatch
+        //     (never penalize them). A split on the SAME fingerprint is still a
+        //     genuine equivocation; an empty fingerprint (older worker) is treated
+        //     as "on the pinned snapshot" so it can never be a false drift. With
+        //     no pin (no resolver / no source) `drifted` is always 0 and this
+        //     degrades to plain result-hash quorum (today's behavior).
+        let commit_keys: Vec<CommitKey> = inflight
+            .iter()
+            .map(|f| CommitKey {
+                input_fingerprint: f.input_fingerprint.as_str(),
+                result_hash: f.hash.as_str(),
+            })
+            .collect();
+        let fp_outcome = canonical::evaluate_quorum_on_commits(
+            &commit_keys,
+            pinned_fingerprint.as_deref(),
+            cfg.scheduler.quorum,
+        );
+        if canary_expected.is_none() && fp_outcome.drifted > 0 {
+            tracing::warn!(
+                job = %job_id,
+                query = %query_hash.0,
+                drifted = fp_outcome.drifted,
+                committed = inflight.len(),
+                "input drift: provider(s) read a different input snapshot than pinned; \
+                 re-pinning a fresh snapshot and re-dispatching (benign, no penalty)"
+            );
+            // Neutral receipts only (no penalty, no commitment failure): the data
+            // changed under the providers — that is not their fault.
+            self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
+            return Ok(AttemptResult::InputDrift {
+                reason: format!(
+                    "{} of {} committed provider(s) read a different input snapshot than pinned \
+                     (source data changed between executions)",
+                    fp_outcome.drifted,
+                    inflight.len()
+                ),
+            });
+        }
+        let outcome = fp_outcome.pinned;
+        let non_verifiable = inputs_not_pinnable
+            || (cfg.antiabuse.nondeterminism_active()
+                && canary_expected.is_none()
+                && is_nondeterministic(sql));
 
         // Tally how the selected providers fared (for consensus-infeasible).
         let mut tally = FaultTally::new(selected.len());
@@ -1354,6 +1757,20 @@ impl Coordinator {
         let mut winner = inflight.swap_remove(winner_idx);
         let mut losers = inflight; // renamed for clarity
 
+        // Requester-observed commit latencies of the AGREEING quorum (winner + every
+        // matching non-winner) — the metering truth + its anti-overcharge cross-check
+        // basis. The winner's latency is the billing latency; the median of the set
+        // caps it (× tolerance) so a single slow/over-reporting winner can't over-bill.
+        let winner_latency_ms = winner.latency_ms;
+        let mut agreeing_latencies: Vec<u64> = vec![winner_latency_ms];
+        if !non_verifiable {
+            for f in losers.iter() {
+                if f.hash == agreed {
+                    agreeing_latencies.push(f.latency_ms);
+                }
+            }
+        }
+
         // 7a. RESET the losers IMMEDIATELY — BEFORE we await the winner's (possibly
         // large) result download. A graceful `finish()` would only close our send
         // half *after* the whole winner transfer; the loser would keep computing
@@ -1429,9 +1846,15 @@ impl Coordinator {
         // The requester MEASURES the winner's delivered result (rows + serialized
         // bytes) — a counterparty-attested capability signal that the provider
         // cannot inflate. Losers are reset before transfer, so only the winner
-        // carries a measured magnitude; input size is unknown here (0).
+        // carries a measured magnitude.
+        //
+        // `input_bytes` is the pre-flight estimator's scanned-bytes ESTIMATE for
+        // this job (exact scanned bytes aren't available requester-side). It is
+        // attested as the workload magnitude feeding the per-job perf aggregate +
+        // proven-capability size; `0` keeps the "fully unknown" semantics when no
+        // estimate was threaded through. We do NOT fabricate a value.
         let winner_obs = ObservedSize {
-            input_bytes: 0,
+            input_bytes: estimated_input_bytes.unwrap_or(0),
             result_rows: result.as_ref().map(|r| r.row_count() as u64).unwrap_or(0),
             result_bytes: result
                 .as_ref()
@@ -1455,8 +1878,21 @@ impl Coordinator {
                 Verdict::Inconclusive
             } else if f.hash == agreed {
                 Verdict::Correct
-            } else {
+            } else if pinned_fingerprint
+                .as_deref()
+                .map_or(true, |p| f.input_fingerprint == p)
+            {
+                // Wrong result on PROVABLY the same inputs (the provider reported
+                // the pinned fingerprint, or the job is unpinned) — a genuine
+                // fault (deterministic-input verification).
                 Verdict::Incorrect
+            } else {
+                // Wrong result, but the provider did NOT prove it read the pinned
+                // snapshot (an empty/unknown fingerprint on a pinned job — e.g. an
+                // older worker that did not echo one). Non-attributable: never a
+                // false slash. Any provider on a DIFFERENT non-empty fingerprint
+                // was already routed to the benign InputDrift re-dispatch above.
+                Verdict::Inconclusive
             };
 
             // A provider that committed a NON-matching hash on a verified-feasible
@@ -1478,6 +1914,7 @@ impl Coordinator {
                 verdict,
                 f.latency_ms,
                 obs,
+                &f.input_fingerprint,
             ));
             if verdict.is_provider_fault() {
                 let penalty = penalty_for(true);
@@ -1514,6 +1951,7 @@ impl Coordinator {
                     Verdict::Timeout,
                     0,
                     ObservedSize::default(),
+                    pinned_fingerprint.as_deref().unwrap_or(""),
                 ));
                 let penalty = penalty_for(true);
                 if penalty > 0.0 {
@@ -1533,6 +1971,7 @@ impl Coordinator {
                     *verdict,
                     0,
                     ObservedSize::default(),
+                    pinned_fingerprint.as_deref().unwrap_or(""),
                 ));
                 if verdict.is_provider_fault() {
                     let penalty = penalty_for(true);
@@ -1549,6 +1988,11 @@ impl Coordinator {
             // Fold the requester-measured workload magnitude into the peer's
             // proven-capability aggregate (no-op for non-Correct receipts).
             self.trust_store.observe_capability(r);
+            // Fold the measured latency + workload bytes into the peer's rolling
+            // perf aggregate (EWMA, time-decayed). CAPTURE-only — exposed via
+            // `perf_sample` for a later prioritization worker; it does NOT change
+            // selection scoring here (no-op for non-Correct receipts).
+            self.trust_store.observe_perf(r);
         }
 
         let result = match result {
@@ -1564,6 +2008,26 @@ impl Coordinator {
 
         self.trust_store.record_requester(&self_id, verified, now);
 
+        // Resolve the WINNER's time-based pricing terms (if its bid was metered):
+        // bill `base = rate × min(billed_seconds, cap_seconds) (+ byte term)`, where
+        // `billed_seconds` is the requester-observed commit latency cross-checked
+        // against the quorum verifiers' median. `None` ⇒ the fixed-price path.
+        let metered = bid_by_node
+            .get(&winner_id)
+            .and_then(MeteredTerms::from_bid)
+            .map(|terms| {
+                let billed_seconds = metered_billed_seconds(
+                    winner_latency_ms,
+                    &agreeing_latencies,
+                    cfg.economics.pricing.metering_tolerance,
+                );
+                MeteredSettle {
+                    terms,
+                    billed_seconds,
+                    bytes: estimated_input_bytes.unwrap_or(0),
+                }
+            });
+
         // Settle the paid job: open the per-job escrow NOW that the verified quorum
         // hash is known (open-escrow-per-job, BLOCKCHAIN_ECONOMICS §6.2/§12) binding
         // the HTLC lock + synced params version, release the payout split, then
@@ -1577,6 +2041,8 @@ impl Coordinator {
             &agreed,
             query_hash,
             &self_id,
+            pinned_fingerprint.as_deref().unwrap_or(""),
+            metered,
         );
 
         // FINE broken commitments (architecture §11): only on a PAID, feasible
@@ -1636,13 +2102,17 @@ impl Coordinator {
         estimate: Option<WorkingSetEstimate>,
     ) -> Result<QueryOutcome, CoordinatorError> {
         let cfg = overrides.apply(&self.base_config)?;
+        // Carry the estimator's scanned-bytes estimate into the per-job observed
+        // input size (an estimate where exact scanned bytes aren't available).
+        let estimated_input_bytes = estimate.as_ref().map(|e| e.scanned_uncompressed_bytes);
         if let Some(outcome) = self.try_local_execution(sql, &cfg, estimate).await? {
             return Ok(outcome);
         }
-        // Planner chose remote (or failed over): dispatch to the grid. `run_query`
-        // re-evaluates the (estimate-less) hook, which is a no-op here since the
-        // decision was already remote.
-        self.run_query(sql, overrides).await
+        // Planner chose remote (or failed over): dispatch to the grid, threading
+        // the estimate through so the winner's receipt records the estimated
+        // scanned input bytes.
+        self.dispatch_to_grid(sql, cfg, &overrides, estimated_input_bytes)
+            .await
     }
 
     /// Consult the planner and, if it chooses the local path, execute the query
@@ -1794,6 +2264,91 @@ impl Coordinator {
         }
     }
 
+    /// Expose a worker's rolling per-job performance as a
+    /// [`p2p_settlement::QualitySample`] for a later prioritization / pricing
+    /// worker to consume. Built from the trust store's time-decayed perf
+    /// aggregate (EWMA latency + workload bytes) plus the worker's recency-weighted
+    /// success ratio. Returns `None` when no perf has been observed.
+    ///
+    /// CAPTURE / EXPOSE only: this does NOT change selection scoring (that stays
+    /// receipt/`capability_confidence`-driven). The pricing/prioritization worker
+    /// is the component that will later act on this sample.
+    pub fn perf_sample(&self, worker: &NodeId) -> Option<p2p_settlement::QualitySample> {
+        let perf = self.trust_store.perf_aggregate(worker)?;
+        let now = now_ts();
+        // Confidence-aware success ratio if any reputation history exists, else a
+        // neutral 1.0 (perf alone says nothing about correctness).
+        let success_ratio = self.trust_store.reputation(worker, now).unwrap_or(1.0);
+        Some(p2p_settlement::QualitySample::new(
+            success_ratio,
+            perf.ewma_latency_ms.round().max(0.0) as u64,
+            perf.ewma_bytes.round().max(0.0) as u64,
+        ))
+    }
+
+    /// The economics-gated stake factor for selection: the diminishing/capped
+    /// `stake_factor` ONLY for a PAID job with economics enabled and a registry
+    /// wired (otherwise `0.0` — today's behavior, no chain nudge). Mirrors the
+    /// gate in [`Coordinator::effective_trust`].
+    fn stake_factor_for(&self, worker: &NodeId, cfg: &GridConfig, paid: bool) -> f64 {
+        if paid && cfg.economics.enabled {
+            self.stake_registry
+                .as_ref()
+                .map(|r| r.stake_factor(worker))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        }
+    }
+
+    /// Composite selection score (performance prioritization): a weight-normalized
+    /// blend of the COUNTERPARTY-MEASURED perf (size-normalized latency `L` +
+    /// throughput `T` from [`Coordinator::perf_sample`] — receipt-driven, anti-game),
+    /// the effective trust/quality, and stake, traded off against the normalized bid
+    /// `price_score` (cheaper ⇒ higher). Wires `economics.ranking.{w_quality,
+    /// w_latency,w_throughput,w_stake,w_price}`.
+    ///
+    /// A faster/higher-throughput honest node ranks higher; a node that over-claims
+    /// speed (low self-reported ETA) but is MEASURED slow ranks lower, because `L`/`T`
+    /// come from `perf_sample` not from the bid. A cold-start node with no perf
+    /// history uses a NEUTRAL `0.5` prior for `L`/`T` (its exploration bonus +
+    /// newcomer ceiling are already folded into the `effective_trust` term). When all
+    /// weights are `0` the score collapses to the effective trust (today's ranking).
+    fn selection_score(
+        &self,
+        worker: &NodeId,
+        trust: f64,
+        price_score: f64,
+        cfg: &GridConfig,
+        paid: bool,
+    ) -> f64 {
+        let q = &cfg.economics.quality;
+        let r = &cfg.economics.ranking;
+        // Counterparty-measured perf → size-normalized latency + throughput scores.
+        // No history ⇒ neutral 0.5 priors (cold-start newcomers are sampled via the
+        // exploration bonus already in `trust`, not via a fabricated perf score).
+        let (lat, thr) = match self.perf_sample(worker) {
+            Some(s) => (
+                latency_score(s.latency_ms, s.bytes_verified, q),
+                throughput_score(s.latency_ms, s.bytes_verified, q),
+            ),
+            None => (0.5, 0.5),
+        };
+        let stake = self.stake_factor_for(worker, cfg, paid);
+        let wsum = r.w_quality + r.w_latency + r.w_throughput + r.w_stake + r.w_price;
+        if wsum <= 0.0 {
+            return trust;
+        }
+        ((r.w_quality * trust
+            + r.w_latency * lat
+            + r.w_throughput * thr
+            + r.w_stake * stake
+            + r.w_price * price_score)
+            / wsum)
+            .clamp(0.0, 1.0)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn make_receipt(
         &self,
         job_id: &JobId,
@@ -1803,6 +2358,7 @@ impl Coordinator {
         verdict: Verdict,
         latency_ms: u64,
         obs: ObservedSize,
+        input_fingerprint: &str,
     ) -> Receipt {
         let draft = ReceiptDraft {
             job_id: job_id.clone(),
@@ -1815,6 +2371,7 @@ impl Coordinator {
             observed_input_bytes: obs.input_bytes,
             observed_result_rows: obs.result_rows,
             observed_result_bytes: obs.result_bytes,
+            input_fingerprint: input_fingerprint.to_string(),
         };
         sign_receipt(draft, &IdentitySigner(self.identity()))
     }
@@ -1845,6 +2402,7 @@ impl Coordinator {
                 verdict,
                 f.latency_ms,
                 ObservedSize::default(),
+                &f.input_fingerprint,
             );
             self.trust_store.record(&r);
         }
@@ -1903,6 +2461,8 @@ impl Coordinator {
         agreed_hash: &str,
         query_hash: &QueryHash,
         requester: &NodeId,
+        input_fingerprint: &str,
+        metered: Option<MeteredSettle>,
     ) {
         if !(paid && cfg.economics.enabled) {
             return;
@@ -1914,7 +2474,20 @@ impl Coordinator {
         // one currently synced from on-chain `GlobalParams` (0 = unbound).
         let result_hash = *blake3::hash(agreed_hash.as_bytes()).as_bytes();
         let version = self.current_params_version();
-        let max_bid = escrow_bid_nanoton(cfg);
+        // Time-based (usage) pricing sizes the escrow `B` to the WORST-CASE
+        // `cap_base` so the metered `base = rate × min(actual, cap)` always fits and
+        // the unused remainder refunds to the requester. The FIXED path (no metered
+        // terms) keeps today's behavior: `B = max_bid` and a B-derived base.
+        let fee_bps_pre = to_bps(cfg.economics.fees.platform_fee_pct);
+        let comm_bps_pre = to_bps(cfg.economics.fees.participation_commission_frac);
+        let max_bid = match &metered {
+            Some(m) => {
+                let cap_base = m.terms.cap_base(m.bytes);
+                let n = agreeing_non_winners.len();
+                required_escrow_total(cap_base, n, fee_bps_pre as u16, comm_bps_pre as u16)
+            }
+            None => escrow_bid_nanoton(cfg),
+        };
 
         // FEE-RECIPIENT enforcement: the platform-fee recipient (treasury) is the
         // AUTHORITATIVE on-chain `GlobalParams.fee_recipient` for the pinned
@@ -1998,16 +2571,24 @@ impl Coordinator {
         let fee_bps = to_bps(cfg.economics.fees.platform_fee_pct);
         let comm_bps = to_bps(cfg.economics.fees.participation_commission_frac);
         let n = agreeing_non_winners.len() as Amount;
-        // Derive the winner's settled price `base` so the FULL multi-party split
-        // (winner base + φ·base platform fee + κ·base to each of N agreeing runners)
-        // fits the locked escrow B: total = base·(1 + φ + N·κ) ≤ B. Floors only
-        // shrink the legs, so `total ≤ B` always holds; the integer remainder
-        // refunds to the requester on-chain (B3 carry-remaining). The storage
-        // reserve / gas buffer are funded on top of B and excluded from this math.
-        let denom = BPS_DENOM
-            .saturating_add(fee_bps)
-            .saturating_add(n.saturating_mul(comm_bps));
-        let base = b.saturating_mul(BPS_DENOM) / denom;
+        // The winner's settled price `base`:
+        //  * METERED (time-based): `base = rate × min(billed_seconds, cap_seconds)
+        //    (+ byte term)` — the ACTUAL metered cost. Since B was sized to the
+        //    worst-case `cap_base ≥ base`, the full split fits B and the unused
+        //    remainder (B − total) refunds to the requester (over-reservation
+        //    minus actual). On-chain checks stay valid: `base` IS the metered cost.
+        //  * FIXED (today): derive `base` from B so the FULL multi-party split
+        //    (winner base + φ·base + κ·base×N) spends ~all of B (winner takes the
+        //    integer-floor remainder); `total ≤ B` always holds.
+        let base = match &metered {
+            Some(m) => m.terms.base_for(m.billed_seconds, m.bytes).min(b),
+            None => {
+                let denom = BPS_DENOM
+                    .saturating_add(fee_bps)
+                    .saturating_add(n.saturating_mul(comm_bps));
+                b.saturating_mul(BPS_DENOM) / denom
+            }
+        };
         let fee = base.saturating_mul(fee_bps) / BPS_DENOM;
         let commission_each = base.saturating_mul(comm_bps) / BPS_DENOM;
         // FREE-NODE POLICY: the platform fee is φ·base on EVERY paid job regardless
@@ -2071,8 +2652,36 @@ impl Coordinator {
                 prev_root: [0u8; 32],
                 // Pin the exact on-chain params version this job ran under.
                 params_version: version,
+                // Bind the input snapshot the verified result was computed over.
+                input_fingerprint: input_fingerprint.to_string(),
             });
         }
+    }
+}
+
+/// Derive a read-only credential SCOPE prefix covering every pinned object in
+/// `snapshot` (deterministic-input verification). Uses the longest common path
+/// prefix of the object URIs, trimmed to the last `/`, so the issued credential
+/// is scoped to this job's input directory instead of the whole provider root.
+/// Empty (provider root) only when there are no objects.
+fn credential_prefix(snapshot: &InputSnapshot) -> String {
+    let mut uris = snapshot.objects.iter().map(|o| o.uri.as_str());
+    let Some(first) = uris.next() else {
+        return String::new();
+    };
+    let mut prefix = first.to_string();
+    for u in uris {
+        let common: String = prefix
+            .chars()
+            .zip(u.chars())
+            .take_while(|(x, y)| x == y)
+            .map(|(x, _)| x)
+            .collect();
+        prefix = common;
+    }
+    match prefix.rfind('/') {
+        Some(i) => prefix[..=i].to_string(),
+        None => prefix,
     }
 }
 
@@ -2234,6 +2843,7 @@ async fn collect_one(
                         recv,
                         hash: c.result_hash,
                         latency_ms: c.latency_ms,
+                        input_fingerprint: c.input_fingerprint,
                     });
                 }
                 Ok(Ok(Wire::Ack(a))) if !a.ok => {
@@ -2247,5 +2857,114 @@ async fn collect_one(
     match tokio::time::timeout(attempt_deadline, inner).await {
         Ok(c) => c,
         Err(_) => Collected::Silent(worker),
+    }
+}
+
+#[cfg(test)]
+mod metering_tests {
+    use super::*;
+
+    fn bid_metered(rate: u64, rate_gb: u64, cap_seconds: u64) -> Bid {
+        Bid {
+            job_id: JobId::new(),
+            worker_id: NodeId("b3:w".into()),
+            decision: BidDecision::Accept,
+            eta_ms: 10,
+            price: 0,
+            attestation: Attestation::stub_l0(),
+            recent_receipts: vec![],
+            free_mem_bytes: 0,
+            free_threads: 0,
+            region_proof: None,
+            rate_per_second: rate,
+            rate_per_gb: rate_gb,
+            estimated_seconds: cap_seconds / 5,
+            cap_seconds,
+        }
+    }
+
+    #[test]
+    fn metered_terms_only_present_with_a_rate() {
+        // A fixed/free bid (rate 0) carries no metered terms ⇒ the fixed path.
+        let mut fixed = bid_metered(0, 0, 0);
+        fixed.estimated_seconds = 0;
+        assert!(MeteredTerms::from_bid(&fixed).is_none());
+        // A metered bid (rate > 0) yields terms.
+        assert!(MeteredTerms::from_bid(&bid_metered(1000, 0, 50)).is_some());
+    }
+
+    #[test]
+    fn base_is_rate_times_actual_capped_at_cap_seconds() {
+        // rate = 1000 nanoton/s, cap = 50 s (no byte term).
+        let t = MeteredTerms::from_bid(&bid_metered(1000, 0, 50)).unwrap();
+        // Bill the actual seconds when under the cap.
+        assert_eq!(t.base_for(10, 0), 10_000);
+        assert_eq!(t.base_for(50, 0), 50_000);
+        // Past the cap, billing is CLAMPED to cap_seconds (the billing ceiling).
+        assert_eq!(t.base_for(9_999, 0), 50_000);
+        // cap_base is the worst case = rate × cap_seconds.
+        assert_eq!(t.cap_base(0), 50_000);
+        // The settled base for any actual ≤ cap_base, so the remainder refunds.
+        assert!(t.base_for(10, 0) < t.cap_base(0));
+    }
+
+    #[test]
+    fn optional_per_gb_byte_term_adds_to_base() {
+        // rate/s = 0-effect here (cap_seconds 1), rate/GiB = 2000 nanoton/GiB.
+        let t = MeteredTerms::from_bid(&bid_metered(1, 2000, 1)).unwrap();
+        // 2 GiB scanned ⇒ + 2 × 2000 byte term.
+        let two_gib = 2 * GIB_BYTES as u64;
+        assert_eq!(t.base_for(1, two_gib), 1 /* rate×1s */ + 4000);
+        // Sub-GiB floors to 0 byte term (integer GiB granularity).
+        assert_eq!(t.base_for(1, 100), 1);
+    }
+
+    #[test]
+    fn billed_seconds_cross_check_caps_an_overreporting_winner() {
+        // Winner reports 8s; the quorum verifiers measured ~2s. With tolerance 1.5
+        // the billed seconds are capped at ceil(2000ms × 1.5)=ceil(3s)=3 — the
+        // winner cannot over-bill against the measured median.
+        let billed = metered_billed_seconds(8_000, &[8_000, 2_000, 2_000], 1.5);
+        assert_eq!(billed, 3, "over-reporting winner capped at median × tolerance");
+        // When the winner is in line with the median, its own (smaller) seconds win.
+        let billed = metered_billed_seconds(2_000, &[2_000, 2_100, 1_900], 1.5);
+        assert_eq!(billed, 2);
+        // ceil(ms/1000) semantics: 1ms ⇒ 1 second; 0ms ⇒ 0.
+        assert_eq!(ceil_secs(1), 1);
+        assert_eq!(ceil_secs(0), 0);
+        assert_eq!(ceil_secs(1001), 2);
+    }
+
+    #[test]
+    fn median_and_price_normalization() {
+        assert_eq!(median_ms(&[]), 0);
+        assert_eq!(median_ms(&[5]), 5);
+        assert_eq!(median_ms(&[1, 3]), 2);
+        assert_eq!(median_ms(&[5, 1, 3]), 3);
+        // Cheaper ⇒ higher score; equal ⇒ neutral 1.0.
+        assert_eq!(normalize_price(10, 10, 10), 1.0);
+        assert_eq!(normalize_price(10, 10, 20), 1.0); // min price ⇒ best
+        assert_eq!(normalize_price(20, 10, 20), 0.0); // max price ⇒ worst
+        assert!((normalize_price(15, 10, 20) - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn full_metered_split_fits_escrow_and_refunds_the_remainder() {
+        // rate = 1 TON/s, cap = 5000 s ⇒ cap_base = 5000 TON. Bill 2 actual seconds
+        // ⇒ base = 2 TON. φ = 15%, κ = 5%, N = 1 verifier.
+        const TON: Amount = 1_000_000_000;
+        let t = MeteredTerms::from_bid(&bid_metered(TON as u64, 0, 5000)).unwrap();
+        let cap_base = t.cap_base(0);
+        let b = required_escrow_total(cap_base, 1, 1500, 500); // sized to cap_base
+        let base = t.base_for(2, 0);
+        let fee = base * 1500 / 10_000;
+        let comm = base * 500 / 10_000;
+        let total = base + fee + comm;
+        assert_eq!(base, 2 * TON);
+        assert_eq!(fee, base * 15 / 100);
+        assert_eq!(comm, base * 5 / 100);
+        assert!(total <= b, "metered split must fit the cap-sized escrow");
+        // The unused over-reservation (cap minus actual) refunds to the requester.
+        assert!(b - total > 0, "unused escrow refunds (cap >> actual)");
     }
 }

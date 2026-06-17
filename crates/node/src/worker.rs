@@ -5,8 +5,10 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use p2p_proto::{
-    Ack, Attestation, Bid, BidDecision, Compression, Dispatch, Offer, Progress, ResultCommit, Wire,
+    Ack, Attestation, Bid, BidDecision, Compression, Dispatch, InputSnapshot, Offer, Progress,
+    ResultCommit, Wire,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, QuicTransport, RecvStream, SendStream, Transport};
@@ -25,12 +27,57 @@ fn decode_pubkey(hex_s: &str) -> Option<[u8; 32]> {
     hex::decode(hex_s).ok()?.try_into().ok()
 }
 
+/// What a worker actually read for a job's pinned inputs (deterministic-input
+/// verification). Returned by an [`InputReader`] before execution.
+#[derive(Debug, Clone)]
+pub enum InputObservation {
+    /// No pin to honor (the dispatch carried no snapshot) — report an empty
+    /// fingerprint. The requester treats empty as "on the pinned snapshot".
+    Unpinned,
+    /// The pinned snapshot was read; report this fingerprint. When it equals the
+    /// dispatched fingerprint the pin was honored; when it differs the worker
+    /// read a different (e.g. newer) version — the requester calls that benign
+    /// drift, never a fault.
+    Pinned(String),
+    /// The pinned object version could not be fetched/validated (changed, gone,
+    /// or the store was unreachable). A job/input fault → no provider penalty.
+    Unavailable(String),
+}
+
+/// Verifies/reports which input snapshot a worker read for a job. The default
+/// [`EchoInputReader`] trusts the pinned dispatch (echoes its fingerprint) —
+/// correct for the in-process engine path and for tests where the data layer is
+/// mocked. A real object-store-backed reader re-HEADs each pinned object and
+/// reports the OBSERVED fingerprint (architecture P3 re-validation) or signals
+/// the pin is unfetchable.
+#[async_trait]
+pub trait InputReader: Send + Sync {
+    async fn observe(&self, snapshot: Option<&InputSnapshot>) -> InputObservation;
+}
+
+/// Default reader: echo the dispatched pin's fingerprint (no re-validation).
+pub struct EchoInputReader;
+
+#[async_trait]
+impl InputReader for EchoInputReader {
+    async fn observe(&self, snapshot: Option<&InputSnapshot>) -> InputObservation {
+        match snapshot {
+            Some(s) => InputObservation::Pinned(s.fingerprint.clone()),
+            None => InputObservation::Unpinned,
+        }
+    }
+}
+
 /// Result of running a job under the progress/heartbeat + deadline wrapper.
 enum ExecOutcome {
     /// Execution completed with a result.
     Ok(ResultSet),
     /// The host execution deadline was exceeded — the job is abandoned.
     Abandoned,
+    /// The metered **cap deadline** (`Dispatch::cap_deadline_ms`, derived from the
+    /// bid's `cap_seconds`) was exceeded — hard-abort exactly at the cap and report
+    /// an explicit resource/job fault to the requester (no provider penalty/slash).
+    CapExceeded,
     /// The requester cancelled this job mid-execution (it lost the hedged race,
     /// or the dispatch stream was reset). We stop computing immediately instead
     /// of finishing the now-useless query, freeing the budget for other jobs.
@@ -89,7 +136,19 @@ pub struct WorkerParams {
     /// This host's region-attestation proof (JSON `CapabilityToken`), attached to
     /// accepting bids so attested-tier requesters can verify residency.
     pub region_token: Option<String>,
+    /// Pricing policy this host advertises in its bids (`[economics.pricing]`).
+    /// Under the metered model with a non-zero rate the bid carries per-second/
+    /// per-GiB rates + an `estimated_seconds`/`cap_seconds`; otherwise the metered
+    /// fields stay `0` (fixed-price / free — today's behavior).
+    pub pricing: p2p_config::PricingEconomics,
 }
+
+/// Conservative cold-start throughput (bytes/second) a host assumes for its
+/// metered `estimated_seconds` bid when it has no measured self-capability yet.
+/// Deliberately pessimistic (16 MiB/s) so a fresh node bids a GENEROUS cap rather
+/// than over-promising speed it cannot prove — over-promising only loses it the
+/// race (a perf-score hit), never a slash.
+const COLD_START_THROUGHPUT_BPS: u64 = 16 * 1024 * 1024;
 
 impl WorkerParams {
     /// Derive worker params from a full config.
@@ -117,6 +176,7 @@ impl WorkerParams {
             group_enforcement: cfg.membership.group_enforcement,
             group_issuers: cfg.membership.group_issuers.clone(),
             region_token: cfg.membership.region_token.clone(),
+            pricing: cfg.economics.pricing.clone(),
         }
     }
 
@@ -200,6 +260,17 @@ pub struct Worker {
     /// shipped hosts) ⇒ the fixed L0 stub, unchanged.
     attestor: Option<Arc<dyn p2p_trust::attestation::Attestor>>,
     attest_bound_pub: [u8; 32],
+    /// Reports which input snapshot the worker actually read (deterministic-input
+    /// verification). Defaults to [`EchoInputReader`] (trusts the dispatched pin).
+    input_reader: Arc<dyn InputReader>,
+    /// Fail-safe serving block (architecture §9.4, G8): when `Some(reason)` the
+    /// host REFUSES every offer with that reason (a clean decline — no receipt,
+    /// no score effect). Set when a host would otherwise serve foreign jobs in an
+    /// unsafe posture (e.g. `storage.enable_remote_access=true` without an active
+    /// OS egress filter): we keep running under the DuckDB lockdown but never
+    /// serve a remote-access job unconfined, rather than crashing or silently
+    /// allowing open egress. `None` (default) ⇒ serve normally.
+    serving_block: Option<Arc<str>>,
 }
 
 impl Worker {
@@ -221,7 +292,28 @@ impl Worker {
             capability: None,
             attestor: None,
             attest_bound_pub: [0u8; 32],
+            input_reader: Arc::new(EchoInputReader),
+            serving_block: None,
         }
+    }
+
+    /// Put this host into the fail-safe serving block (architecture §9.4, G8):
+    /// it keeps running under the DuckDB lockdown but DECLINES every offer with
+    /// `reason`. Used when serving foreign jobs would be unsafe (e.g. remote
+    /// object-store access enabled without an active OS egress filter). A clean
+    /// decline — no receipt, no score effect — never a crash or open egress.
+    pub fn refusing_to_serve(mut self, reason: impl Into<String>) -> Self {
+        self.serving_block = Some(Arc::from(reason.into()));
+        self
+    }
+
+    /// Wire a custom [`InputReader`] (deterministic-input verification). A real
+    /// object-store-backed reader re-HEADs the pinned objects and reports the
+    /// OBSERVED fingerprint / signals an unfetchable pin; the default echoes the
+    /// dispatched pin.
+    pub fn with_input_reader(mut self, reader: Arc<dyn InputReader>) -> Self {
+        self.input_reader = reader;
+        self
     }
 
     /// Wire a real (or software) attestor that produces per-offer, nonce-bound
@@ -301,19 +393,11 @@ impl Worker {
                  enable a real sandbox backend ([sandbox]), before exposing remote reads."
             );
         }
-        // Opt-in process-per-job OS enforcement (G1/G8) is requested but the
-        // enforced child-execution path (a sandboxed DuckDB subprocess + its
-        // result/credential transfer protocol) is not yet wired: be loud that jobs
-        // still run IN-PROCESS so an operator never believes a job that exceeds its
-        // lease will be OS-killed. The in-process default is fully intact.
-        if cfg.sandbox.process_per_job {
-            warn!(
-                sandbox_backend = sandbox.name(),
-                "[sandbox].process_per_job is enabled, but enforced process-per-job execution \
-                 is NOT yet wired — jobs continue to run in-process under the DuckDB lockdown. \
-                 See ARCHITECTURE.md §9.4 for the remaining subprocess protocol."
-            );
-        }
+        // Opt-in process-per-job OS enforcement (G1/G8) is wired end-to-end in
+        // `Node::host_engine` (it swaps the in-process engine for the OS-sandboxed
+        // `SubprocessEngine` when `process_per_job` is on AND a `P2P_JOB_EXEC`
+        // child executor is configured). The flag-on-but-unconfigured case warns +
+        // falls back to in-process THERE, so no (now-stale) warning is emitted here.
         self.sandbox = SandboxPolicy {
             sandbox,
             cfg: Arc::new(cfg.sandbox.clone()),
@@ -401,7 +485,40 @@ impl Worker {
             free_mem_bytes: free.memory_bytes,
             free_threads: free.threads,
             region_proof: None,
+            rate_per_second: 0,
+            rate_per_gb: 0,
+            estimated_seconds: 0,
+            cap_seconds: 0,
         }
+    }
+
+    /// Compute this host's metered bid terms for an offer (time-based pricing):
+    /// the advertised per-second/per-GiB rates plus an `estimated_seconds` from the
+    /// data-size hint ÷ the host's throughput and `cap_seconds = estimated ×
+    /// cap_multiplier`. All-zero unless the metered model is active with a rate, so
+    /// a fixed/free host bids no metered terms (today's behavior).
+    fn metered_bid_terms(&self, offer: &Offer) -> (u64, u64, u64, u64) {
+        let p = &self.params.pricing;
+        if !p.metered_active() {
+            return (0, 0, 0, 0);
+        }
+        let rate_per_second = p.effective_rate_per_second().min(u64::MAX as u128) as u64;
+        // Estimate the scanned bytes from the offer's byte hint (the estimator's
+        // scan estimate), falling back to a rows→bytes heuristic, then to 0.
+        const AVG_ROW_BYTES: u64 = 256;
+        let bytes = offer
+            .cost_hint_bytes
+            .or_else(|| offer.cost_hint_rows.map(|r| r.saturating_mul(AVG_ROW_BYTES)))
+            .unwrap_or(0);
+        // Cold-start: a conservative measured-throughput assumption (a real host
+        // would refine this from its self-capability profile). ceil(bytes/tput),
+        // floored at 1 second so even a tiny job has a non-zero estimate/cap.
+        let throughput = COLD_START_THROUGHPUT_BPS.max(1);
+        let estimated_seconds = bytes.div_ceil(throughput).max(1);
+        let cap_seconds = estimated_seconds
+            .saturating_mul(p.cap_multiplier.max(1))
+            .max(1);
+        (rate_per_second, p.rate_per_gb, estimated_seconds, cap_seconds)
     }
 
     /// Pre-admission anti-abuse gates (ARCHITECTURE "Abuse resistance"): refuse a
@@ -545,6 +662,12 @@ impl Worker {
 
     /// Admission-control decision for an offer.
     fn make_bid(&self, offer: &Offer) -> Bid {
+        // Fail-safe serving block (§9.4, G8): refuse EVERY offer up front when the
+        // host is in an unsafe-to-serve posture (e.g. remote access without an OS
+        // egress filter). A clean decline — no receipt, no score effect.
+        if let Some(reason) = &self.serving_block {
+            return self.reject_bid(offer, reason.to_string());
+        }
         if let Some(rejection) = self.membership_reject(offer) {
             return rejection;
         }
@@ -568,6 +691,10 @@ impl Worker {
                 free_mem_bytes: free.memory_bytes,
                 free_threads: free.threads,
                 region_proof: None,
+                rate_per_second: 0,
+                rate_per_gb: 0,
+                estimated_seconds: 0,
+                cap_seconds: 0,
             };
         }
 
@@ -586,6 +713,9 @@ impl Worker {
 
         // Simple ETA model: base latency + a cost term from the hint.
         let eta_ms = 10 + offer.cost_hint_rows.unwrap_or(0) / 1000;
+        // Time-based (usage) pricing terms (zeros under the fixed/free model).
+        let (rate_per_second, rate_per_gb, estimated_seconds, cap_seconds) =
+            self.metered_bid_terms(offer);
 
         Bid {
             job_id: offer.job_id.clone(),
@@ -603,6 +733,10 @@ impl Worker {
             // Attach the host's region-attestation proof so an attested-tier
             // requester can verify residency. Inert under the declared default.
             region_proof: self.params.region_token.clone(),
+            rate_per_second,
+            rate_per_gb,
+            estimated_seconds,
+            cap_seconds,
         }
     }
 
@@ -648,6 +782,7 @@ impl Worker {
         recv: &mut RecvStream,
         worker_id: &p2p_proto::NodeId,
         start: Instant,
+        cap_deadline: Option<Duration>,
     ) -> ExecOutcome {
         let exec = self.engine.execute_job(
             &dispatch.sql,
@@ -693,6 +828,18 @@ impl Worker {
                 }
             };
 
+            // Hard metered cap deadline (no grace window): aborts exactly at the
+            // bid's `cap_seconds`, distinct from the host's own `job_timeout`.
+            let cap_timeout = async {
+                match cap_deadline {
+                    Some(cap) => {
+                        let remaining = cap.saturating_sub(start.elapsed());
+                        tokio::time::sleep(remaining).await
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+
             tokio::select! {
                 biased;
                 res = &mut exec => {
@@ -706,6 +853,9 @@ impl Worker {
                 _ = &mut cancel_watch => {
                     debug!(job = %dispatch.job_id, "dispatch cancelled mid-execution; aborting job");
                     return ExecOutcome::Cancelled;
+                }
+                _ = cap_timeout, if cap_deadline.is_some() => {
+                    return ExecOutcome::CapExceeded;
                 }
                 _ = timeout, if !deadline.is_zero() => {
                     return ExecOutcome::Abandoned;
@@ -782,12 +932,44 @@ impl Worker {
             }
         };
 
+        // Deterministic-input verification: observe which input snapshot we will
+        // read BEFORE spending compute. The default reader trusts the dispatched
+        // pin; a real reader re-HEADs the pinned objects. If the pinned version
+        // cannot be fetched/validated, fail this attempt as an INPUT fault (the
+        // detail classifies as `Infeasible` — no provider penalty), not a wrong
+        // result.
+        let input_fingerprint = match self
+            .input_reader
+            .observe(dispatch.input_snapshot.as_ref())
+            .await
+        {
+            InputObservation::Unpinned => String::new(),
+            InputObservation::Pinned(fp) => fp,
+            InputObservation::Unavailable(reason) => {
+                write_msg(
+                    &mut send,
+                    &Wire::Ack(Ack {
+                        job_id: dispatch.job_id,
+                        ok: false,
+                        // "not found" classifies as Verdict::Infeasible (job/input
+                        // fault), so an unfetchable pin never penalizes this host.
+                        detail: format!("pinned input version not found: {reason}"),
+                    }),
+                )
+                .await?;
+                let _ = send.finish();
+                return Ok(());
+            }
+        };
+
         // Build the per-job context: the scoped, short-lived storage credential
-        // (turned into a prefix-scoped DuckDB secret by the real engine). The
-        // mock engine ignores it.
+        // (turned into a prefix-scoped DuckDB secret by the real engine) plus the
+        // pinned input snapshot (so the real engine reads the pinned VERSIONS).
+        // The mock engine ignores both.
         let ctx = crate::engine::JobContext {
             credential: dispatch.credential.clone(),
             parquet_keys: Vec::new(),
+            input_snapshot: dispatch.input_snapshot.clone(),
         };
 
         // Engage the OS-level execution sandbox (architecture §9.4) for the
@@ -838,9 +1020,14 @@ impl Worker {
         // the requester (the progress update IS the liveness signal, §11). The
         // host ABANDONS the job if it exceeds `job_timeout` (the requester then
         // re-dispatches): we simply stop and drop the stream — no commit.
+        let cap_deadline = dispatch
+            .cap_deadline_ms
+            .filter(|ms| *ms > 0)
+            .map(Duration::from_millis);
         let exec = self
             .execute_with_progress(
                 &dispatch, mem, threads, &ctx, &mut send, &mut recv, &worker_id, start,
+                cap_deadline,
             )
             .await;
 
@@ -850,6 +1037,27 @@ impl Worker {
                 // Over the host deadline: abandon. Drop the stream so the
                 // requester observes a stall/no-commit and re-dispatches.
                 debug!(job = %dispatch.job_id, "host job_timeout exceeded; abandoning job");
+                return Ok(());
+            }
+            ExecOutcome::CapExceeded => {
+                // Hard metered cap-deadline overrun: report an EXPLICIT failure so
+                // the requester classifies it as a resource/job fault (no provider
+                // penalty, no slash) rather than silent abandonment. The node just
+                // over-promised its `cap_seconds` and loses the race.
+                let cap_ms = dispatch.cap_deadline_ms.unwrap_or(0);
+                debug!(job = %dispatch.job_id, cap_ms, "metered cap deadline exceeded; aborting job");
+                write_msg(
+                    &mut send,
+                    &Wire::Ack(Ack {
+                        job_id: dispatch.job_id,
+                        ok: false,
+                        detail: format!(
+                            "cap deadline exceeded after {cap_ms}ms: job too large for the agreed bid cap"
+                        ),
+                    }),
+                )
+                .await?;
+                let _ = send.finish();
                 return Ok(());
             }
             ExecOutcome::Cancelled => {
@@ -886,6 +1094,9 @@ impl Worker {
                 result_hash,
                 row_count,
                 latency_ms,
+                // Echo the fingerprint of the input snapshot we actually read, so
+                // the requester can tell drift (data changed) from a fault.
+                input_fingerprint,
             }),
         )
         .await?;

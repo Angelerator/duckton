@@ -247,8 +247,15 @@ impl DuckDbEngine {
                 .map_err(|e| EngineError::Rejected(format!("disabled_filesystems: {e}")))?;
         }
 
+        // 7c. Secret hygiene: refuse to expose unredacted secrets so the
+        // untrusted query can never read the job's OWN scoped cloud credential
+        // via `duckdb_secrets(redact:=false)`. Locked below so it can't be
+        // re-enabled. Shared verbatim with the extension's `HostEngine`.
+        conn.execute_batch(crate::engine::DENY_UNREDACTED_SECRETS_SQL)
+            .map_err(|e| EngineError::Rejected(format!("redact secrets: {e}")))?;
+
         // 8. Lock the configuration so the untrusted query can't widen anything.
-        conn.execute_batch("SET lock_configuration=true;")
+        conn.execute_batch(crate::engine::LOCK_CONFIGURATION_SQL)
             .map_err(|e| EngineError::Rejected(format!("lock configuration: {e}")))?;
 
         let mut stmt = conn
@@ -414,6 +421,21 @@ mod tests {
         assert!(
             r.is_err(),
             "locked config must reject re-opening external access"
+        );
+    }
+
+    #[tokio::test]
+    async fn lockdown_blocks_unredacting_secrets() {
+        // Secret hygiene (§9.2): the untrusted query must not be able to re-enable
+        // unredacted secret introspection to read its OWN scoped cloud credential.
+        // `allow_unredacted_secrets=false` + the locked config makes this fail.
+        let eng = DuckDbEngine::new().unwrap();
+        let r = eng
+            .execute("SET allow_unredacted_secrets=true; SELECT 1", lease())
+            .await;
+        assert!(
+            r.is_err(),
+            "locked config must reject re-enabling unredacted secrets, got {r:?}"
         );
     }
 

@@ -39,6 +39,12 @@ pub fn classify_failure(err_msg: &str) -> Verdict {
         "too large",
         "disk quota",
         "no space left",
+        // A metered cap-deadline overrun: the job could not finish within the
+        // agreed `cap_seconds` budget (the requester under-budgeted the cap / the
+        // data was too large for it). A job/requester resource fault — NEVER a
+        // provider penalty or slash (the node just over-promised speed and lost
+        // the race).
+        "cap deadline exceeded",
     ];
     if resource.iter().any(|p| m.contains(p)) {
         return Verdict::ResourceExceeded;

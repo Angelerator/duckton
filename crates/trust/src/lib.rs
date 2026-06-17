@@ -23,6 +23,7 @@ pub mod receipt;
 pub mod reputation;
 pub mod sealing;
 pub mod sybil;
+pub mod system;
 pub mod token;
 
 pub use antiabuse::{
@@ -33,7 +34,10 @@ pub use attestation::{
     attestation_bound_pub, AllowlistVerifier, AttestError, AttestationVerifier, Attestor,
     MockAttestor,
 };
-pub use canonical::{canonical_hash, evaluate_quorum, QuorumOutcome};
+pub use canonical::{
+    canonical_hash, evaluate_quorum, evaluate_quorum_on_commits, CommitKey,
+    FingerprintQuorumOutcome, QuorumOutcome,
+};
 pub use capability::{
     sign_capability_ad, sign_capability_profile, verify_capability_ad, verify_capability_profile,
     CapabilityDraft, CapabilityProfileDraft,
@@ -43,10 +47,11 @@ pub use persistent::{RedbTrustStore, TrustStoreError};
 pub use receipt::{sign_receipt, signing_bytes, verify_receipt, ReceiptDraft, Signer};
 pub use reputation::{
     age_factor, attestation_gate, confidence_reputation, exploration_bonus, now_ts,
-    soft_trust_score, InMemoryTrustStore, ProvenCapability, TrustInputs, TrustStore,
+    soft_trust_score, InMemoryTrustStore, PerfAggregate, ProvenCapability, TrustInputs, TrustStore,
 };
 pub use sealing::{decrypt_at_rest, encrypt_at_rest, seal_to, SealedBlob, SealingKeypair};
 pub use sybil::{make_vouch, mint_pow, verify_pow, verify_vouch, PowStamp, Vouch};
+pub use system::{sign_system_profile, verify_system_profile};
 pub use token::{
     verify_group_membership, verify_region_attestation, AuthContext, CapabilityToken, Caveat,
     TokenError,

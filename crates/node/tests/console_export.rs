@@ -21,8 +21,8 @@ use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, SettlementRail,
 };
 use p2p_node::{
-    AdmissionController, Candidate, Coordinator, MockEngine, QueryEngine, StaticDiscovery, Worker,
-    WorkerParams,
+    collect_system_profile, AdmissionController, Candidate, Coordinator, IdentitySigner, MockEngine,
+    QueryEngine, StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_proto::messages::{
     Bid, BidDecision, DataClass, Dispatch, Offer, ResultCommit, ScopedCredential, VerifyMode,
@@ -220,6 +220,39 @@ impl Settlement for CapturingSettlement {
     fn is_onchain(&self) -> bool {
         true
     }
+}
+
+/// Collect one base (host) [`p2p_proto::SystemProfile`] — the machine class is
+/// identical for every in-process worker on this host; only the donated budget
+/// differs per worker.
+fn base_system_profile() -> p2p_proto::SystemProfile {
+    let id = NodeIdentity::generate().unwrap();
+    let signer = IdentitySigner(&id);
+    collect_system_profile(&signer, &GridConfig::default().budget, "mock-1", env!("CARGO_PKG_VERSION"))
+}
+
+/// A per-worker `systemProfile` JSON block: the host's machine CLASS plus THIS
+/// worker's donated compute budget — making explicit that the donated budget is
+/// distinct from the machine's physical RAM.
+fn worker_system_profile(base: &p2p_proto::SystemProfile, donated_mem: u64, donated_threads: u32) -> J {
+    json!({
+        "physicalRamBytes": base.ram_total_bytes,
+        "ramAvailableBytes": base.ram_available_bytes,
+        "donatedMemBytes": donated_mem,
+        "donatedThreads": donated_threads,
+        "cpuArch": base.cpu_arch,
+        "cpuModel": base.cpu_model,
+        "cpuPhysicalCores": base.cpu_physical_cores,
+        "cpuLogicalCores": base.cpu_logical_cores,
+        "cpuFeatures": base.cpu_features,
+        "diskKind": base.disk_kind,
+        "diskTotalBytes": base.disk_total_bytes,
+        "osName": base.os_name,
+        "osVersion": base.os_version,
+        "kernelVersion": base.kernel_version,
+        "virtHint": base.virt_hint,
+        "numaNodes": base.numa_nodes,
+    })
 }
 
 fn unix_ms() -> u64 {
@@ -476,6 +509,8 @@ async fn export_console_snapshot() {
     // --- Per-worker REAL trust / reputation / capacity ----------------------
     let now = now_ts();
     let weights = &cfg.trust.weights;
+    // One host machine-class profile (non-GDPR); donated budget differs per worker.
+    let base_profile = base_system_profile();
     let mut workers_json: Vec<J> = Vec::new();
     // Aggregate verdict tallies per worker from all receipts.
     let mut correct: BTreeMap<String, u64> = BTreeMap::new();
@@ -553,9 +588,14 @@ async fn export_console_snapshot() {
             "stakeTon": stake_ton,
             "stakeNanoton": (stake_ton as Amount * TON).to_string(),
             "priceTon": w.price,
-            "totalMemBytes": w.budget_mem,
+            // Donated compute budget (what the host OFFERS the grid) — renamed
+            // from the misleading `totalMemBytes` to make clear this is the
+            // donated budget, NOT the machine's physical RAM (see systemProfile).
+            "donatedMemBytes": w.budget_mem,
             "totalThreads": w.budget_threads,
             "maxJobs": w.max_jobs,
+            // Non-GDPR machine-class metadata (analytics/routing HINT only).
+            "systemProfile": worker_system_profile(&base_profile, w.budget_mem, w.budget_threads),
             "jobsParticipated": *parts.get(&id).unwrap_or(&0),
             "correct": c,
             "faults": f,
@@ -693,6 +733,12 @@ async fn export_console_snapshot() {
                 "verdict": format!("{:?}", r.verdict),
                 "fault": fault,
                 "latencyMs": r.latency_ms,
+                // Per-job MEASURED magnitude (the grid's per-job perf signal).
+                // `observedInputBytes` is the estimator's scanned-bytes estimate;
+                // `0` = unknown.
+                "observedInputBytes": r.observed_input_bytes,
+                "observedResultRows": r.observed_result_rows,
+                "observedResultBytes": r.observed_result_bytes,
                 "tsMs": r.ts * 1000,
                 "resultHash": if r.result_hash.is_empty() { "—".to_string() } else { r.result_hash.clone() },
                 "sig": format!("ed25519:{}…{}", &r.sig.get(0..8).unwrap_or(""), &r.sig.get(r.sig.len().saturating_sub(4)..).unwrap_or("")),
@@ -948,12 +994,14 @@ async fn export_console_snapshot() {
         requester_id: req_id.clone(),
         query_hash: qh.clone(),
         cost_hint_rows: Some(184_000_000),
+        cost_hint_bytes: None,
         data_class: DataClass::Internal,
         nonce: 0x9f2a_1c9e_b41d_77a0,
         network: None,
         groups: Vec::new(),
         regions: Vec::new(),
         group_proof: None,
+        input_fingerprint_hint: None,
     };
     let bid = Bid {
         job_id: sample_job.clone(),
@@ -966,6 +1014,10 @@ async fn export_console_snapshot() {
         free_mem_bytes: 22 * 1024 * 1024 * 1024,
         free_threads: 14,
         region_proof: None,
+        rate_per_second: 0,
+        rate_per_gb: 0,
+        estimated_seconds: 0,
+        cap_seconds: 0,
     };
     let dispatch = Dispatch {
         job_id: sample_job.clone(),
@@ -983,6 +1035,8 @@ async fn export_console_snapshot() {
         sealed_key: None,
         result_parallelism: Some(4),
         compression: None,
+        input_snapshot: None,
+        cap_deadline_ms: None,
     };
     let commit = ResultCommit {
         job_id: sample_job.clone(),
@@ -990,6 +1044,7 @@ async fn export_console_snapshot() {
         result_hash: sample_hash.clone(),
         row_count: 3,
         latency_ms: 2410,
+        input_fingerprint: String::new(),
     };
     let sample_receipt = job_recs
         .iter()

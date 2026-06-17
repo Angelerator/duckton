@@ -1271,21 +1271,31 @@ impl HostEngine {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
-        // Budget + the SAME lockdown the node's strict local engine applies
-        // (`crate::duckdb_engine` in p2p-node): no auto-install/-load of
-        // extensions, no community/unsigned extensions, NO network egress
-        // (`enable_external_access=false`), and the local filesystem disabled
-        // entirely (`disabled_filesystems='LocalFileSystem'`) since this free
-        // local path opens NO fixtures and must not be able to read local files
-        // (e.g. `read_csv_auto('/etc/passwd')`). Finally `lock_configuration=true`
-        // so the untrusted query cannot re-open any of it with a later `SET`.
+        // Each job gets its OWN private, ephemeral temp dir (0700, unique name)
+        // removed when this `TempDir` drops at the end of `run` — never a shared
+        // per-process spill dir leaking across jobs/tenants. Set BEFORE the
+        // filesystem is disabled (that step validates the local FS), exactly as
+        // the node's strict `DuckDbEngine` does.
+        let job_tmp = tempfile::Builder::new()
+            .prefix("duckton-host-job-")
+            .tempdir()
+            .map_err(|e| EngineError::Rejected(format!("temp dir: {e}")))?;
+        let tmp_path = job_tmp.path().to_string_lossy().replace('\'', "''");
+        // Budget + ephemeral temp + the SAME lockdown the node's strict local
+        // engine applies (`STRICT_LOCKDOWN_SQL`, shared verbatim so the two
+        // engines cannot drift): no auto-install/-load of extensions, no
+        // community/unsigned extensions, NO network egress
+        // (`enable_external_access=false`), the local filesystem disabled
+        // entirely (this free local path opens NO fixtures and must not read
+        // e.g. `/etc/passwd`), no unredacted-secret introspection, and finally
+        // `lock_configuration=true` so the untrusted query cannot re-open any of
+        // it with a later `SET`.
         conn.execute_batch(&format!(
-            "SET memory_limit='{mb}MB'; SET threads={threads}; {hardening} \
-             SET enable_external_access=false; \
-             SET disabled_filesystems='LocalFileSystem'; \
-             SET lock_configuration=true;",
+            "SET memory_limit='{mb}MB'; SET threads={threads}; \
+             SET temp_directory='{tmp_path}'; {hardening} {lockdown}",
             threads = lease.threads.max(1),
             hardening = p2p_node::EXTENSION_HARDENING_SQL,
+            lockdown = p2p_node::STRICT_LOCKDOWN_SQL,
         ))
         .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
 
@@ -1586,6 +1596,34 @@ fn query_meta_rows(outcome: &p2p_node::QueryOutcome) -> Vec<[String; 3]> {
         .as_ref()
         .map(|w| w.as_str().to_string())
         .unwrap_or_else(|| "<none>".to_string());
+    // Per-job MEASURED performance from the winner's signed receipt (the grid's
+    // per-job perf signal): latency + the requester-observed result bytes and the
+    // estimated scanned input bytes. Falls back to any Correct receipt, else the
+    // unknown (`0`) sentinel.
+    let winner_receipt = outcome
+        .winner
+        .as_ref()
+        .and_then(|w| {
+            outcome
+                .receipts
+                .iter()
+                .find(|r| &r.worker_id == w && r.verdict == p2p_proto::Verdict::Correct)
+        })
+        .or_else(|| {
+            outcome
+                .receipts
+                .iter()
+                .find(|r| r.verdict == p2p_proto::Verdict::Correct)
+        });
+    let (latency_ms, observed_input_bytes, observed_result_bytes) = winner_receipt
+        .map(|r| {
+            (
+                r.latency_ms,
+                r.observed_input_bytes,
+                r.observed_result_bytes,
+            )
+        })
+        .unwrap_or((0, 0, 0));
     vec![
         [g.into(), "job_id".into(), outcome.job_id.0.clone()],
         [
@@ -1615,6 +1653,18 @@ fn query_meta_rows(outcome: &p2p_node::QueryOutcome) -> Vec<[String; 3]> {
             g.into(),
             "result_rows".into(),
             outcome.result.row_count().to_string(),
+        ],
+        // Per-job perf measurement (winner receipt). `0` = unknown.
+        [g.into(), "latency_ms".into(), latency_ms.to_string()],
+        [
+            g.into(),
+            "observed_input_bytes".into(),
+            observed_input_bytes.to_string(),
+        ],
+        [
+            g.into(),
+            "observed_result_bytes".into(),
+            observed_result_bytes.to_string(),
         ],
     ]
 }
@@ -1659,6 +1709,58 @@ impl VTab for QueryMetaVTab {
 
     fn named_parameters() -> Option<Vec<(String, LogicalTypeHandle)>> {
         Some(query_named_params())
+    }
+}
+
+/// `FROM p2p_node_metadata()` — emit this node's non-GDPR `SystemProfile`
+/// (machine class: CPU/RAM/disk/OS shape, donated compute budget, resource
+/// ceilings) as (group, key, value) rows. Prefers the host-collected, signed
+/// profile persisted at host start; falls back to collecting one on demand for a
+/// requester-only node.
+///
+/// This is a SELF-REPORTED analytics / routing HINT only — it never feeds
+/// trust/selection scoring (which stays receipt-driven).
+struct NodeMetadataVTab;
+impl VTab for NodeMetadataVTab {
+    type InitData = OnceInit;
+    type BindData = Rows3;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        add_three_columns(bind, "group", "key", "value");
+        let node = get_node().map_err(boxed)?;
+        let transport = node.coordinator().transport();
+        let signer = p2p_node::IdentitySigner(transport.identity());
+        // Surface the persisted, host-collected profile when present; otherwise
+        // collect a fresh snapshot on demand (requester-only node).
+        let profile = p2p_node::SystemStore::open()
+            .load_verified(node.node_id())
+            .unwrap_or_else(|| {
+                let engine_version = HostEngine::new().version();
+                p2p_node::collect_system_profile(
+                    &signer,
+                    &node.config().budget,
+                    &engine_version,
+                    env!("CARGO_PKG_VERSION"),
+                )
+            });
+        Ok(Rows3 {
+            rows: profile.metadata_rows(),
+        })
+    }
+
+    fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        once_init(info)
+    }
+
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
+        emit_rows3(func, output)
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![])
     }
 }
 
@@ -2052,6 +2154,7 @@ pub fn duckton_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // host, join a swarm. These drive the live async `p2p-node`.
     con.register_table_function::<QueryVTab>("p2p_query")?;
     con.register_table_function::<QueryMetaVTab>("p2p_query_meta")?;
+    con.register_table_function::<NodeMetadataVTab>("p2p_node_metadata")?;
     con.register_table_function::<ShareVTab>("p2p_share")?;
     con.register_table_function::<PauseVTab>("p2p_pause")?;
     con.register_table_function::<ResumeVTab>("p2p_resume")?;

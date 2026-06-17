@@ -24,6 +24,31 @@ pub const EXTENSION_HARDENING_SQL: &str = "SET autoinstall_known_extensions=fals
      SET allow_community_extensions=false; \
      SET allow_unsigned_extensions=false;";
 
+/// Refuse to expose unredacted secrets so an untrusted query can never read the
+/// job's OWN scoped cloud credential via `duckdb_secrets(redact:=false)`. Once
+/// the configuration is locked this cannot be re-enabled by the query. Shared by
+/// both engines so the secret-hygiene control cannot drift.
+pub const DENY_UNREDACTED_SECRETS_SQL: &str = "SET allow_unredacted_secrets=false;";
+
+/// Lock the configuration so the untrusted query cannot re-open any part of the
+/// sandbox with a later `SET`. Always applied LAST.
+pub const LOCK_CONFIGURATION_SQL: &str = "SET lock_configuration=true;";
+
+/// The full STRICT in-memory lockdown applied (after the per-job budget +
+/// ephemeral `temp_directory` + [`EXTENSION_HARDENING_SQL`]) to an engine that
+/// opens NO local fixtures and has NO remote access: deny all external (network
+/// + remote-file) access, disable the local filesystem entirely, refuse to
+/// expose unredacted secrets, and lock the configuration. Shared VERBATIM by the
+/// extension's in-process `HostEngine` and the node's strict `DuckDbEngine` so
+/// this security-critical lockdown cannot drift between the two engines. The
+/// secure-read `DuckDbEngine` (which may enable remote access / fixtures)
+/// composes the same trailing pieces from [`DENY_UNREDACTED_SECRETS_SQL`] +
+/// [`LOCK_CONFIGURATION_SQL`].
+pub const STRICT_LOCKDOWN_SQL: &str = "SET enable_external_access=false; \
+     SET disabled_filesystems='LocalFileSystem'; \
+     SET allow_unredacted_secrets=false; \
+     SET lock_configuration=true;";
+
 /// Errors from query execution.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -52,11 +77,16 @@ pub struct JobContext {
     /// available to the connection via `PRAGMA add_parquet_key` (architecture
     /// §9.2 at-rest). Released per job (e.g. opened from a sealed key).
     pub parquet_keys: Vec<(String, Vec<u8>)>,
+    /// The pinned input snapshot for this job (deterministic-input verification).
+    /// The real engine uses it to read the pinned object VERSIONS (e.g. an S3
+    /// `versionId` passed via the secret/URL); the mock engine ignores it.
+    /// `None` ⇒ no pin (today's behavior).
+    pub input_snapshot: Option<p2p_proto::InputSnapshot>,
 }
 
 impl JobContext {
     pub fn is_empty(&self) -> bool {
-        self.credential.is_none() && self.parquet_keys.is_empty()
+        self.credential.is_none() && self.parquet_keys.is_empty() && self.input_snapshot.is_none()
     }
 }
 
@@ -195,6 +225,17 @@ mod tests {
             memory_bytes: 1 << 20,
             threads: 1,
         }
+    }
+
+    #[test]
+    fn strict_lockdown_bundles_the_shared_secret_and_lock_statements() {
+        // Drift guard: the strict bundle must contain the same secret-hygiene and
+        // configuration-lock statements the secure-read engine applies à la carte,
+        // so the two engines can never diverge on these security-critical SETs.
+        assert!(STRICT_LOCKDOWN_SQL.contains(DENY_UNREDACTED_SECRETS_SQL));
+        assert!(STRICT_LOCKDOWN_SQL.contains(LOCK_CONFIGURATION_SQL));
+        assert!(STRICT_LOCKDOWN_SQL.contains("SET enable_external_access=false;"));
+        assert!(STRICT_LOCKDOWN_SQL.contains("SET disabled_filesystems='LocalFileSystem';"));
     }
 
     #[tokio::test]

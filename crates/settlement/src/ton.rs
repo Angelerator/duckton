@@ -2809,6 +2809,7 @@ mod tests {
             epoch: 1,
             prev_root: [0u8; 32],
             params_version: 0,
+            input_fingerprint: String::new(),
         });
         let root_before = anchor.epoch_root();
         assert!(matches!(
@@ -3189,6 +3190,7 @@ mod tests {
             epoch: 1,
             prev_root: [0u8; 32],
             params_version: 0,
+            input_fingerprint: String::new(),
         });
         anchor.submit_root(1, 500).unwrap();
 

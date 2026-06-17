@@ -55,7 +55,10 @@ fn egress_allowlist_is_derived_from_storage_config() {
 
 #[test]
 fn disabled_sandbox_is_noop_and_runs_program() {
-    let cfg = SandboxConfig::default(); // enabled = false
+    let cfg = SandboxConfig {
+        enabled: false,
+        ..SandboxConfig::default()
+    };
     let sb = sandbox::build(&cfg);
     assert_eq!(sb.name(), "noop");
     // A no-op sandbox must still be able to build a runnable command.

@@ -20,7 +20,7 @@ export default function WorkersPage() {
   const online = onlineCount;
   const l2 = workers.filter((w) => w.attestation === "L2").length;
   const totalThreads = workers.reduce((a, w) => a + w.totalThreads, 0);
-  const totalRam = workers.reduce((a, w) => a + w.totalMemBytes, 0);
+  const totalRam = workers.reduce((a, w) => a + w.donatedMemBytes, 0);
   const honest = workers.filter((w) => w.behavior === "honest");
   const avgSuccess =
     honest.length === 0

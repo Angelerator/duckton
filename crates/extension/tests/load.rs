@@ -276,6 +276,72 @@ fn extension_p2p_query_meta_surfaces_outcome_metadata() {
     assert_eq!(stdout, "42", "p2p_query row shape is unchanged");
 }
 
+/// `p2p_node_metadata()` surfaces this node's non-GDPR `SystemProfile` (machine
+/// class: CPU/RAM/disk/OS, donated budget, resource ceilings) as (group, key,
+/// value) rows. A requester-only node with no persisted profile collects one on
+/// demand, so the table function must return real machine-class rows.
+#[test]
+fn extension_p2p_node_metadata_returns_rows() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_node_metadata_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
+    let ext = out_ext.display().to_string();
+    let cfg_dir = tmp_dir.join("cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+
+    let run = |sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", &cfg_dir)
+            .output()
+            .expect("run duckdb p2p_node_metadata");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // The table function returns a non-trivial set of machine-class rows.
+    let (ok, stdout, stderr) = run("SELECT count(*) FROM p2p_node_metadata();");
+    assert!(ok, "p2p_node_metadata failed: {stderr}");
+    let n: u64 = stdout.parse().unwrap_or(0);
+    assert!(n > 10, "expected many metadata rows, got {n}");
+
+    // The CPU arch is detected and non-empty (a real machine-class field).
+    let (ok, stdout, _e) =
+        run("SELECT value FROM p2p_node_metadata() WHERE key = 'arch';");
+    assert!(ok);
+    assert!(!stdout.is_empty(), "cpu arch should be detected");
+
+    // The donated budget is surfaced (distinct from physical RAM); with a
+    // hermetic zero-config dir it is the default 4 GiB donation.
+    let (ok, stdout, _e) =
+        run("SELECT value FROM p2p_node_metadata() WHERE key = 'donated_mem_bytes';");
+    assert!(ok);
+    assert_eq!(
+        stdout,
+        (4u64 * 1024 * 1024 * 1024).to_string(),
+        "donated budget should be the default 4 GiB"
+    );
+}
+
 /// The free **local-execution** engine (`HostEngine`) must be locked down exactly
 /// like the node's strict engine: no network egress and NO local-filesystem
 /// access. A `p2p_query` that tries to read a local file off the free path must
@@ -341,6 +407,90 @@ fn extension_local_path_blocks_local_file_reads() {
         !stdout.contains("topsecret") && !stderr.contains("topsecret"),
         "secret file contents must not leak; stdout={stdout} stderr={stderr}"
     );
+}
+
+/// Defense-in-depth on the production `HostEngine`/`p2p_query` path: every
+/// filesystem-escape / exfiltration primitive must ERROR under the strict
+/// lockdown (no `enable_external_access`, `disabled_filesystems`, locked config,
+/// ephemeral temp). Mirrors `docker/scenarios/13_sandbox.sh`. None of these may
+/// succeed and none may leak the planted secret. Runs against the real DuckDB
+/// CLI (skipped when it / python3 is unavailable).
+#[test]
+fn extension_host_engine_denies_fs_escapes() {
+    if !have("duckdb", "--version") || !have("python3", "--version") {
+        eprintln!("SKIP: duckdb CLI and/or python3 not available");
+        return;
+    }
+    let Some(dylib) = locate_cdylib() else {
+        eprintln!("SKIP: built cdylib not found next to test binary");
+        return;
+    };
+    let platform = duckdb_platform();
+    assert!(!platform.is_empty(), "could not determine duckdb platform");
+
+    let tmp_dir = std::env::temp_dir().join("p2p_ext_fsescape_test");
+    std::fs::create_dir_all(&tmp_dir).unwrap();
+    let out_ext = tmp_dir.join("duckton.duckdb_extension");
+    assert!(
+        build_loadable(&dylib, &platform, &out_ext),
+        "metadata append failed"
+    );
+    let ext = out_ext.display().to_string();
+    let cfg_dir = tmp_dir.join("cfg");
+    let _ = std::fs::remove_dir_all(&cfg_dir);
+
+    // Plant a secret file + an output target the sandboxed query must NOT touch.
+    let secret = tmp_dir.join("secret.csv");
+    std::fs::write(&secret, "col\ntopsecret\n").unwrap();
+    let secret_path = secret.display().to_string().replace('\'', "''");
+    let out_csv = tmp_dir.join("exfil.csv");
+    let _ = std::fs::remove_file(&out_csv);
+    let out_path = out_csv.display().to_string().replace('\'', "''");
+
+    let run = |sql: &str| -> (bool, String, String) {
+        let full = format!("LOAD '{ext}'; {sql}");
+        let out = Command::new("duckdb")
+            .args(["-unsigned", "-list", "-noheader", "-c", &full])
+            .env("P2P_CONFIG_DIR", &cfg_dir)
+            .output()
+            .expect("run duckdb fs-escape");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).trim().to_string(),
+            String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        )
+    };
+
+    // The inner single quotes must be doubled for the outer p2p_query('...').
+    let denied: Vec<String> = vec![
+        format!("COPY (SELECT 1) TO ''{out_path}''"),
+        "ATTACH ''attack.db''".to_string(),
+        "EXPORT DATABASE ''/tmp/p2p_ext_export''".to_string(),
+        format!("SELECT * FROM read_text(''{secret_path}'')"),
+        format!("SELECT * FROM read_csv_auto(''{secret_path}'')"),
+        "SELECT count(*) FROM glob(''/**'')".to_string(),
+    ];
+    for inner in &denied {
+        let (ok, stdout, stderr) = run(&format!("FROM p2p_query('{inner}');"));
+        assert!(
+            !ok,
+            "host-engine escape must be blocked: `{inner}` succeeded; stdout={stdout}"
+        );
+        assert!(
+            !stdout.contains("topsecret") && !stderr.contains("topsecret"),
+            "secret must not leak via `{inner}`; stdout={stdout} stderr={stderr}"
+        );
+    }
+    // The COPY target must not have been created.
+    assert!(
+        !out_csv.exists(),
+        "COPY TO must not have written outside the sandbox"
+    );
+
+    // Sanity: a pure in-memory query still works on the locked-down path.
+    let (ok, stdout, stderr) = run("FROM p2p_query('SELECT 7 AS x');");
+    assert!(ok, "in-memory query should still work: {stderr}");
+    assert_eq!(stdout, "7");
 }
 
 /// The host/swarm surface is callable from SQL and drives the live node:

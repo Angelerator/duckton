@@ -12,14 +12,18 @@
 pub mod attestation;
 pub mod capability;
 pub mod ids;
+pub mod input;
 pub mod messages;
+pub mod system;
 pub mod value;
 pub mod version;
 
 pub use attestation::{Attestation, AttestationLevel};
 pub use capability::{CapabilityAd, CapabilityProfile};
 pub use ids::{JobId, NodeId, QueryHash};
+pub use input::{compute_fingerprint, InputSnapshot, ObjectVersion, PinnedObject};
 pub use messages::*;
+pub use system::{SystemProfile, SYSTEM_PROFILE_SCHEMA_VERSION};
 pub use value::{ResultSet, Value};
 pub use version::{
     alpn_for_major, current_alpn, Version, MIN_SUPPORTED_VERSION, PROTOCOL_NAME, PROTOCOL_VERSION,

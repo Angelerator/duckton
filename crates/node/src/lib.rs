@@ -24,6 +24,7 @@ pub mod discovery;
 pub mod duckdb_engine;
 pub mod engine;
 pub mod estimator;
+pub mod input_resolver;
 #[cfg(feature = "discovery-libp2p")]
 pub mod libp2p_discovery;
 pub mod liveness;
@@ -36,12 +37,16 @@ pub mod sandbox;
 pub mod signer;
 pub mod storage;
 pub mod subprocess;
+pub mod system_collect;
+pub mod system_store;
 pub mod worker;
 
 pub use admission::{AdmissionController, FreeResources, Lease};
 pub use antiabuse::{cost_gate_reason, Blocklist, RateLimiter};
 pub use canary::CanaryAuditor;
 pub use capability_store::{CapabilityStore, MeasuredExecution};
+pub use system_collect::collect_system_profile;
+pub use system_store::SystemStore;
 pub use coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 pub use datasource::{
     default_provider, AzureProvider, CloudCredential, DataFormat, DataSourceError, GcsProvider,
@@ -52,7 +57,12 @@ pub use discovery::{Candidate, CandidateFilter, Discovery, StaticDiscovery};
 #[cfg(feature = "duckdb-engine")]
 pub use duckdb_engine::DuckDbEngine;
 pub use engine::{
-    EngineError, ExecLease, JobContext, MockEngine, QueryEngine, EXTENSION_HARDENING_SQL,
+    EngineError, ExecLease, JobContext, MockEngine, QueryEngine, DENY_UNREDACTED_SECRETS_SQL,
+    EXTENSION_HARDENING_SQL, LOCK_CONFIGURATION_SQL, STRICT_LOCKDOWN_SQL,
+};
+pub use input_resolver::{
+    parse_input_sources, InputResolveError, InputResolver, LocalFsProbe, ManifestResolver,
+    ObjectVersionProbe, SourceKind, SqlSource, SqlSources,
 };
 pub use estimator::{
     csv_metadata, delta_metadata, estimate_parquet, estimate_table_files, estimate_text,
@@ -86,4 +96,4 @@ pub use storage::{
     sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
     FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
 };
-pub use worker::{Worker, WorkerParams};
+pub use worker::{EchoInputReader, InputObservation, InputReader, Worker, WorkerParams};

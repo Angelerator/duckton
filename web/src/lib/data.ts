@@ -59,7 +59,7 @@ export const nodes = workers.map((w) => ({
   alias: w.alias,
   attestation: w.attestation,
   online: w.online,
-  freeMemBytes: w.totalMemBytes,
+  freeMemBytes: w.donatedMemBytes,
   freeThreads: w.totalThreads,
   maxJobs: w.maxJobs,
   trust: w.trust,

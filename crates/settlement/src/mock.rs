@@ -350,6 +350,7 @@ mod tests {
                 epoch: 1,
                 prev_root: [0u8; 32],
                 params_version: 0,
+                input_fingerprint: String::new(),
             });
         }
         let root = a.epoch_root();
