@@ -143,10 +143,16 @@ fn has_nvme_block_device() -> bool {
 /// architectures we don't enumerate.
 #[cfg(target_arch = "x86_64")]
 fn cpu_features() -> Vec<String> {
+    // Compile-time `cfg!(target_feature = ...)` (what this binary was built with)
+    // rather than the runtime `is_x86_feature_detected!` macro, whose accepted
+    // token set varies across toolchains and would fail to compile (it rejects
+    // standard tokens like `popcnt`/`sse2` as "unknown x86 target feature" on the
+    // registry build's compiler). Best-effort; this field is an analytics hint
+    // only and is kept out of trust scoring. Mirrors the aarch64 branch below.
     let mut v = Vec::new();
     macro_rules! feat {
         ($name:literal) => {
-            if std::is_x86_feature_detected!($name) {
+            if cfg!(target_feature = $name) {
                 v.push($name.to_string());
             }
         };
