@@ -77,6 +77,10 @@ pub struct GridConfig {
     /// congestion control, parallel result transfer, wire compression, 0-RTT).
     pub transport: TransportConfig,
     pub identity: IdentityConfig,
+    /// The grid's closure posture. `public` (default) is the zero-config grid;
+    /// `private` bundles the enterprise closure (allowlist mTLS + token groups +
+    /// non-default network + fail-closed discovery + default-deny roster).
+    pub security: SecurityConfig,
     pub discovery: DiscoveryConfig,
     pub scheduler: SchedulerConfig,
     /// Host (worker) execution deadline + progress-streaming interval
@@ -444,6 +448,33 @@ impl Default for IdentityConfig {
             allowlist: Vec::new(),
         }
     }
+}
+
+/// The grid's overall closure posture (the single private/enterprise switch).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SecurityMode {
+    /// Zero-config public grid (today's behavior): TOFU pinning is allowed, an
+    /// ungrouped host serves everyone, labels are soft. Default.
+    #[default]
+    Public,
+    /// Fully closed enterprise grid: outsiders can neither connect nor be served.
+    /// Activates a bundle of REQUIRED invariants (validated at startup) and
+    /// fail-closed runtime behavior — see [`SecurityConfig`] and `validate`.
+    Private,
+}
+
+/// The single "private / enterprise" preset switch (`[security].mode`). `public`
+/// (default) keeps the zero-config grid byte-for-byte; `private` bundles closure:
+/// it REQUIRES allowlist mTLS with a non-empty allowlist, cryptographic
+/// (`token`) group enforcement, and a non-`default` network, and turns on
+/// fail-closed discovery + a default-deny requester roster (reusing the identity
+/// allowlist). The closure invariants are enforced in [`GridConfig::validate`]
+/// so a misconfigured private node FAILS to start rather than leaking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct SecurityConfig {
+    pub mode: SecurityMode,
 }
 
 /// Discovery / membership mode.
@@ -1744,6 +1775,66 @@ impl GridConfig {
                         _ => RegionTrust::Declared,
                     }
                 }
+                // This requester's own group-membership proof (JSON CapabilityToken)
+                // presented under the token tier. Empty ⇒ none.
+                "P2P_MEMBERSHIP_GROUP_TOKEN" => {
+                    self.membership.group_token =
+                        if v.trim().is_empty() { None } else { Some(v.clone()) }
+                }
+                // Trusted group issuer pubkeys: "group=hex,group2=hex".
+                "P2P_MEMBERSHIP_GROUP_ISSUERS" => {
+                    let mut map = BTreeMap::new();
+                    for entry in v.split(',').filter(|s| !s.trim().is_empty()) {
+                        let (g, hex) = entry.split_once('=').ok_or_else(|| {
+                            ConfigError::Env(
+                                k.clone(),
+                                format!(
+                                    "expected comma-separated group=hex pairs, got entry {entry:?}"
+                                ),
+                            )
+                        })?;
+                        map.insert(g.trim().to_string(), hex.trim().to_string());
+                    }
+                    self.membership.group_issuers = map;
+                }
+                // ---- identity / closure posture (env layer) ----
+                // The private-mode-critical identity keys were previously TOML-only.
+                "P2P_SECURITY_MODE" => {
+                    self.security.mode = match v.trim().to_ascii_lowercase().as_str() {
+                        "private" => SecurityMode::Private,
+                        "public" => SecurityMode::Public,
+                        other => {
+                            return Err(ConfigError::Env(
+                                k.clone(),
+                                format!("unknown security mode {other} (public|private)"),
+                            ))
+                        }
+                    }
+                }
+                "P2P_IDENTITY_KEY_PATH" => {
+                    self.identity.key_path =
+                        if v.trim().is_empty() { None } else { Some(v.clone()) }
+                }
+                "P2P_IDENTITY_PINNING_MODE" => {
+                    self.identity.pinning_mode = match v.trim().to_ascii_lowercase().as_str() {
+                        "allowlist" => PinningMode::Allowlist,
+                        "tofu" => PinningMode::Tofu,
+                        other => {
+                            return Err(ConfigError::Env(
+                                k.clone(),
+                                format!("unknown identity pinning mode {other} (tofu|allowlist)"),
+                            ))
+                        }
+                    }
+                }
+                "P2P_IDENTITY_ALLOWLIST" => {
+                    self.identity.allowlist = v
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect()
+                }
                 // ---- liveness: phi-accrual + SWIM (env layer) ----
                 "P2P_LIVENESS_PHI_ENABLED" => self.liveness.phi.enabled = parse(k, v)?,
                 "P2P_LIVENESS_PHI_CONVICT_THRESHOLD" => {
@@ -2032,6 +2123,14 @@ impl GridConfig {
     }
 
     /// Validate cross-field invariants and ranges.
+    /// Whether the node runs in the closed enterprise posture (`[security].mode
+    /// = "private"`). Gates the fail-closed runtime behavior (discovery label
+    /// dropping, default-deny roster, require-grouped-host) and the closure
+    /// invariants enforced in [`validate`].
+    pub fn is_private(&self) -> bool {
+        self.security.mode == SecurityMode::Private
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         let inv = |m: String| Err(ConfigError::Invalid(m));
 
@@ -2212,6 +2311,46 @@ impl GridConfig {
             }
         }
 
+        // ---- private / enterprise closure preset ----
+        // The single `[security].mode = "private"` switch bundles a closed-grid
+        // posture. Rather than silently flipping the operator's settings, it
+        // REQUIRES each closure invariant to be set correctly and FAILS to start
+        // otherwise (fail-closed: a misconfigured private node never leaks). The
+        // public default path is untouched (none of these checks run).
+        if self.is_private() {
+            // 1. Force allowlist mTLS: outsiders must not be able to connect or
+            //    impersonate a member at the transport layer. A non-empty
+            //    allowlist is already required above for the allowlist mode, so a
+            //    private node with allowlist pinning + non-empty allowlist passes.
+            if !matches!(self.identity.pinning_mode, PinningMode::Allowlist) {
+                return inv(
+                    "security.mode = \"private\" requires identity.pinning_mode = \"allowlist\" \
+                     (a closed grid cannot trust-on-first-use arbitrary peers)"
+                        .into(),
+                );
+            }
+            // 2. Require cryptographic group membership: reject soft declared
+            //    labels (a stolen/forged label must not grant access).
+            if !matches!(self.membership.group_enforcement, GroupEnforcement::Token) {
+                return inv(
+                    "security.mode = \"private\" requires membership.group_enforcement = \"token\" \
+                     (soft declared group labels are not cryptographically verified)"
+                        .into(),
+                );
+            }
+            // 3. Require a non-default, explicit network name: a private grid is a
+            //    named partition, never the public implicit "default" one.
+            if self.membership.networks.is_empty()
+                || self.membership.networks.iter().any(|n| n == "default")
+            {
+                return inv(
+                    "security.mode = \"private\" requires an explicit, non-\"default\" \
+                     membership.networks (e.g. [\"acme-internal\"])"
+                        .into(),
+                );
+            }
+        }
+
         // ---- storage / data sources ----
         if self.storage.enabled_formats.is_empty() {
             return inv("storage.enabled_formats must list at least one format".into());
@@ -2368,6 +2507,96 @@ mod tests {
     #[test]
     fn defaults_are_valid() {
         GridConfig::default().validate().unwrap();
+    }
+
+    /// Build a MINIMAL fully-valid private/enterprise config: allowlist mTLS with
+    /// one rostered member, token group enforcement, and a non-default network.
+    fn valid_private_cfg() -> GridConfig {
+        let mut cfg = GridConfig::default();
+        cfg.security.mode = SecurityMode::Private;
+        cfg.identity.pinning_mode = PinningMode::Allowlist;
+        cfg.identity.allowlist = vec![format!("b3:{}", "0".repeat(64))];
+        cfg.membership.group_enforcement = GroupEnforcement::Token;
+        cfg.membership.networks = vec!["acme-internal".into()];
+        cfg
+    }
+
+    #[test]
+    fn private_mode_minimal_config_is_valid() {
+        valid_private_cfg().validate().unwrap();
+    }
+
+    #[test]
+    fn private_mode_requires_allowlist_pinning() {
+        let mut cfg = valid_private_cfg();
+        cfg.identity.pinning_mode = PinningMode::Tofu;
+        cfg.identity.allowlist.clear();
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("pinning_mode"), "got: {err}");
+    }
+
+    #[test]
+    fn private_mode_requires_non_empty_allowlist() {
+        let mut cfg = valid_private_cfg();
+        cfg.identity.allowlist.clear();
+        // Reuses the existing allowlist-must-be-non-empty invariant.
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn private_mode_requires_token_group_enforcement() {
+        let mut cfg = valid_private_cfg();
+        cfg.membership.group_enforcement = GroupEnforcement::Soft;
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("group_enforcement"), "got: {err}");
+    }
+
+    #[test]
+    fn private_mode_rejects_default_network() {
+        let mut cfg = valid_private_cfg();
+        cfg.membership.networks = vec!["default".into()];
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("network"), "got: {err}");
+        // An empty network list is also rejected.
+        let mut cfg = valid_private_cfg();
+        cfg.membership.networks.clear();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn public_default_path_unaffected_by_private_invariants() {
+        // The closure invariants must not run in public mode: a zero-config node
+        // (TOFU, ungrouped, soft, "default" network) stays valid.
+        let cfg = GridConfig::default();
+        assert!(!cfg.is_private());
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn private_mode_env_layer() {
+        // The private-mode-critical identity/group keys are settable via env.
+        let mut cfg = GridConfig::default();
+        let mut env = BTreeMap::new();
+        env.insert("P2P_SECURITY_MODE".into(), "private".into());
+        env.insert("P2P_IDENTITY_PINNING_MODE".into(), "allowlist".into());
+        env.insert(
+            "P2P_IDENTITY_ALLOWLIST".into(),
+            format!("b3:{}", "0".repeat(64)),
+        );
+        env.insert("P2P_MEMBERSHIP_GROUP_ENFORCEMENT".into(), "token".into());
+        env.insert("P2P_MEMBERSHIP_NETWORKS".into(), "acme-internal".into());
+        env.insert(
+            "P2P_MEMBERSHIP_GROUP_ISSUERS".into(),
+            format!("finance={}", "ab".repeat(32)),
+        );
+        cfg.apply_env_map(&env).unwrap();
+        assert!(cfg.is_private());
+        assert_eq!(cfg.identity.pinning_mode, PinningMode::Allowlist);
+        assert_eq!(cfg.identity.allowlist.len(), 1);
+        assert_eq!(cfg.membership.group_enforcement, GroupEnforcement::Token);
+        assert_eq!(cfg.membership.networks, vec!["acme-internal".to_string()]);
+        assert_eq!(cfg.membership.group_issuers.len(), 1);
+        cfg.validate().unwrap();
     }
 
     #[test]

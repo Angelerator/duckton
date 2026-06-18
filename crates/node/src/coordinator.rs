@@ -1150,6 +1150,10 @@ impl Coordinator {
             network: scope.network.clone(),
             groups: scope.groups.clone(),
             regions: scope.regions.clone(),
+            // Private mode (§ closure): network/group labels fail closed — an
+            // unknown-labeled candidate is dropped, not kept on the soft
+            // assumption the host re-checks. Public mode keeps today's soft prune.
+            fail_closed_labels: cfg.is_private(),
         };
         let mut candidates = self
             .discovery

@@ -624,6 +624,7 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
         network: None,
         groups: vec![],
         regions: vec![],
+        fail_closed_labels: false,
     };
     let candidates = table.find_candidates(16, filter).await;
     // bounded

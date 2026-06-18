@@ -80,6 +80,58 @@ min_size_bytes = 65536                    # only compress results >= 64 KiB
 # key_path = "/etc/duckdb-p2p/node.key"  # PKCS#8 Ed25519 PEM; omit = ephemeral
 pinning_mode = "tofu"                     # "tofu" | "allowlist"
 allowlist    = []                         # node ids trusted when pinning_mode="allowlist"
+                                          # env: P2P_IDENTITY_PINNING_MODE,
+                                          #      P2P_IDENTITY_ALLOWLIST (comma list),
+                                          #      P2P_IDENTITY_KEY_PATH
+
+# -----------------------------------------------------------------------------
+# Closure posture — the single PRIVATE / ENTERPRISE switch (see docs/PRIVATE_MODE.md)
+# -----------------------------------------------------------------------------
+# "public" (default) = the zero-config grid: TOFU pinning allowed, an ungrouped
+# host serves everyone, soft (declared) labels. "private" = a fully closed
+# company grid: outsiders can neither connect/impersonate nor be served. Setting
+# mode = "private" makes the node FAIL TO START unless ALL of the following hold
+# (fail-closed — a misconfigured private node never leaks):
+#   * identity.pinning_mode = "allowlist" with a NON-EMPTY identity.allowlist
+#     (the member roster — outsiders are refused at the mTLS layer);
+#   * membership.group_enforcement = "token" (cryptographic group proof, never a
+#     soft declared label) with a membership.group_issuers entry per group;
+#   * membership.networks set to an explicit, non-"default" name.
+# It also turns on, at runtime: fail-closed discovery (drop unknown-labeled
+# peers), require-grouped-host (an ungrouped host refuses to serve), and a
+# default-deny requester roster (serve only identity.allowlist members). The
+# application↔transport identity binding (an offer's requester_id must equal the
+# authenticated mTLS peer) is ALWAYS on, in both modes (it is a correctness fix).
+# env: P2P_SECURITY_MODE = public|private
+[security]
+mode = "public"                           # "public" | "private"
+
+# -----------------------------------------------------------------------------
+# Request-scoping / routing labels (architecture §7.5) — logical partition,
+# groups, region. Default-off (serves the implicit "default" partition,
+# ungrouped, no region) so a zero-config node is unconstrained. In PRIVATE mode
+# these become the company's closed pool (see docs/PRIVATE_MODE.md).
+# -----------------------------------------------------------------------------
+[membership]
+networks          = ["default"]           # logical grid partition(s); PRIVATE: set a
+                                          #   non-"default" name. env: P2P_MEMBERSHIP_NETWORKS
+groups            = []                     # group memberships served/claimed; empty =
+                                          #   ungrouped/public. env: P2P_MEMBERSHIP_GROUPS
+# region          = "eu"                   # data-residency hint. env: P2P_MEMBERSHIP_REGION
+group_enforcement = "soft"                # "soft" (declared) | "token" (cryptographic
+                                          #   proof). PRIVATE requires "token".
+                                          #   env: P2P_MEMBERSHIP_GROUP_ENFORCEMENT
+region_trust      = "declared"            # "declared" | "attested". env: P2P_MEMBERSHIP_REGION_TRUST
+# group_token     = "<json CapabilityToken>"  # this node's OWN group proof, presented as a
+                                          #   requester under the token tier.
+                                          #   env: P2P_MEMBERSHIP_GROUP_TOKEN
+# region_token    = "<json CapabilityToken>"  # this node's region-attestation proof (host side)
+# Trusted group issuer pubkeys (group -> hex ed25519). Required per group under
+# the token tier. env: P2P_MEMBERSHIP_GROUP_ISSUERS = "finance=<hex>,ops=<hex>"
+# [membership.group_issuers]
+# finance = "ab12...<64 hex>"
+# [membership.region_issuers]                # trusted region issuers (region -> hex), attested tier
+# eu = "cd34...<64 hex>"
 
 [discovery]
 mode = "static"                           # "static" (MVP) | "kademlia" (libp2p

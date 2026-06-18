@@ -141,6 +141,16 @@ pub struct WorkerParams {
     /// per-GiB rates + an `estimated_seconds`/`cap_seconds`; otherwise the metered
     /// fields stay `0` (fixed-price / free — today's behavior).
     pub pricing: p2p_config::PricingEconomics,
+    /// Closed enterprise posture (`[security].mode = "private"`). When set, the
+    /// host serves ONLY rostered, grouped requesters: an ungrouped host refuses
+    /// every offer (`require_grouped_hosts`) and a requester not on the roster is
+    /// declined (default-deny), on top of the always-on peer-id binding. `false`
+    /// (default / public) ⇒ today's open behavior.
+    pub private: bool,
+    /// Default-deny requester roster for private mode (reuses the identity
+    /// allowlist node ids). Empty under the public default. Only consulted when
+    /// `private` is set.
+    pub roster: Vec<String>,
 }
 
 /// Conservative cold-start throughput (bytes/second) a host assumes for its
@@ -177,6 +187,11 @@ impl WorkerParams {
             group_issuers: cfg.membership.group_issuers.clone(),
             region_token: cfg.membership.region_token.clone(),
             pricing: cfg.economics.pricing.clone(),
+            private: cfg.is_private(),
+            // The roster reuses the identity allowlist (the set of node ids this
+            // node trusts at the transport layer) so private mode has a single
+            // source of truth for "who is a member".
+            roster: cfg.identity.allowlist.clone(),
         }
     }
 
@@ -455,7 +470,10 @@ impl Worker {
         let msg = read_msg(&mut recv).await?;
         match msg {
             Wire::Offer(offer) => {
-                let bid = self.make_bid(&offer);
+                // Bind the application-level `requester_id` to the authenticated
+                // mTLS peer (P0): the honest requester dials us directly and sends
+                // its OWN offer, so they always match; a mismatch is impersonation.
+                let bid = self.make_bid_authenticated(conn.peer_node_id(), &offer);
                 write_msg(&mut send, &Wire::Bid(bid)).await?;
                 let _ = send.finish();
             }
@@ -569,9 +587,40 @@ impl Worker {
     }
 
     /// Evaluate an offer and produce this worker's [`Bid`] (the anti-abuse gates
-    /// + admission-control decision). This is exactly what the worker replies to
-    /// an inbound `Offer`; exposed for tests and tooling.
+    /// + admission-control decision), WITHOUT the transport-identity binding.
+    /// Exposed for tests and tooling that have no live connection; the live wire
+    /// path uses [`Worker::bid_for_peer`] / `make_bid_authenticated` so the
+    /// offer's self-claimed `requester_id` is bound to the authenticated peer.
     pub fn bid_for(&self, offer: &Offer) -> Bid {
+        self.make_bid(offer)
+    }
+
+    /// Evaluate an offer received from an AUTHENTICATED mTLS `peer`: enforce the
+    /// application↔transport identity binding (P0), then normal admission. As
+    /// [`Worker::bid_for`] but with the peer-id binding the live path applies.
+    pub fn bid_for_peer(&self, peer: &p2p_proto::NodeId, offer: &Offer) -> Bid {
+        self.make_bid_authenticated(peer, offer)
+    }
+
+    /// Wire-path bid: reject any offer whose self-claimed `requester_id` does not
+    /// equal the connection's authenticated `peer_node_id` (P0 — impersonation
+    /// defense), then defer to normal admission. ALWAYS-ON (public and private):
+    /// it is a pure correctness/security invariant. The honest flow always
+    /// matches — the requester dials the host itself and stamps its own node id
+    /// into the offer (`coordinator.rs`: `requester_id = local_node_id`), and the
+    /// QUIC data plane is point-to-point (no relayed/proxied offer path; libp2p
+    /// relays live only on the separate discovery overlay) — so a mismatch can
+    /// only be a peer presenting an offer under another node's identity. Binding
+    /// `requester_id == peer` is also what makes a STOLEN `group_proof` useless:
+    /// the token is bound to its holder's id (`token_proves_group`), so a thief
+    /// on a different TLS identity is rejected here before the group check.
+    fn make_bid_authenticated(&self, peer: &p2p_proto::NodeId, offer: &Offer) -> Bid {
+        if &offer.requester_id != peer {
+            return self.reject_bid(
+                offer,
+                "offer requester_id does not match the authenticated mTLS peer",
+            );
+        }
         self.make_bid(offer)
     }
 
@@ -586,6 +635,33 @@ impl Worker {
         // 1. Standby / graceful drain: decline NEW offers; in-flight leases finish.
         if !p.enabled {
             return Some(self.reject_bid(offer, "host is on standby (draining)"));
+        }
+        // 1a. Private/enterprise closure (`[security].mode = "private"`). Two
+        //     extra fail-closed gates on top of the always-on peer-id binding and
+        //     the token group check below; both no-ops in public mode.
+        if p.private {
+            // require_grouped_hosts: an UNGROUPED host serves everyone (the group
+            // check below is skipped when it has no groups) — exactly what a
+            // closed grid must not do. Refuse outright until the host declares the
+            // company group(s) it serves.
+            if p.groups.is_empty() {
+                return Some(self.reject_bid(
+                    offer,
+                    "private mode: host declares no membership.groups (an ungrouped host \
+                     must not serve in a closed grid)",
+                ));
+            }
+            // Default-deny roster: serve only requesters on the roster (the
+            // identity allowlist), not merely those not on a reactive blocklist.
+            // On the wire path `requester_id == peer` (bound above) and the peer
+            // already cleared the TLS allowlist, so this is defense-in-depth and
+            // makes the membership policy explicit.
+            if !p.roster.iter().any(|r| r == offer.requester_id.as_str()) {
+                return Some(self.reject_bid(
+                    offer,
+                    "private mode: requester is not on the host roster (identity.allowlist)",
+                ));
+            }
         }
         // 2. Network partition: the offer targets a partition this host doesn't
         //    serve. An unlabeled host is in the implicit "default" partition.

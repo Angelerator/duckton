@@ -243,6 +243,7 @@ mod tests {
             network: None,
             groups: vec![],
             regions: vec![],
+            fail_closed_labels: false,
         }
     }
 

@@ -108,27 +108,44 @@ pub struct CandidateFilter {
     /// Accepted regions (empty ⇒ no constraint). Fail-closed prune: only an ad
     /// whose region is in the set is kept.
     pub regions: Vec<String>,
+    /// Private/enterprise closure (`[security].mode = "private"`). When `true`,
+    /// network and group labels become FAIL-CLOSED like region: a candidate whose
+    /// label is UNKNOWN (unadvertised) is DROPPED when the requester has the
+    /// corresponding constraint, instead of being kept on the soft assumption the
+    /// host re-checks at admission. `false` (default / public) ⇒ today's soft
+    /// behavior (unknown labels kept), byte-for-byte.
+    pub fail_closed_labels: bool,
 }
 
 impl CandidateFilter {
     /// Whether a candidate's ADVERTISED request-scoping labels pass this filter
-    /// (architecture §7.5). Network/group are SOFT (a candidate with unknown —
-    /// unadvertised — labels is kept; only a KNOWN, non-matching label drops it);
-    /// region is FAIL-CLOSED (a region-pinned query keeps only a candidate whose
-    /// advertised region is in the set). All-empty filter ⇒ always `true`. Shared
-    /// by the discovery prune (early optimization) and the coordinator retain
-    /// (enforcement), so they can't disagree.
+    /// (architecture §7.5). In PUBLIC mode network/group are SOFT (a candidate
+    /// with unknown — unadvertised — labels is kept; only a KNOWN, non-matching
+    /// label drops it); region is always FAIL-CLOSED (a region-pinned query keeps
+    /// only a candidate whose advertised region is in the set). In PRIVATE mode
+    /// (`fail_closed_labels`) network/group also fail closed: an unknown label is
+    /// dropped when the requester has that constraint. All-empty filter ⇒ always
+    /// `true`. Shared by the discovery prune (early optimization) and the
+    /// coordinator retain (enforcement), so they can't disagree.
     pub fn admits_labels(&self, c: &Candidate) -> bool {
         if let Some(net) = &self.network {
-            if !c.advertised_networks.is_empty()
-                && !c.advertised_networks.iter().any(|n| n == net)
-            {
+            if c.advertised_networks.is_empty() {
+                // Unknown network: kept (soft) in public; dropped (fail-closed) in
+                // private — a closed grid never routes to an unlabeled candidate.
+                if self.fail_closed_labels {
+                    return false;
+                }
+            } else if !c.advertised_networks.iter().any(|n| n == net) {
                 return false;
             }
         }
-        if !c.advertised_groups.is_empty()
-            && !c.advertised_groups.iter().any(|g| self.groups.contains(g))
-        {
+        if !c.advertised_groups.is_empty() {
+            if !c.advertised_groups.iter().any(|g| self.groups.contains(g)) {
+                return false;
+            }
+        } else if self.fail_closed_labels && !self.groups.is_empty() {
+            // Unknown group + the requester has group constraints: dropped in
+            // private mode (kept soft in public).
             return false;
         }
         if !self.regions.is_empty() {
@@ -227,6 +244,7 @@ mod tests {
             network: None,
             groups: vec![],
             regions: vec![],
+            fail_closed_labels: false,
         }
     }
 
@@ -258,6 +276,7 @@ mod tests {
             network: None,
             groups: vec![],
             regions: vec![],
+            fail_closed_labels: false,
         };
         assert!(disc.find_candidates(10, f).await.is_empty());
     }
@@ -309,6 +328,7 @@ mod tests {
             network: network.map(String::from),
             groups: groups.into_iter().map(String::from).collect(),
             regions: regions.into_iter().map(String::from).collect(),
+            fail_closed_labels: false,
         };
 
         // No constraint ⇒ unlabeled / network-only / region-only candidates kept.
@@ -333,5 +353,50 @@ mod tests {
         assert!(!f(None, vec![], vec!["us"]).admits_labels(&reg));
         assert!(f(None, vec![], vec!["eu"]).admits_labels(&reg));
         assert!(!f(None, vec![], vec!["eu"]).admits_labels(&unknown));
+    }
+
+    #[test]
+    fn admits_labels_private_mode_drops_unknown_network_and_group() {
+        // PRIVATE mode (`fail_closed_labels`): network/group join region in
+        // failing closed — an UNKNOWN-labeled candidate is dropped when the
+        // requester has that constraint, where public mode would keep it (soft).
+        let net = peer(41_100); // no advertised labels at all
+        let unknown = peer(41_101);
+
+        let private = |network: Option<&str>, groups: Vec<&str>| CandidateFilter {
+            data_class: DataClass::Public,
+            min_attestation: AttestationLevel::L0,
+            network: network.map(String::from),
+            groups: groups.into_iter().map(String::from).collect(),
+            regions: vec![],
+            fail_closed_labels: true,
+        };
+        let public = |network: Option<&str>, groups: Vec<&str>| CandidateFilter {
+            data_class: DataClass::Public,
+            min_attestation: AttestationLevel::L0,
+            network: network.map(String::from),
+            groups: groups.into_iter().map(String::from).collect(),
+            regions: vec![],
+            fail_closed_labels: false,
+        };
+
+        // Unknown network: kept in public, dropped in private (when constrained).
+        assert!(public(Some("acme"), vec![]).admits_labels(&net));
+        assert!(!private(Some("acme"), vec![]).admits_labels(&net));
+
+        // Unknown group + requester has group constraints: kept public, dropped
+        // private.
+        assert!(public(None, vec!["finance"]).admits_labels(&unknown));
+        assert!(!private(None, vec!["finance"]).admits_labels(&unknown));
+
+        // A KNOWN matching label is still admitted in private mode.
+        let mut labeled = peer(41_102);
+        labeled.advertised_networks = vec!["acme".into()];
+        labeled.advertised_groups = vec!["finance".into()];
+        assert!(private(Some("acme"), vec!["finance"]).admits_labels(&labeled));
+
+        // No constraints ⇒ private mode keeps everything (closure only bites when
+        // the requester actually scopes the query).
+        assert!(private(None, vec![]).admits_labels(&unknown));
     }
 }

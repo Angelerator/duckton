@@ -226,6 +226,13 @@ they only isolate themselves. Peers independently verify everything:
   split; a wrong fee/under-funded/mismatched-treasury settle is **rejected**
   (see §2's B3 negatives, captured live).
 - **Attestation + request scoping** proofs gate which hosts may even see a job.
+- **Application↔transport identity binding** (always on): an offer's
+  `requester_id` must equal the authenticated mTLS peer, so a peer cannot present
+  an offer (or a stolen group token) under another node's identity.
+
+For a fully closed company grid (outsiders can't connect/impersonate, members
+can't serve/be served by outsiders), flip `[security].mode = "private"` — see
+**[docs/PRIVATE_MODE.md](PRIVATE_MODE.md)** for the one-switch preset and recipe.
 
 So a node that lies about its config, fee recipient, or results gets deselected,
 refused, or aborted — it cannot drag the rest of the network along.

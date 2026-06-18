@@ -764,6 +764,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_worker_binds_offer_requester_to_authenticated_peer() {
+        // P0 (always-on, public + private): the offer's self-claimed
+        // `requester_id` must equal the authenticated mTLS peer. A spoofed offer
+        // (requester_id != peer) is rejected; the honest case (they match, as in
+        // every real dial) is admitted on the default public config.
+        let node = Node::with_config(
+            GridConfig::default(),
+            Arc::new(MockEngine::deterministic()),
+        )
+        .unwrap();
+        let w = node.host_worker();
+        let mk = |claimed: &str| Offer {
+            job_id: JobId::new(),
+            requester_id: NodeId(claimed.into()),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(1),
+            cost_hint_bytes: None,
+            data_class: DataClass::Public,
+            nonce: 0,
+            network: None,
+            groups: Vec::new(),
+            regions: Vec::new(),
+            group_proof: None,
+            input_fingerprint_hint: None,
+        };
+        let peer = NodeId("b3:real-peer".into());
+
+        // Honest flow: requester_id == authenticated peer ⇒ admitted.
+        assert!(matches!(
+            w.bid_for_peer(&peer, &mk("b3:real-peer")).decision,
+            BidDecision::Accept
+        ));
+        // Impersonation: an offer claiming a DIFFERENT requester_id than the TLS
+        // peer is rejected before any admission/group check.
+        assert!(matches!(
+            w.bid_for_peer(&peer, &mk("b3:someone-else")).decision,
+            BidDecision::Reject { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn private_mode_serves_only_rostered_grouped_tokened_requester() {
+        // End-to-end private/enterprise closure on the host (worker) side: a
+        // properly-tokened company node ON the roster succeeds, while an ungrouped
+        // host, an unrostered requester, and a missing group token are all
+        // rejected. The always-on peer binding is exercised throughout (peer ==
+        // requester_id).
+        use ed25519_dalek::SigningKey;
+        use p2p_trust::{CapabilityToken, Caveat};
+        use rand::rngs::OsRng;
+
+        let issuer = SigningKey::generate(&mut OsRng);
+        let issuer_hex = hex::encode(issuer.verifying_key().to_bytes());
+        let requester = SigningKey::generate(&mut OsRng);
+        let req_pub = requester.verifying_key().to_bytes();
+        let req_id = NodeId::from_pubkey(&req_pub);
+        let now = p2p_trust::now_ts();
+        let finance_token = {
+            let t = CapabilityToken::mint(
+                &issuer,
+                &req_pub,
+                vec![
+                    Caveat::Group("finance".into()),
+                    Caveat::ExpiresAt(now + 100_000),
+                ],
+            );
+            serde_json::to_string(&t).unwrap()
+        };
+
+        // A base valid private config that ROSTERS the requester.
+        let base_private = |roster: Vec<String>, groups: Vec<&str>| {
+            let mut cfg = GridConfig::default();
+            cfg.security.mode = p2p_config::SecurityMode::Private;
+            cfg.identity.pinning_mode = p2p_config::PinningMode::Allowlist;
+            cfg.identity.allowlist = roster;
+            cfg.membership.networks = vec!["acme-internal".into()];
+            cfg.membership.groups = groups.into_iter().map(String::from).collect();
+            cfg.membership.group_enforcement = p2p_config::GroupEnforcement::Token;
+            cfg.membership
+                .group_issuers
+                .insert("finance".into(), issuer_hex.clone());
+            cfg.validate().unwrap();
+            cfg
+        };
+        let offer = |proof: Option<String>| Offer {
+            job_id: JobId::new(),
+            requester_id: req_id.clone(),
+            query_hash: QueryHash::compute("SELECT 1", "v"),
+            cost_hint_rows: Some(1),
+            cost_hint_bytes: None,
+            data_class: DataClass::Public,
+            nonce: 0,
+            network: Some("acme-internal".into()),
+            groups: Vec::new(),
+            regions: Vec::new(),
+            group_proof: proof,
+            input_fingerprint_hint: None,
+        };
+        let accept = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Accept);
+        let reject = |b: &p2p_proto::Bid| matches!(b.decision, BidDecision::Reject { .. });
+
+        // 1. Properly-tokened company node ON the roster ⇒ accepted.
+        let cfg = base_private(vec![req_id.0.clone()], vec!["finance"]);
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let w = node.host_worker();
+        assert!(accept(&w.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))));
+
+        // 2. No group token ⇒ rejected (soft declared groups never count).
+        assert!(reject(&w.bid_for_peer(&req_id, &offer(None))));
+
+        // 3. UNGROUPED host (require_grouped_hosts) ⇒ rejects every offer.
+        let cfg = base_private(vec![req_id.0.clone()], vec![]);
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let w_ungrouped = node.host_worker();
+        assert!(reject(&w_ungrouped.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))));
+
+        // 4. UNROSTERED requester (a valid member id, but not the requester) ⇒
+        //    default-deny rejects it even with a valid token.
+        let other_id = format!("b3:{}", "0".repeat(64));
+        let cfg = base_private(vec![other_id], vec!["finance"]);
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let w_roster = node.host_worker();
+        assert!(reject(&w_roster.bid_for_peer(&req_id, &offer(Some(finance_token)))));
+    }
+
+    #[tokio::test]
     async fn host_refuses_remote_access_without_egress_confinement() {
         // Fail-safe guard (§9.4, G8): a host that enabled remote object-store
         // reads but has NO active OS egress filter (no `P2P_JOB_EXEC` ⇒ in-process,
