@@ -398,13 +398,34 @@ pub struct RankingEconomics {
     /// Observation count at/above which `newcomer_trust_ceiling` no longer applies
     /// (a node with this many verified jobs is no longer "new").
     pub newcomer_obs_threshold: usize,
+    /// **Reliability floor that gates the stake ranking term** (success-rate
+    /// guardrail). The `w_stake` contribution to the composite selection score is
+    /// multiplied by a reliability factor derived from the node's STAKE-INDEPENDENT
+    /// confidence-aware reputation (verified-success rate): the factor ramps
+    /// linearly from `0` at this floor to `1` at reputation `1.0`, and is `0` below
+    /// the floor. So stake only ever AMPLIFIES the ranking of nodes that already
+    /// clear the reliability bar — a low-reputation node earns ~no stake boost and
+    /// cannot out-rank a reliable node by staking more. Because the gate reads
+    /// reputation (not the stake-inclusive trust), extra stake cannot inflate the
+    /// gate itself. `0.0` ⇒ the factor equals the reputation (stake still scaled by
+    /// reliability, just with no dead-zone); raise it (e.g. `0.5`) to deny stake
+    /// any pull until a node has proven a solid verified-success rate. Must be in
+    /// `[0,1]`. Independent of (and additional to) the hard `min_trust`/attestation
+    /// floors, which still gate candidacy BEFORE scoring.
+    pub stake_reliability_floor: f64,
 }
 
 impl Default for RankingEconomics {
     fn default() -> Self {
         Self {
             w_quality: 0.6,
-            w_stake: 0.15,
+            // Stake pull is DOUBLED vs the prior 0.15 so a higher bonded stake
+            // meaningfully improves a node's selection chance. Safe to raise
+            // because the stake term is reliability-gated (`stake_reliability_floor`):
+            // it amplifies already-reliable nodes and contributes ~nothing to
+            // low-reputation ones, so it cannot lower the first-try verified-success
+            // rate.
+            w_stake: 0.30,
             w_price: 0.25,
             // Performance prioritization weights. Non-zero by default so a
             // faster/higher-throughput honest node (per counterparty-measured
@@ -418,6 +439,11 @@ impl Default for RankingEconomics {
             capability_weight: 0.0,
             newcomer_trust_ceiling: 1.0,
             newcomer_obs_threshold: 20,
+            // Deny stake any ranking pull until a node has proven roughly a
+            // ≥50%-confidence verified-success rate; below that the doubled
+            // `w_stake` contributes nothing, so stake can never rescue an
+            // unreliable node.
+            stake_reliability_floor: 0.5,
         }
     }
 }
@@ -762,6 +788,7 @@ impl EconomicsConfig {
         }
         pct("ranking.exploration_rate", r.exploration_rate)?;
         pct("ranking.newcomer_trust_ceiling", r.newcomer_trust_ceiling)?;
+        pct("ranking.stake_reliability_floor", r.stake_reliability_floor)?;
 
         // Quality weights must be non-negative.
         let q = &self.quality;
@@ -961,6 +988,27 @@ mod tests {
         // Exploration off by default (today's pure-exploitation ranking).
         assert_eq!(e.ranking.exploration_rate, 0.0);
         assert!(e.ranking.exploration_saturation > 0);
+    }
+
+    #[test]
+    fn stake_weight_doubled_and_reliability_gate_defaults_validate() {
+        let e = EconomicsConfig::default();
+        e.validate().unwrap();
+        // Stake pull is doubled vs the prior 0.15 so stake matters more.
+        assert!((e.ranking.w_stake - 0.30).abs() < 1e-9);
+        // The reliability gate has a sane mid-range default in [0,1].
+        assert!((0.0..=1.0).contains(&e.ranking.stake_reliability_floor));
+        assert!(e.ranking.stake_reliability_floor > 0.0);
+    }
+
+    #[test]
+    fn rejects_out_of_range_stake_reliability_floor() {
+        let mut e = EconomicsConfig::default();
+        e.ranking.stake_reliability_floor = 1.5;
+        assert!(e.validate().is_err());
+        let mut e = EconomicsConfig::default();
+        e.ranking.stake_reliability_floor = -0.1;
+        assert!(e.validate().is_err());
     }
 
     #[test]

@@ -483,8 +483,12 @@ receipt_transfer_locked = true            # receipt non-transferable while bonde
 
 [economics.ranking]
 w_quality = 0.6
-w_stake   = 0.15                           # diminishing + capped (StakeFactor, §5.2)
+w_stake   = 0.30                           # diminishing + capped (StakeFactor, §5.2); doubled so
+                                           # stake has real pull — safe because it is reliability-gated
 w_price   = 0.25
+stake_reliability_floor = 0.5              # stake earns ranking credit only as a node's verified-success
+                                           # rate clears this floor (0 below it, ramps to full at 1.0), so
+                                           # stake amplifies reliable nodes and never rescues bad ones
 exploration_rate       = 0.0               # cold-start ε (§5.2/§6): 0 = pure exploitation;
                                            # a small value (e.g. 0.1) samples new honest nodes
 exploration_saturation = 20                # obs count at which the exploration bonus hits 0

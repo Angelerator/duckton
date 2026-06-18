@@ -329,6 +329,7 @@ group_setter!(
         ("w_quality", Double),
         ("w_stake", Double),
         ("w_price", Double),
+        ("stake_reliability_floor", Double),
     ]
 );
 group_setter!(

@@ -382,6 +382,62 @@ fn normalize_price(price: u64, pmin: u64, pmax: u64) -> f64 {
     1.0 - (price.saturating_sub(pmin) as f64 / (pmax - pmin) as f64)
 }
 
+/// Reliability gate for the stake ranking term (verified-success-rate guardrail).
+///
+/// Returns the `[0,1]` factor the raw `stake_factor` is multiplied by before it
+/// enters the composite selection score. It ramps linearly from `0` at `floor`
+/// to `1` at `reliability == 1.0`, and is `0` for any reliability at/below the
+/// floor. `reliability` is the node's STAKE-INDEPENDENT confidence-aware
+/// reputation (its Wilson-shrunk verified-success rate), so:
+///
+///   * stake AMPLIFIES the ranking of nodes that are already reliable, and
+///   * a low-reputation node earns ~no stake credit, so it cannot climb above a
+///     reliable node by staking more (it cannot lower the first-try
+///     verified-success rate),
+///   * extra stake cannot inflate the gate itself (the input excludes stake).
+///
+/// `floor == 0` ⇒ the factor is exactly `reliability` (stake still scaled by
+/// reliability, no dead-zone). `floor >= 1` ⇒ stake earns credit only at a
+/// perfect reputation.
+fn stake_reliability_factor(reliability: f64, floor: f64) -> f64 {
+    let floor = floor.clamp(0.0, 1.0);
+    let r = reliability.clamp(0.0, 1.0);
+    if floor >= 1.0 {
+        return if r >= 1.0 { 1.0 } else { 0.0 };
+    }
+    ((r - floor) / (1.0 - floor)).clamp(0.0, 1.0)
+}
+
+/// Weight-normalized composite selection blend (pure; the math behind
+/// [`Coordinator::selection_score`]). The `stake` term is reliability-GATED:
+/// it is multiplied by [`stake_reliability_factor`] of the node's stake-free
+/// `reliability` so a higher stake only ever amplifies an already-reliable node
+/// and never rescues a low-reputation one. With all weights `0` the score
+/// collapses to `trust` (today's ranking).
+#[allow(clippy::too_many_arguments)]
+fn blend_selection_score(
+    trust: f64,
+    lat: f64,
+    thr: f64,
+    stake: f64,
+    reliability: f64,
+    price_score: f64,
+    r: &p2p_config::RankingEconomics,
+) -> f64 {
+    let gated_stake = stake * stake_reliability_factor(reliability, r.stake_reliability_floor);
+    let wsum = r.w_quality + r.w_latency + r.w_throughput + r.w_stake + r.w_price;
+    if wsum <= 0.0 {
+        return trust;
+    }
+    ((r.w_quality * trust
+        + r.w_latency * lat
+        + r.w_throughput * thr
+        + r.w_stake * gated_stake
+        + r.w_price * price_score)
+        / wsum)
+        .clamp(0.0, 1.0)
+}
+
 /// Median of a slice of latencies (ms); `0` for an empty slice.
 fn median_ms(latencies: &[u64]) -> u64 {
     if latencies.is_empty() {
@@ -2318,6 +2374,14 @@ impl Coordinator {
     /// history uses a NEUTRAL `0.5` prior for `L`/`T` (its exploration bonus +
     /// newcomer ceiling are already folded into the `effective_trust` term). When all
     /// weights are `0` the score collapses to the effective trust (today's ranking).
+    ///
+    /// The stake term is **reliability-GATED** ([`blend_selection_score`] /
+    /// [`stake_reliability_factor`]): the raw `stake_factor` is scaled by the node's
+    /// STAKE-INDEPENDENT confidence-aware reputation against
+    /// `economics.ranking.stake_reliability_floor`, so a higher stake only amplifies
+    /// the ranking of already-reliable nodes and earns ~nothing for low-reputation
+    /// ones — it can never rescue a bad node nor (combined with the unchanged hard
+    /// `min_trust`/attestation floors) lower the first-try verified-success rate.
     fn selection_score(
         &self,
         worker: &NodeId,
@@ -2339,17 +2403,17 @@ impl Coordinator {
             None => (0.5, 0.5),
         };
         let stake = self.stake_factor_for(worker, cfg, paid);
-        let wsum = r.w_quality + r.w_latency + r.w_throughput + r.w_stake + r.w_price;
-        if wsum <= 0.0 {
-            return trust;
-        }
-        ((r.w_quality * trust
-            + r.w_latency * lat
-            + r.w_throughput * thr
-            + r.w_stake * stake
-            + r.w_price * price_score)
-            / wsum)
-            .clamp(0.0, 1.0)
+        // Reliability gate (success-rate guardrail): the stake term is scaled by
+        // the node's STAKE-INDEPENDENT confidence-aware reputation (verified-success
+        // rate), NOT by the stake-inclusive `trust`, so extra stake can never
+        // inflate its own gate nor lift a low-reputation node above a reliable one.
+        // Skip the lookup entirely when there is no stake (free/chain-off path).
+        let reliability = if stake > 0.0 {
+            self.wallet_reputation(worker, cfg, now_ts()).0
+        } else {
+            0.0
+        };
+        blend_selection_score(trust, lat, thr, stake, reliability, price_score, r)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2970,5 +3034,135 @@ mod metering_tests {
         assert!(total <= b, "metered split must fit the cap-sized escrow");
         // The unused over-reservation (cap minus actual) refunds to the requester.
         assert!(b - total > 0, "unused escrow refunds (cap >> actual)");
+    }
+}
+
+/// Selection-score stake weighting + the reliability gate that protects the
+/// first-try verified-success rate. These exercise the pure scoring math
+/// (`blend_selection_score` / `stake_reliability_factor`) plus the real
+/// `soft_trust_score` hard-floor function, so both properties are proven without
+/// standing up a full networked coordinator.
+#[cfg(test)]
+mod selection_scoring_tests {
+    use super::*;
+    use p2p_config::{GridConfig, RankingEconomics};
+    use p2p_trust::{soft_trust_score, TrustInputs};
+
+    /// The reliability gate: zero at/below the floor, linear ramp to 1 at full
+    /// reliability, and a plain pass-through (no dead-zone) at `floor == 0`.
+    #[test]
+    fn reliability_gate_zeroes_below_floor_and_ramps_above() {
+        let floor = 0.5;
+        // At/below the floor stake earns NO credit.
+        assert_eq!(stake_reliability_factor(0.0, floor), 0.0);
+        assert_eq!(stake_reliability_factor(0.5, floor), 0.0);
+        assert_eq!(stake_reliability_factor(0.2, floor), 0.0);
+        // Above the floor it ramps linearly to 1.0 at perfect reliability.
+        assert!((stake_reliability_factor(0.75, floor) - 0.5).abs() < 1e-9);
+        assert!((stake_reliability_factor(1.0, floor) - 1.0).abs() < 1e-9);
+        // floor == 0 ⇒ the factor is exactly the reliability (still scaled, no
+        // dead-zone).
+        assert!((stake_reliability_factor(0.3, 0.0) - 0.3).abs() < 1e-9);
+        // Monotonic non-decreasing in reliability.
+        assert!(stake_reliability_factor(0.9, floor) > stake_reliability_factor(0.7, floor));
+    }
+
+    /// PROPERTY 1 — stake matters MORE now. Between two equally-reliable nodes
+    /// (same trust/perf/price), the higher-staked one ranks clearly above the
+    /// lower-staked one, AND the ranking gap is strictly larger under the new
+    /// doubled `w_stake` than it was under the previous 0.15 weight.
+    #[test]
+    fn higher_stake_ranks_higher_and_more_than_before() {
+        let r_new = RankingEconomics::default(); // w_stake = 0.30
+        let mut r_old = RankingEconomics::default();
+        r_old.w_stake = 0.15; // the previous default
+
+        // Equal, comfortably-reliable nodes; only the stake differs.
+        let (trust, lat, thr, rel, price) = (0.8, 0.5, 0.5, 0.9, 1.0);
+        let (stake_lo, stake_hi) = (0.2, 0.8);
+
+        let hi_new = blend_selection_score(trust, lat, thr, stake_hi, rel, price, &r_new);
+        let lo_new = blend_selection_score(trust, lat, thr, stake_lo, rel, price, &r_new);
+        assert!(hi_new > lo_new, "more stake must rank higher (new weight)");
+
+        let hi_old = blend_selection_score(trust, lat, thr, stake_hi, rel, price, &r_old);
+        let lo_old = blend_selection_score(trust, lat, thr, stake_lo, rel, price, &r_old);
+
+        let gap_new = hi_new - lo_new;
+        let gap_old = hi_old - lo_old;
+        assert!(
+            gap_new > gap_old,
+            "doubling w_stake must widen stake's pull: gap_new={gap_new} gap_old={gap_old}"
+        );
+    }
+
+    /// PROPERTY 2 — the success rate is protected. A HIGH-stake but LOW-reputation
+    /// node does NOT outrank a reliable, low-stake node, because the reliability
+    /// gate zeroes its stake credit. The counterfactual (crediting its stake in
+    /// full, as a naive additive term would) shows it WOULD have won — proving the
+    /// gate is exactly what prevents the regression.
+    #[test]
+    fn high_stake_low_reputation_cannot_outrank_a_reliable_node() {
+        let r = RankingEconomics::default(); // floor 0.5, w_stake 0.30
+
+        // Reliable node A: strong reputation/trust, only a little stake.
+        let (trust_a, rel_a, stake_a) = (0.85, 0.9, 0.1);
+        // Unreliable node B: poor reputation/trust, MAX stake.
+        let (trust_b, rel_b, stake_b) = (0.45, 0.2, 1.0);
+        // Identical neutral perf + price so stake/reliability decide the order.
+        let (lat, thr, price) = (0.5, 0.5, 1.0);
+
+        let score_a = blend_selection_score(trust_a, lat, thr, stake_a, rel_a, price, &r);
+        let score_b = blend_selection_score(trust_b, lat, thr, stake_b, rel_b, price, &r);
+        assert!(
+            score_a > score_b,
+            "a max-stake low-reputation node must NOT outrank a reliable one: A={score_a} B={score_b}"
+        );
+        // B is below the reliability floor ⇒ its stake earns literally nothing.
+        assert_eq!(stake_reliability_factor(rel_b, r.stake_reliability_floor), 0.0);
+
+        // Counterfactual: had B's stake been credited in full (reliability forced
+        // to 1.0, i.e. an UN-gated additive stake term), B would have outranked A.
+        let score_b_ungated = blend_selection_score(trust_b, lat, thr, stake_b, 1.0, price, &r);
+        assert!(
+            score_b_ungated > score_a,
+            "without the gate, raw stake WOULD flip the order (B={score_b_ungated} > A={score_a}) — the gate is what protects success rate"
+        );
+    }
+
+    /// PROPERTY 2 (hard floor) — stake cannot buy past `min_trust`. The eligibility
+    /// gate runs on the stake-inclusive effective trust BEFORE scoring; using the
+    /// real `soft_trust_score` with default weights, a zero-reputation node with
+    /// the MAXIMUM stake factor (and max age/voucher) still scores below the
+    /// default `min_trust`, so it is excluded from candidacy entirely.
+    #[test]
+    fn max_stake_zero_reputation_stays_below_min_trust() {
+        let cfg = GridConfig::default();
+        let weights = &cfg.trust.weights;
+
+        // Everything stacked in the staker's favor EXCEPT a verified track record.
+        let inputs = TrustInputs {
+            reputation: 0.0,
+            age_factor: 1.0,
+            voucher_trust: 1.0,
+            stake_factor: 1.0,
+            penalties: 0.0,
+        };
+        let trust = soft_trust_score(weights, &inputs);
+        assert!(
+            trust < cfg.trust.min_trust,
+            "stake/vouchers/age must not buy past min_trust without reputation: trust={trust} min_trust={}",
+            cfg.trust.min_trust
+        );
+
+        // A node with a genuine verified history clears the same floor.
+        let reliable = TrustInputs {
+            reputation: 1.0,
+            age_factor: 1.0,
+            voucher_trust: 0.0,
+            stake_factor: 0.0,
+            penalties: 0.0,
+        };
+        assert!(soft_trust_score(weights, &reliable) >= cfg.trust.min_trust);
     }
 }

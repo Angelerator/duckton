@@ -317,7 +317,7 @@ impl ConfigStore {
                 }
             }
             "bidding" => {
-                for k in ["w_quality", "w_stake", "w_price"] {
+                for k in ["w_quality", "w_stake", "w_price", "stake_reliability_floor"] {
                     if let Some(v) = get(k) {
                         out.push((format!("economics.ranking.{k}"), parse_float(v, k)?));
                     }

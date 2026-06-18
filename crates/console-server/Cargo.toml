@@ -20,9 +20,9 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 blake3 = "1.8.5"
 hex = "0.4.3"
 rand = "0.8"
-p2p-config = { version = "0.5.1", path = "../config" }
-p2p-proto = { version = "0.5.1", path = "../proto" }
-p2p-node = { version = "0.5.1", path = "../node", features = ["duckdb-engine"] }
-p2p-trust = { version = "0.5.1", path = "../trust" }
-p2p-transport = { version = "0.5.1", path = "../transport" }
-p2p-settlement = { version = "0.5.1", path = "../settlement" }
+p2p-config = { version = "0.5.2", path = "../config" }
+p2p-proto = { version = "0.5.2", path = "../proto" }
+p2p-node = { version = "0.5.2", path = "../node", features = ["duckdb-engine"] }
+p2p-trust = { version = "0.5.2", path = "../trust" }
+p2p-transport = { version = "0.5.2", path = "../transport" }
+p2p-settlement = { version = "0.5.2", path = "../settlement" }
