@@ -82,6 +82,49 @@ network-identity-bound key handshake).
   payment channels, and on-chain Merkle-root-anchored job records) that augments the
   trust model above.
 
+## Live on-chain proof (TON testnet)
+
+Duckton settles on TON with a simple, non-custodial economic model. **Free queries
+run entirely off-chain** — no chain client, no escrow, no fees. A **paid** query
+locks the requester's max bid `B` in a per-job `JobEscrow`; on settle the contract
+pays the **winner** its quoted base, a **15% platform fee** to the admin treasury
+(`GlobalParams.fee_recipient`, enforced on-chain), a **5% commission** to each
+agreeing wallet verifier, and **refunds the remainder to the requester**. A
+**free (walletless) winner** is paid nothing and its base is refunded — but the
+15% fee and 5% commission are *still* collected, so the platform and verifiers
+earn on every paid job regardless of the node mix.
+
+The flows below were **broadcast live on TON testnet** and read back from chain.
+Amounts are scaled to **1/10** of the prior full-amount run (base = 0.004 TON) for
+a low-cost re-verification; the **split percentages (15% / 5%) are identical**. The
+full-amount proof — all seven scenarios incl. the complete staking
+deposit → 1:1 receipt mint → unbond lifecycle and every negative — is in
+[**docs/HOW_IT_WORKS.md**](docs/HOW_IT_WORKS.md).
+
+Each escrow permanently retains `MIN_TONS_FOR_STORAGE` = **0.05 TON** as a storage
+reserve (funded from the deploy buffer, not from `B`), and every payout leg pays a
+tiny per-message storage rent (~0.00006 TON) on landing — so a recipient's balance
+delta is its gross leg minus that rent, and the numbers reconcile exactly.
+
+| # | Scenario | Real captured money flow (TON) | On-chain |
+|---|---|---|---|
+| 1 | **Paid, wallet winner** | winner `+0.003941` (base 0.004) · treasury `+0.000541` (15%) · verifier `+0.000141` (5%) · requester refund `0.029048` · escrow keeps `0.05` reserve | [escrow](https://testnet.tonviewer.com/kQAu9lXxoz85k_Vybi0gc7L-qOaha2LbWl9pncoL5ZCNVaYz) |
+| 2 | **Paid, free (walletless) winner** | winner `0` · base `0.004` refunded to requester · treasury `+0.000548` (15%, still collected) · verifier `+0.000148` (5%) · escrow keeps `0.05` | [escrow](https://testnet.tonviewer.com/kQA7gKDku9jO_ejMabspoXraox9a1U9zXLg3wnavlIo9KCBy) |
+| 4 | **Staking 7-day lock** | immediate `StakeWithdraw` → on-chain abort `exit_code=203 COOLDOWN_NOT_ELAPSED`; `readyAt` = `unbondingAt + 604800` = **exactly 7 days**; receipt jetton `0.1` minted 1:1 and transfer-locked; vault state unchanged | [vault](https://testnet.tonviewer.com/kQAYPc8qAo5YUKpgcTANIAi1umHrEhrp2nG_Lnkycvo0G29q) |
+
+Verified live and reused (not redeployed): the
+[`GlobalParams`](https://testnet.tonviewer.com/kQC_cuafJQo9cycuivJfPHE5XGMrvZUP-1sN1Kq0jtZg3dna)
+singleton (`platform_fee_bps=1500`, `participation_commission_bps=500`,
+`fee_recipient` = treasury). Full per-scenario addresses, tx hashes and balance
+deltas are captured in `ton/deployments/readme_proof.testnet.env`.
+
+Proven at **full amounts** in the prior run (not re-broadcast here, to save gas) —
+see [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md): the **wrong-fee** reject
+(`exit_code=285 FEE_MISMATCH`), the **under-funded** reject
+(`exit_code=226 PAYOUT_EXCEEDS_ESCROW`), the **mismatched-treasury** honest-
+coordinator refusal (escrow `get_fee_recipient` ≠ `GlobalParams.fee_recipient`),
+and the full staking deposit → receipt-mint → unbond lifecycle.
+
 ## Workspace layout
 
 ```
