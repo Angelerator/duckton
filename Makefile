@@ -11,8 +11,8 @@ EXTENSION_NAME=duckton
 USE_UNSTABLE_C_API=1
 
 # Target DuckDB version. MUST match the `duckdb` crate pinned in
-# crates/extension/Cargo.toml (duckdb-rs 1.10503.1 <-> DuckDB v1.5.3).
-TARGET_DUCKDB_VERSION=v1.5.3
+# crates/extension/Cargo.toml (duckdb-rs 1.10504.0 <-> DuckDB v1.5.4).
+TARGET_DUCKDB_VERSION=v1.5.4
 
 all: configure debug
 

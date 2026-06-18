@@ -11,12 +11,12 @@
 # Stage 1 (builder): installs Rust + clang/libc++ and builds the `p2p` extension
 # cdylib from `crates/extension` (default features — no libp2p; static seeds),
 # then appends the DuckDB metadata footer so the CLI can LOAD it. The DuckDB
-# version is pinned to match the `duckdb` crate (1.5.3).
+# version is pinned to match the `duckdb` crate (1.5.4).
 #
 # Stage 2 (runtime): debian-slim + the DuckDB CLI + the built .duckdb_extension
 # + the entrypoint. No Rust toolchain in the final image.
 
-ARG DUCKDB_VERSION=v1.5.3
+ARG DUCKDB_VERSION=v1.5.4
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the extension cdylib + append metadata footer
