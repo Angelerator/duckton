@@ -30,17 +30,17 @@ discovery-libp2p = ["dep:libp2p"]
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 blake3 = "1.8.5"
-duckdb = { version = "1.10503.1", features = ["bundled", "parquet", "json"], optional = true }
+duckdb = { version = "1.10504.0", features = ["bundled", "parquet", "json"], optional = true }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 futures-util = "0.3.32"
 hex = "0.4.3"
 lz4_flex = { version = "0.11.3", default-features = false, features = ["std"] }
 zstd = "0.13.2"
-p2p-config = { version = "0.5.0", path = "../config" }
-p2p-proto = { version = "0.5.0", path = "../proto" }
-p2p-settlement = { version = "0.5.0", path = "../settlement" }
-p2p-transport = { version = "0.5.0", path = "../transport" }
-p2p-trust = { version = "0.5.0", path = "../trust" }
+p2p-config = { version = "0.5.1", path = "../config" }
+p2p-proto = { version = "0.5.1", path = "../proto" }
+p2p-settlement = { version = "0.5.1", path = "../settlement" }
+p2p-transport = { version = "0.5.1", path = "../transport" }
+p2p-trust = { version = "0.5.1", path = "../trust" }
 # QUIC error codes (`VarInt`) for abruptly RESETting loser/stalled dispatch
 # streams. Pinned to the same version `p2p-transport` uses so the `SendStream`/
 # `RecvStream` types (re-exported from there) and our `VarInt` are identical.
