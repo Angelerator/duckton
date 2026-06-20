@@ -1251,6 +1251,11 @@ fn rebuild_node() -> std::result::Result<Arc<Node>, String> {
 /// stalled.
 struct HostEngine {
     version: String,
+    /// Whether `temp_file_encryption` is supported by this DuckDB build (probed
+    /// once at init). When true the free in-process engine encrypts its on-disk
+    /// spill at rest; when the build rejects it we fall back to plaintext spill
+    /// gracefully rather than failing every job.
+    temp_file_encryption: bool,
 }
 
 impl HostEngine {
@@ -1265,10 +1270,22 @@ impl HostEngine {
             })
             .map(|v| format!("duckdb-host-{v}"))
             .unwrap_or_else(|| "duckdb-host".to_string());
-        Self { version }
+        // Feature-detect spill encryption on a throwaway :memory: connection.
+        let temp_file_encryption = Connection::open_in_memory()
+            .ok()
+            .map(|c| c.execute_batch("SET temp_file_encryption=true;").is_ok())
+            .unwrap_or(false);
+        Self {
+            version,
+            temp_file_encryption,
+        }
     }
 
-    fn run(sql: &str, lease: ExecLease) -> std::result::Result<ResultSet, EngineError> {
+    fn run(
+        sql: &str,
+        lease: ExecLease,
+        temp_file_encryption: bool,
+    ) -> std::result::Result<ResultSet, EngineError> {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
@@ -1291,14 +1308,29 @@ impl HostEngine {
         // e.g. `/etc/passwd`), no unredacted-secret introspection, and finally
         // `lock_configuration=true` so the untrusted query cannot re-open any of
         // it with a later `SET`.
-        conn.execute_batch(&format!(
-            "SET memory_limit='{mb}MB'; SET threads={threads}; \
-             SET temp_directory='{tmp_path}'; {hardening} {lockdown}",
+        // Bound on-disk spill (`max_temp_directory_size`; 0 ⇒ unbounded) and
+        // encrypt it at rest (`temp_file_encryption`, when supported) — both set
+        // BEFORE `lock_configuration` (inside the shared lockdown) so the
+        // untrusted query cannot widen them.
+        let mut setup_sql = format!(
+            "SET memory_limit='{mb}MB'; SET threads={threads}; SET temp_directory='{tmp_path}';",
             threads = lease.threads.max(1),
-            hardening = p2p_node::EXTENSION_HARDENING_SQL,
-            lockdown = p2p_node::STRICT_LOCKDOWN_SQL,
-        ))
-        .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
+        );
+        if temp_file_encryption {
+            setup_sql.push_str(" SET temp_file_encryption=true;");
+        }
+        if lease.max_spill_bytes > 0 {
+            setup_sql.push_str(&format!(
+                " SET max_temp_directory_size='{}B';",
+                lease.max_spill_bytes
+            ));
+        }
+        setup_sql.push(' ');
+        setup_sql.push_str(p2p_node::EXTENSION_HARDENING_SQL);
+        setup_sql.push(' ');
+        setup_sql.push_str(p2p_node::STRICT_LOCKDOWN_SQL);
+        conn.execute_batch(&setup_sql)
+            .map_err(|e| EngineError::Rejected(format!("engine setup: {e}")))?;
 
         let mut stmt = conn
             .prepare(sql)
@@ -1334,7 +1366,8 @@ impl QueryEngine for HostEngine {
         lease: ExecLease,
     ) -> std::result::Result<ResultSet, EngineError> {
         let sql = sql.to_string();
-        tokio::task::spawn_blocking(move || HostEngine::run(&sql, lease))
+        let enc = self.temp_file_encryption;
+        tokio::task::spawn_blocking(move || HostEngine::run(&sql, lease, enc))
             .await
             .map_err(|e| EngineError::Exec(format!("join: {e}")))?
     }

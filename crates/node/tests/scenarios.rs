@@ -143,6 +143,7 @@ async fn scenario_two_node_result_matches_locally_computed() {
             p2p_node::ExecLease {
                 memory_bytes: 1 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             },
         )
         .await
@@ -242,6 +243,7 @@ async fn scenario_many_concurrent_jobs_across_workers() {
         max_jobs: 64,
         per_job_memory_bytes: 64 * 1024 * 1024,
         per_job_threads: 1,
+        max_spill_bytes: 0,
         local_reserved_fraction: 0.0,
         data_classes: vec![DataClassCfg::Public],
     };
@@ -355,6 +357,7 @@ async fn scenario_canary_audit_slashes_failing_worker() {
             p2p_node::ExecLease {
                 memory_bytes: 1 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             },
         )
         .await

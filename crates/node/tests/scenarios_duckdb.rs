@@ -103,6 +103,7 @@ async fn duckdb_two_node_query_matches_local() {
             ExecLease {
                 memory_bytes: 256 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             },
         )
         .await

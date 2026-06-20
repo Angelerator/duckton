@@ -190,6 +190,14 @@ pub struct Dispatch {
     pub memory_limit_bytes: u64,
     /// Thread lease for the execution connection.
     pub threads: u32,
+    /// Hard ceiling (bytes) on this job's on-disk spill, applied by the worker as
+    /// DuckDB's `max_temp_directory_size` so a served job cannot fill the host
+    /// disk. `0` (default / an older requester) ⇒ no requester-imposed cap: the
+    /// worker falls back to its own configured `[budget].max_spill_bytes` (which
+    /// may also be `0` = unbounded, today's behavior). When both are set the
+    /// worker honors the tighter (smaller) cap.
+    #[serde(default)]
+    pub max_spill_bytes: u64,
     pub verify_mode: VerifyMode,
     /// Phase 4: a data key sealed to the worker's (enclave) key. `None` outside
     /// the confidential tier.

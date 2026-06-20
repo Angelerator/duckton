@@ -206,6 +206,7 @@ mod tests {
             max_jobs: 2,
             per_job_memory_bytes: 100,
             per_job_threads: 1,
+            max_spill_bytes: 0,
             local_reserved_fraction: 0.0,
             data_classes: vec![DataClassCfg::Public],
         }

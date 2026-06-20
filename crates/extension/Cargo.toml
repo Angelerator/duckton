@@ -15,17 +15,17 @@ path = "src/lib.rs"
 # engine into the cdylib.
 duckdb = { version = "1.10504.0", default-features = false, features = ["loadable-extension"] }
 duckdb-loadable-macros = "1.10504.0"
-p2p-config = { version = "0.6.0", path = "../config" }
-p2p-proto = { version = "0.6.0", path = "../proto" }
-p2p-settlement = { version = "0.6.0", path = "../settlement" }
-p2p-trust = { version = "0.6.0", path = "../trust" }
+p2p-config = { version = "0.6.1", path = "../config" }
+p2p-proto = { version = "0.6.1", path = "../proto" }
+p2p-settlement = { version = "0.6.1", path = "../settlement" }
+p2p-trust = { version = "0.6.1", path = "../trust" }
 # The distributed grid core. We deliberately disable default features so the
 # cdylib does NOT pull in libp2p (Kademlia/gossip) — `Node::auto` only needs the
 # static/in-memory discovery — and does NOT enable the node's `duckdb-engine`
 # feature (which would bundle a SECOND DuckDB and conflict with this crate's
 # `loadable-extension` bindings). The extension supplies its own `QueryEngine`
 # that runs SQL through the host DuckDB's C API (see `HostEngine` in `lib.rs`).
-p2p-node = { version = "0.6.0", path = "../node", default-features = false }
+p2p-node = { version = "0.6.1", path = "../node", default-features = false }
 # Synchronous DuckDB C-API <-> async tokio node bridge: one managed runtime,
 # `block_on` per call.
 tokio = { version = "1.52.3", default-features = false, features = ["rt", "rt-multi-thread", "net", "time"] }

@@ -26,6 +26,7 @@ fn lease() -> ExecLease {
     ExecLease {
         memory_bytes: 256 * 1024 * 1024,
         threads: 1,
+        max_spill_bytes: 0,
     }
 }
 

@@ -88,6 +88,7 @@ fn lease(mem_bytes: u64, threads: u32) -> ExecLease {
     ExecLease {
         memory_bytes: mem_bytes,
         threads,
+        max_spill_bytes: 0,
     }
 }
 
@@ -335,6 +336,7 @@ async fn tpch_concurrency() {
         max_jobs,
         per_job_memory_bytes: per_job_mem,
         per_job_threads: 2,
+        max_spill_bytes: 0,
         local_reserved_fraction: 0.0,
         data_classes: vec![DataClassCfg::Public],
     };

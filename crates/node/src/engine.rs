@@ -63,6 +63,10 @@ pub enum EngineError {
 pub struct ExecLease {
     pub memory_bytes: u64,
     pub threads: u32,
+    /// Hard ceiling (bytes) on this execution's on-disk spill, applied by the
+    /// real engine as DuckDB's `max_temp_directory_size`. `0` ⇒ unbounded
+    /// (DuckDB default) — exact back-compat. Ignored by the mock engine.
+    pub max_spill_bytes: u64,
 }
 
 /// Per-job execution context delivered with a `Dispatch`: the scoped storage
@@ -87,6 +91,13 @@ pub struct JobContext {
     /// reads them with NO `CREATE SECRET` (no reusable secret on the host). Empty
     /// ⇒ the secret-based path via [`Self::credential`] (today's behavior).
     pub signed_inputs: Vec<p2p_proto::SignedInput>,
+    /// Pre-created per-job spill directory the real engine must use for `SET
+    /// temp_directory` (instead of minting its own ephemeral dir). The worker
+    /// sets this to the SAME path it declares as the OS sandbox's writable scope,
+    /// so spill is genuinely confined when the sandbox is active. `None` (default
+    /// / own-query / mock engine) ⇒ the engine mints its own private ephemeral
+    /// temp dir, exactly today's behavior.
+    pub spill_dir: Option<String>,
 }
 
 impl JobContext {
@@ -232,6 +243,7 @@ mod tests {
         ExecLease {
             memory_bytes: 1 << 20,
             threads: 1,
+            max_spill_bytes: 0,
         }
     }
 

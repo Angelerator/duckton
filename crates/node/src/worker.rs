@@ -85,6 +85,70 @@ enum ExecOutcome {
     /// Execution errored (forwarded as an `Ack { ok: false }` to the requester).
     Err(EngineError),
 }
+/// Resolve the effective on-disk spill cap (bytes) for a job from the
+/// requester-supplied cap (`dispatch.max_spill_bytes`) and this host's own
+/// configured cap (`[budget].max_spill_bytes`). Each `0` means "no constraint
+/// from that side"; when both are set the TIGHTER (smaller) cap wins so the host
+/// is always protected and a requester may only ever request a stricter bound.
+/// `0` on both ⇒ unbounded (DuckDB default) — exact back-compat.
+fn effective_spill_cap(dispatch_cap: u64, host_cap: u64) -> u64 {
+    match (dispatch_cap, host_cap) {
+        (0, h) => h,
+        (d, 0) => d,
+        (d, h) => d.min(h),
+    }
+}
+
+/// Owns the lifetime of a job's on-disk spill directory: created 0700 on
+/// construction and recursively removed on drop (job end, on every exit path).
+/// The same directory is handed to the engine's `SET temp_directory` and to the
+/// OS sandbox's writable scope, so the real spill location is confined and never
+/// orphaned for a job that completes/errs/cancels normally. (Crash-orphan
+/// cleanup is out of scope — see the P1 note.)
+struct SpillDirGuard {
+    path: std::path::PathBuf,
+    /// Whether the directory was actually created (and so should be removed on
+    /// drop and handed to the engine as its `temp_directory`).
+    created: bool,
+}
+
+impl SpillDirGuard {
+    fn create(path: &str) -> Self {
+        let path = std::path::PathBuf::from(path);
+        match std::fs::create_dir_all(&path) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ =
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+                }
+                Self {
+                    path,
+                    created: true,
+                }
+            }
+            Err(e) => {
+                // Non-fatal: the engine still mints its own private dir if this
+                // one is unusable; we just lose sandbox/temp alignment for this job.
+                warn!(dir = %path.display(), "failed to create per-job spill dir: {e}");
+                Self {
+                    path,
+                    created: false,
+                }
+            }
+        }
+    }
+}
+
+impl Drop for SpillDirGuard {
+    fn drop(&mut self) {
+        if self.created {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 use crate::compression::algo_to_wire;
 use crate::engine::{ExecLease, QueryEngine};
 use crate::result_stream::SendOpts;
@@ -97,6 +161,14 @@ use p2p_config::SandboxConfig;
 pub struct WorkerParams {
     pub per_job_memory_bytes: u64,
     pub per_job_threads: u32,
+    /// Extra memory headroom (bytes) added to the per-job memory_limit when a
+    /// dispatch carries none, so a job the planner admitted as "spills to disk"
+    /// gets the same slack the local path grants (mirrors `planner.spill_tolerance_bytes`).
+    pub spill_tolerance_bytes: u64,
+    /// This host's hard ceiling (bytes) on a single job's on-disk spill
+    /// (`[budget].max_spill_bytes`). `0` ⇒ no host cap. Combined with any
+    /// dispatch-carried cap (the worker applies the tighter of the two).
+    pub max_spill_bytes: u64,
     /// Bulk result chunk size (bytes) for backpressured streaming.
     pub result_chunk_bytes: usize,
     /// Default number of concurrent result-transfer streams (a dispatch may
@@ -166,6 +238,8 @@ impl WorkerParams {
         Self {
             per_job_memory_bytes: cfg.budget.per_job_memory_bytes,
             per_job_threads: cfg.budget.per_job_threads,
+            spill_tolerance_bytes: cfg.planner.spill_tolerance_bytes,
+            max_spill_bytes: cfg.budget.max_spill_bytes,
             result_chunk_bytes: cfg
                 .transport
                 .result
@@ -862,6 +936,7 @@ impl Worker {
         dispatch: &Dispatch,
         mem: u64,
         threads: u32,
+        spill_cap: u64,
         ctx: &crate::engine::JobContext,
         send: &mut SendStream,
         recv: &mut RecvStream,
@@ -874,6 +949,7 @@ impl Worker {
             ExecLease {
                 memory_bytes: mem,
                 threads,
+                max_spill_bytes: spill_cap,
             },
             ctx,
         );
@@ -988,19 +1064,31 @@ impl Worker {
         mut recv: RecvStream,
     ) -> p2p_transport::Result<()> {
         let worker_id = self.transport.local_node_id().clone();
-        let mem = if dispatch.memory_limit_bytes == 0 {
+        // The per-job memory the worker RESERVES against its donated budget (what
+        // the planner admitted it for). `0` ⇒ the worker's own per-job default.
+        let admit_mem = if dispatch.memory_limit_bytes == 0 {
             self.params.per_job_memory_bytes
         } else {
             dispatch.memory_limit_bytes
         };
+        // The engine's DuckDB memory_limit gets the admission target PLUS this
+        // host's spill tolerance — soft out-of-core headroom so a job sized at the
+        // budget spills (in the tolerance band) instead of hard-OOMing, mirroring
+        // the local path. The tolerance is NOT reserved, so it never reduces the
+        // host's admitted concurrency or pushes a full-budget host over capacity.
+        let mem = admit_mem.saturating_add(self.params.spill_tolerance_bytes);
         let threads = if dispatch.threads == 0 {
             self.params.per_job_threads
         } else {
             dispatch.threads
         };
+        // Effective on-disk spill cap: the TIGHTER of the requester's cap (from
+        // the Dispatch) and this host's own configured cap (`0` = unconstrained).
+        let spill_cap = effective_spill_cap(dispatch.max_spill_bytes, self.params.max_spill_bytes);
 
-        // Reserve budget at execution time (held until this scope ends).
-        let _lease = match self.admission.try_admit(mem, threads) {
+        // Reserve budget at execution time (held until this scope ends). Reserve
+        // the per-job admission target (NOT the spill-tolerance headroom).
+        let _lease = match self.admission.try_admit(admit_mem, threads) {
             Some(l) => l,
             None => {
                 write_msg(
@@ -1047,10 +1135,26 @@ impl Worker {
             }
         };
 
+        // ONE per-job spill directory, used for BOTH the engine's `SET
+        // temp_directory` (via `ctx.spill_dir`) AND the OS sandbox's writable
+        // scope below — so the real spill location is genuinely the path the
+        // sandbox confines (previously the engine minted its own different dir,
+        // leaving the declared writable path unrelated to where DuckDB spilled).
+        // Created 0700 here and removed when `_spill_guard` drops at job end.
+        let temp_dir = std::env::temp_dir()
+            .join(format!(
+                "duckdb-p2p-{}-{}",
+                std::process::id(),
+                dispatch.job_id
+            ))
+            .display()
+            .to_string();
+        let _spill_guard = SpillDirGuard::create(&temp_dir);
+
         // Build the per-job context: the scoped, short-lived storage credential
         // (turned into a prefix-scoped DuckDB secret by the real engine) plus the
-        // pinned input snapshot (so the real engine reads the pinned VERSIONS).
-        // The mock engine ignores both.
+        // pinned input snapshot (so the real engine reads the pinned VERSIONS) and
+        // the per-job spill dir. The mock engine ignores all of these.
         let ctx = crate::engine::JobContext {
             credential: dispatch.credential.clone(),
             parquet_keys: Vec::new(),
@@ -1058,6 +1162,9 @@ impl Worker {
             // Presigned credential mode: per-object signed HTTPS URLs the engine
             // rewrites the SQL to read with no secret on the host.
             signed_inputs: dispatch.signed_inputs.clone(),
+            // The real engine spills here — the SAME dir declared writable below.
+            // Falls back to an engine-minted dir if creation above failed.
+            spill_dir: _spill_guard.created.then(|| temp_dir.clone()),
         };
 
         // Engage the OS-level execution sandbox (architecture §9.4) for the
@@ -1067,18 +1174,6 @@ impl Worker {
         // no-op guard (the hard, kill-the-job-not-the-node enforcement is the
         // process-per-job `Sandbox::command` path); when disabled it is a pure
         // no-op so behavior is unchanged.
-        // Per-JOB writable scope (not a shared per-process dir): scope the OS
-        // sandbox's writable path to this job only. The real DuckDB engine creates
-        // its own private 0700 temp dir under here per execution and removes it at
-        // job end (see `duckdb_engine::run_locked`).
-        let temp_dir = std::env::temp_dir()
-            .join(format!(
-                "duckdb-p2p-{}-{}",
-                std::process::id(),
-                dispatch.job_id
-            ))
-            .display()
-            .to_string();
         let sandbox_spec = SandboxSpec {
             limits: ResourceLimits::resolve(
                 &self.sandbox.cfg,
@@ -1114,7 +1209,7 @@ impl Worker {
             .map(Duration::from_millis);
         let exec = self
             .execute_with_progress(
-                &dispatch, mem, threads, &ctx, &mut send, &mut recv, &worker_id, start,
+                &dispatch, mem, threads, spill_cap, &ctx, &mut send, &mut recv, &worker_id, start,
                 cap_deadline,
             )
             .await;
@@ -1217,5 +1312,53 @@ impl Worker {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_spill_cap_takes_the_tighter_bound() {
+        // Either side `0` = unconstrained; the other side is used.
+        assert_eq!(effective_spill_cap(0, 0), 0); // both unbounded → unbounded
+        assert_eq!(effective_spill_cap(0, 4096), 4096); // host cap only
+        assert_eq!(effective_spill_cap(4096, 0), 4096); // requester cap only
+        // Both set → the smaller (tighter) wins so the host is always protected.
+        assert_eq!(effective_spill_cap(4096, 8192), 4096);
+        assert_eq!(effective_spill_cap(8192, 4096), 4096);
+    }
+
+    #[test]
+    fn worker_params_carry_spill_cap_and_tolerance_from_config() {
+        let mut cfg = p2p_config::GridConfig::default();
+        cfg.budget.max_spill_bytes = 7 * 1024 * 1024 * 1024;
+        cfg.planner.spill_tolerance_bytes = 512 * 1024 * 1024;
+        let params = WorkerParams::from_config(&cfg);
+        assert_eq!(params.max_spill_bytes, 7 * 1024 * 1024 * 1024);
+        assert_eq!(params.spill_tolerance_bytes, 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn spill_dir_guard_creates_and_removes_dir() {
+        let path = std::env::temp_dir().join(format!(
+            "duckdb-p2p-test-{}-{:x}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let p = path.display().to_string();
+        {
+            let guard = SpillDirGuard::create(&p);
+            assert!(guard.created, "dir should be created");
+            assert!(path.is_dir(), "spill dir must exist while guard is held");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o700, "spill dir must be private (0700)");
+            }
+        }
+        assert!(!path.exists(), "spill dir must be removed when the guard drops");
     }
 }

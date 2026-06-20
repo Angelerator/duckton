@@ -48,6 +48,10 @@ pub struct JobRequest {
     pub sql: String,
     pub memory_bytes: u64,
     pub threads: u32,
+    /// Hard ceiling (bytes) on this job's on-disk spill (`max_temp_directory_size`).
+    /// `0` (default / an older parent) ⇒ unbounded, today's behavior.
+    #[serde(default)]
+    pub max_spill_bytes: u64,
     /// Scoped, short-lived storage credential — carried in-band over the pipe.
     pub credential: Option<ScopedCredential>,
     /// At-rest Parquet key material (`name` → raw bytes).
@@ -137,10 +141,14 @@ where
         // sandboxed child enforces the pin exactly like the in-process path.
         input_snapshot: req.input_snapshot,
         signed_inputs: req.signed_inputs,
+        // The child's spill dir comes from `TMPDIR` (set by the parent to the
+        // sandbox's writable scope); the engine mints its private dir UNDER it.
+        spill_dir: None,
     };
     let lease = ExecLease {
         memory_bytes: req.memory_bytes,
         threads: req.threads,
+        max_spill_bytes: req.max_spill_bytes,
     };
 
     // Leading heartbeat: the child has started executing (deterministic liveness —
@@ -256,13 +264,24 @@ impl SubprocessEngine {
         lease: ExecLease,
         ctx: &JobContext,
     ) -> Result<ResultSet, EngineError> {
-        // Per-job private temp dir (spill) + the OS sandbox spec (rlimits from the
-        // lease, egress/read-only from config).
+        // ONE per-job private temp dir (spill): created 0700 here, declared as the
+        // OS sandbox's writable scope below, AND exported to the child as `TMPDIR`
+        // so the child engine spills UNDER this exact (sandbox-confined) path.
+        // Removed after the child exits. (rlimits come from the lease, egress/
+        // read-only from config.)
         let job_tmp = std::env::temp_dir().join(format!(
             "p2p-job-{}-{:016x}",
             std::process::id(),
             rand::random::<u64>()
         ));
+        if let Err(e) = std::fs::create_dir_all(&job_tmp) {
+            return Err(EngineError::Rejected(format!("temp dir: {e}")));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&job_tmp, std::fs::Permissions::from_mode(0o700));
+        }
         let spec = SandboxSpec::resolve(
             &self.sandbox_cfg,
             &self.storage_cfg,
@@ -278,6 +297,9 @@ impl SubprocessEngine {
             .map_err(|e| EngineError::Rejected(format!("build sandbox command: {e}")))?;
 
         let mut cmd = tokio::process::Command::from(std_cmd);
+        // Point the child's temp resolution at the sandbox-confined job dir so its
+        // engine's `tempfile`-minted spill dir lands inside the writable scope.
+        cmd.env("TMPDIR", &job_tmp);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -293,6 +315,7 @@ impl SubprocessEngine {
             sql: sql.to_string(),
             memory_bytes: lease.memory_bytes,
             threads: lease.threads,
+            max_spill_bytes: lease.max_spill_bytes,
             credential: ctx.credential.clone(),
             parquet_keys: ctx.parquet_keys.clone(),
             input_snapshot: ctx.input_snapshot.clone(),
@@ -414,6 +437,7 @@ mod tests {
             sql: "SELECT 1".into(),
             memory_bytes: 64 << 20,
             threads: 1,
+            max_spill_bytes: 0,
             credential: None,
             parquet_keys: vec![],
             input_snapshot: Some(snapshot.clone()),
@@ -445,6 +469,7 @@ mod tests {
             sql: "SELECT 1".into(),
             memory_bytes: 64 << 20,
             threads: 1,
+            max_spill_bytes: 0,
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
@@ -474,6 +499,7 @@ mod tests {
             .execute("SELECT 1", ExecLease {
                 memory_bytes: 64 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             })
             .await
             .unwrap();
@@ -488,6 +514,7 @@ mod tests {
             sql: "SELECT 1".into(),
             memory_bytes: 1,
             threads: 1,
+            max_spill_bytes: 0,
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
@@ -522,6 +549,7 @@ mod tests {
             sql: "SELECT 1".into(),
             memory_bytes: 64 << 20,
             threads: 1,
+            max_spill_bytes: 0,
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
@@ -572,6 +600,7 @@ mod tests {
             .execute("SELECT 1", ExecLease {
                 memory_bytes: 1 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             })
             .await
             .unwrap_err();

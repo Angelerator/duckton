@@ -679,6 +679,10 @@ pub struct StorageSetup {
     pub allowed_local_paths: Vec<String>,
     /// Fail engine init if a pre-load extension cannot be loaded.
     pub require_extensions: bool,
+    /// Encrypt DuckDB's on-disk spill (temp) files at rest (`temp_file_encryption`).
+    /// Resolved at engine init: starts from config and is cleared if the running
+    /// DuckDB build rejects the setting (graceful feature-detection).
+    pub temp_file_encryption: bool,
     /// Enabled storage providers (for per-job secret minting).
     pub providers: Arc<ProviderRegistry>,
     /// The worker's sealing keypair, used to open **sealed** credential tokens
@@ -697,6 +701,7 @@ impl StorageSetup {
             preload_extensions: Vec::new(),
             allowed_local_paths: Vec::new(),
             require_extensions: false,
+            temp_file_encryption: true,
             providers: Arc::new(ProviderRegistry::new()),
             sealing: None,
         }
@@ -783,6 +788,7 @@ impl StorageSetup {
             preload_extensions: cfg.preload_extensions.clone(),
             allowed_local_paths: cfg.allowed_local_paths.clone(),
             require_extensions: cfg.require_extensions,
+            temp_file_encryption: cfg.temp_file_encryption,
             providers: Arc::new(registry),
             sealing: None,
         }

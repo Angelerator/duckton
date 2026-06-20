@@ -1029,6 +1029,13 @@ pub struct BudgetConfig {
     pub per_job_memory_bytes: u64,
     /// Per-job default thread lease.
     pub per_job_threads: u32,
+    /// Hard ceiling (bytes) on a single job's on-disk spill (`temp_directory`),
+    /// applied as DuckDB's `max_temp_directory_size`. Bounds a hostile/runaway
+    /// query so it cannot fill the host disk while still allowing legitimate
+    /// out-of-core spilling. `0` (the default) ⇒ DuckDB's own default
+    /// (effectively unbounded relative to free disk) — exact back-compat. When a
+    /// dispatch carries a non-zero cap the worker honors the tighter of the two.
+    pub max_spill_bytes: u64,
     /// Fraction in `[0,1)` of `memory_bytes` permanently reserved for the node's
     /// OWN (local) queries on a **dual-role** node (one that both runs its own
     /// queries and serves others). The process-wide capacity governor caps the
@@ -1050,6 +1057,9 @@ impl Default for BudgetConfig {
             max_jobs: 3,
             per_job_memory_bytes: 1024 * 1024 * 1024,
             per_job_threads: 1,
+            // 0 ⇒ unbounded (DuckDB default) for exact back-compat; operators set
+            // a sane ceiling (e.g. a few GB) to bound spill-to-disk DoS.
+            max_spill_bytes: 0,
             local_reserved_fraction: 0.1,
             data_classes: vec![DataClassCfg::Public],
         }
@@ -1228,6 +1238,13 @@ pub struct StorageConfig {
     /// Enabling this requires complementary OS-level egress filtering (deferred,
     /// architecture §9.4) — DuckDB cannot restrict egress to specific endpoints.
     pub enable_remote_access: bool,
+    /// Encrypt DuckDB's on-disk spill (temp) files at rest (`temp_file_encryption`).
+    /// Default `true`: an untrusted query's intermediate data spilled to the host
+    /// disk is encrypted with an ephemeral per-connection key, so spill files are
+    /// not readable plaintext at rest. Toggleable (set `false`) for environments
+    /// where the engine rejects it; the engine also feature-detects support at
+    /// init and disables it gracefully if the running DuckDB build refuses it.
+    pub temp_file_encryption: bool,
     /// Fail engine init if a `preload_extensions` entry cannot be loaded
     /// (extensions are pre-loaded at init, never `INSTALL`/`LOAD` at query time).
     pub require_extensions: bool,
@@ -1261,6 +1278,7 @@ impl Default for StorageConfig {
             credential_ttl_secs: 900,
             key_ttl_secs: 900,
             enable_remote_access: false,
+            temp_file_encryption: true,
             require_extensions: true,
             preload_extensions: Vec::new(),
             enabled_formats: vec!["csv".to_string(), "json".to_string(), "parquet".to_string()],
@@ -1922,6 +1940,7 @@ impl GridConfig {
                 "P2P_BUDGET_MEMORY_BYTES" => self.budget.memory_bytes = parse(k, v)?,
                 "P2P_BUDGET_THREADS" => self.budget.threads = parse(k, v)?,
                 "P2P_BUDGET_MAX_JOBS" => self.budget.max_jobs = parse(k, v)?,
+                "P2P_BUDGET_MAX_SPILL_BYTES" => self.budget.max_spill_bytes = parse(k, v)?,
                 "P2P_BUDGET_LOCAL_RESERVED_FRACTION" => {
                     self.budget.local_reserved_fraction = parse(k, v)?
                 }
@@ -1954,6 +1973,9 @@ impl GridConfig {
                     self.storage.enable_remote_access = parse(k, v)?
                 }
                 "P2P_STORAGE_REQUIRE_EXTENSIONS" => self.storage.require_extensions = parse(k, v)?,
+                "P2P_STORAGE_TEMP_FILE_ENCRYPTION" => {
+                    self.storage.temp_file_encryption = parse(k, v)?
+                }
                 "P2P_STORAGE_PRELOAD_EXTENSIONS" => {
                     self.storage.preload_extensions = v
                         .split(',')
@@ -2680,6 +2702,28 @@ mod tests {
         assert_eq!(cfg.membership.networks, vec!["acme-internal".to_string()]);
         assert_eq!(cfg.membership.group_issuers.len(), 1);
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn secure_spill_defaults_and_env_overrides() {
+        // Defaults: spill cap unbounded (back-compat) and spill encryption ON.
+        let def = GridConfig::default();
+        assert_eq!(def.budget.max_spill_bytes, 0);
+        assert!(def.storage.temp_file_encryption);
+
+        // Both knobs are env-overridable.
+        let mut cfg = GridConfig::default();
+        let mut env = BTreeMap::new();
+        env.insert("P2P_BUDGET_MAX_SPILL_BYTES".into(), "4294967296".into());
+        env.insert("P2P_STORAGE_TEMP_FILE_ENCRYPTION".into(), "false".into());
+        cfg.apply_env_map(&env).unwrap();
+        assert_eq!(cfg.budget.max_spill_bytes, 4 * 1024 * 1024 * 1024);
+        assert!(!cfg.storage.temp_file_encryption);
+
+        // An older TOML without the fields still parses, taking the safe defaults.
+        let parsed = GridConfig::from_toml_str("[budget]\nthreads = 4\n").unwrap();
+        assert_eq!(parsed.budget.max_spill_bytes, 0);
+        assert!(parsed.storage.temp_file_encryption);
     }
 
     #[test]

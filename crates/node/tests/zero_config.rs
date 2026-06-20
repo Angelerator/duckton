@@ -48,6 +48,7 @@ async fn zero_config_query_just_works() {
             ExecLease {
                 memory_bytes: 1 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             },
         )
         .await

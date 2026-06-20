@@ -777,6 +777,117 @@ async fn spawn_oom_worker(free_mem: u64) -> WorkerHandle {
     }
 }
 
+/// A hand-rolled worker that ACCEPTS every offer (advertising ample free memory)
+/// but then REJECTS every dispatch with an `Ack { ok: false, detail: "at
+/// capacity" }` — exactly the admission-decline a dual-role host emits when a
+/// dispatch sized at `per_job` exceeds its served ceiling. The requester
+/// classifies this as a (neutral) `Inconclusive` failure and must route around
+/// it, never hang.
+async fn spawn_at_capacity_worker() -> WorkerHandle {
+    let transport = transport();
+    let node_id = transport.local_node_id().clone();
+    let addr = transport.local_addr().unwrap();
+    let t = transport.clone();
+    let nid = node_id.clone();
+    let task = tokio::spawn(async move {
+        while let Some(Ok(conn)) = t.accept().await {
+            let nid = nid.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (mut send, mut recv) = match conn.accept_bi().await {
+                        Ok(x) => x,
+                        Err(_) => break,
+                    };
+                    let nid = nid.clone();
+                    tokio::spawn(async move {
+                        match read_msg(&mut recv).await {
+                            Ok(Wire::Offer(o)) => {
+                                let _ =
+                                    write_msg(&mut send, &Wire::Bid(accept_bid(&o, &nid))).await;
+                                let _ = send.finish();
+                            }
+                            Ok(Wire::Dispatch(d)) => {
+                                let _ = write_msg(
+                                    &mut send,
+                                    &Wire::Ack(Ack {
+                                        job_id: d.job_id.clone(),
+                                        ok: false,
+                                        detail: "at capacity".into(),
+                                    }),
+                                )
+                                .await;
+                                let _ = send.finish();
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+            });
+        }
+    });
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
+}
+
+// ===========================================================================
+// No-hang invariant: a worker that ACCEPTS then REJECTS every dispatch must not
+// hang the requester (regression for the pre-existing two-node "at capacity"
+// hang — v0.6.0 / PR #2090).
+// ===========================================================================
+
+/// A provider that bids "accept" but declines ("at capacity") every dispatch,
+/// reached via a candidate with NO stable node id (a bootstrap/TOFU seed
+/// address) and re-offered on every attempt. Before the fix this spun forever:
+/// the worker's real node id was excluded but the unidentified candidate was
+/// re-selected each attempt, and with unlimited retries + a self-refilling retry
+/// budget the loop never terminated. The requester MUST now stop with a clear
+/// error within a bounded time instead of blocking indefinitely.
+#[tokio::test]
+async fn admission_rejection_does_not_hang_requester() {
+    let rejecter = spawn_at_capacity_worker().await;
+
+    // Same unidentified candidate (node_id = None) returned EVERY attempt — the
+    // exact shape of a bootstrap seed that has not yet learned the peer's id.
+    let disc = Arc::new(StaticDiscovery::new(
+        vec![Candidate::new(None, rejecter.addr)],
+        64,
+    ));
+
+    // Reproduce the real-world non-terminating regime: unlimited retries, no
+    // wall-clock cap, and a retry budget that refills faster than it is spent —
+    // so ONLY a correct no-progress bound (not the token bucket) can stop it.
+    let mut cfg = fast_cfg(1, 1);
+    cfg.scheduler.max_retries = 0; // unlimited
+    cfg.scheduler.max_total_duration_ms = 0; // no wall-clock cap
+    cfg.scheduler.retry_budget_max_tokens = 64.0;
+    cfg.scheduler.retry_budget_refill_per_sec = 100_000.0; // never exhausts
+    cfg.validate().unwrap();
+    let coord = coord_with(disc, cfg, store()).await;
+
+    // The query must RESOLVE (to an error) within a bounded time — a hang would
+    // never complete, so a generous timeout failing the test catches a regression.
+    let res = tokio::time::timeout(
+        Duration::from_secs(10),
+        coord.run_query("SELECT 1", QueryOverrides::default()),
+    )
+    .await;
+
+    let outcome = res.expect("requester HUNG on an admission rejection (no-hang invariant broken)");
+    assert!(
+        matches!(
+            outcome,
+            Err(CoordinatorError::Exhausted { .. })
+                | Err(CoordinatorError::NoCandidates)
+                | Err(CoordinatorError::InsufficientWorkers { .. })
+        ),
+        "a rejecting-only provider must terminate with a clear error, got {outcome:?}"
+    );
+}
+
 fn estimate(scanned: u64, peak: u64) -> WorkingSetEstimate {
     WorkingSetEstimate {
         scanned_uncompressed_bytes: scanned,

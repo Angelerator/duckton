@@ -59,7 +59,7 @@ impl DuckDbEngine {
     /// Pre-loads (verifies) the configured extensions once at init. If
     /// `require_extensions` is set and an extension cannot be loaded, init fails
     /// — honoring "required extensions must be pre-loaded at engine init".
-    pub fn with_setup(setup: StorageSetup) -> Result<Self, EngineError> {
+    pub fn with_setup(mut setup: StorageSetup) -> Result<Self, EngineError> {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
         let version: String = conn
@@ -68,18 +68,43 @@ impl DuckDbEngine {
             })
             .map_err(|e| EngineError::Exec(format!("version: {e}")))?;
 
-        // Verify the extension pre-load decision once, at init.
+        // Verify the extension pre-load decision once, at init. Track whether the
+        // `httpfs` crypto provider loaded: `temp_file_encryption`'s ENCRYPTED SPILL
+        // WRITE needs a writable crypto module, which on this build is provided by
+        // `httpfs` (mbedtls). Because the engine hardens extensions (autoload OFF),
+        // that module is available at query time ONLY when `httpfs` is in
+        // `preload_extensions`. `SET temp_file_encryption=true` itself is accepted
+        // on a `:memory:` connection regardless, but the spill WRITE then fails
+        // ("read-only crypto module") — so we gate the EFFECTIVE flag on httpfs
+        // actually being loaded and disable it gracefully otherwise (plaintext
+        // spill, today's behavior), rather than breaking every spilling job.
         Self::harden_extensions(&conn)?;
+        let mut httpfs_loaded = false;
         for ext in &setup.preload_extensions {
-            if let Err(e) = conn.execute_batch(&format!("LOAD {ext};")) {
-                if setup.require_extensions {
-                    return Err(EngineError::Exec(format!(
-                        "preload extension '{ext}' failed at init: {e} (install it in the \
-                         worker image, or set storage.require_extensions=false)"
-                    )));
+            match conn.execute_batch(&format!("LOAD {ext};")) {
+                Ok(()) => {
+                    if ext.eq_ignore_ascii_case("httpfs") {
+                        httpfs_loaded = true;
+                    }
                 }
-                tracing::warn!("optional extension '{ext}' not loaded: {e}");
+                Err(e) => {
+                    if setup.require_extensions {
+                        return Err(EngineError::Exec(format!(
+                            "preload extension '{ext}' failed at init: {e} (install it in the \
+                             worker image, or set storage.require_extensions=false)"
+                        )));
+                    }
+                    tracing::warn!("optional extension '{ext}' not loaded: {e}");
+                }
             }
+        }
+        if setup.temp_file_encryption && !httpfs_loaded {
+            tracing::warn!(
+                "temp_file_encryption is enabled but the 'httpfs' crypto provider is not \
+                 preloaded; on-disk spill will NOT be encrypted at rest. Add \"httpfs\" to \
+                 storage.preload_extensions to encrypt spill files."
+            );
+            setup.temp_file_encryption = false;
         }
 
         Ok(Self {
@@ -158,22 +183,47 @@ impl DuckDbEngine {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
 
-        // 1. Budget + ephemeral temp dir. Each job gets its OWN private temp dir
-        // (0700, unique name) that is removed when this `TempDir` drops at the end
-        // of `run_locked` — never a long-lived shared per-process dir that would
-        // leak spill files across jobs (and across tenants). `tempfile` creates it
-        // with `0700` on Unix.
+        // 1. Budget + per-job spill (temp) dir. The worker pre-creates ONE per-job
+        // dir and passes it via `ctx.spill_dir` — the SAME path it declares as the
+        // OS sandbox's writable scope, so spill is genuinely confined when the
+        // sandbox is active (the worker owns its lifetime/cleanup). With no
+        // provided dir (own-query / tests) the engine mints its OWN private dir
+        // (0700, unique name) removed when this `TempDir` drops at the end of
+        // `run_locked` — never a long-lived shared per-process dir leaking spill
+        // across jobs/tenants. `tempfile` creates it with `0700` on Unix.
         let mb = (lease.memory_bytes / (1024 * 1024)).max(64);
-        let job_tmp = tempfile::Builder::new()
-            .prefix("duckdb-p2p-job-")
-            .tempdir()
-            .map_err(|e| EngineError::Rejected(format!("temp dir: {e}")))?;
-        let tmp_path = job_tmp.path().to_string_lossy().replace('\'', "''");
-        conn.execute_batch(&format!(
+        let _owned_tmp; // keeps an engine-minted TempDir alive for this scope
+        let tmp_path = match &ctx.spill_dir {
+            Some(dir) => dir.replace('\'', "''"),
+            None => {
+                let job_tmp = tempfile::Builder::new()
+                    .prefix("duckdb-p2p-job-")
+                    .tempdir()
+                    .map_err(|e| EngineError::Rejected(format!("temp dir: {e}")))?;
+                let p = job_tmp.path().to_string_lossy().replace('\'', "''");
+                _owned_tmp = job_tmp;
+                p
+            }
+        };
+        // Bound on-disk spill (DuckDB `max_temp_directory_size`) so a runaway
+        // query cannot fill the host disk; `0` ⇒ unbounded (DuckDB default).
+        // Encrypt spill at rest when supported (resolved at engine init). Both are
+        // SET before `lock_configuration` so the untrusted query cannot widen them.
+        let mut budget_sql = format!(
             "SET memory_limit='{mb}MB'; SET threads={}; SET temp_directory='{tmp_path}';",
             lease.threads.max(1),
-        ))
-        .map_err(|e| EngineError::Rejected(format!("budget setup: {e}")))?;
+        );
+        if setup.temp_file_encryption {
+            budget_sql.push_str(" SET temp_file_encryption=true;");
+        }
+        if lease.max_spill_bytes > 0 {
+            budget_sql.push_str(&format!(
+                " SET max_temp_directory_size='{}B';",
+                lease.max_spill_bytes
+            ));
+        }
+        conn.execute_batch(&budget_sql)
+            .map_err(|e| EngineError::Rejected(format!("budget setup: {e}")))?;
 
         // 2-4. Harden + pre-load the resolved extension set (never the query's
         // choice; no INSTALL — only LOAD of already-available extensions).
@@ -362,6 +412,7 @@ mod tests {
         ExecLease {
             memory_bytes: 256 * 1024 * 1024,
             threads: 1,
+            max_spill_bytes: 0,
         }
     }
 
@@ -448,6 +499,129 @@ mod tests {
         assert!(
             r.is_err(),
             "locked config must reject re-enabling unredacted secrets, got {r:?}"
+        );
+    }
+
+    fn spill_lease(memory_bytes: u64, max_spill_bytes: u64) -> ExecLease {
+        ExecLease {
+            memory_bytes,
+            threads: 2,
+            max_spill_bytes,
+        }
+    }
+
+    /// A LOCAL-SCOPED engine (an allowed dir ⇒ the local filesystem is NOT
+    /// disabled), the only profile where DuckDB can actually spill to disk — the
+    /// same profile `tpch_spill` exercises. The strict profile deliberately
+    /// disables `LocalFileSystem` entirely (no spill at all), so spill hardening
+    /// only applies to the file-backed profiles. `preload` lets a test pre-load
+    /// the `httpfs` crypto provider that encrypted spill requires.
+    fn local_scoped_engine(preload: &[&str]) -> DuckDbEngine {
+        let mut setup = StorageSetup::strict();
+        setup.allowed_local_paths = vec![std::env::temp_dir().to_string_lossy().to_string()];
+        setup.preload_extensions = preload.iter().map(|s| s.to_string()).collect();
+        DuckDbEngine::with_setup(setup).unwrap()
+    }
+
+    async fn current_temp_file_encryption(eng: &DuckDbEngine) -> Value {
+        eng.execute("SELECT current_setting('temp_file_encryption') AS e", lease())
+            .await
+            .expect("reading temp_file_encryption must succeed on :memory:")
+            .rows[0][0]
+            .clone()
+    }
+
+    /// A high-cardinality GROUP BY whose hash table far exceeds a tight
+    /// memory_limit, forcing DuckDB to spill to its `temp_directory`. `n` equals
+    /// the number of distinct groups, a stable correctness anchor.
+    const SPILL_SQL: &str =
+        "SELECT count(*) AS n FROM (SELECT i FROM range(10000000) t(i) GROUP BY i)";
+
+    #[tokio::test]
+    async fn temp_file_encryption_accepted_on_memory_but_gated_on_crypto_provider() {
+        // VERIFICATION (P0 #2): `SET temp_file_encryption=true` is ACCEPTED on a
+        // `:memory:` DuckDB 1.5.4 connection, but the ENCRYPTED SPILL WRITE needs
+        // the `httpfs` crypto provider (the engine hardens autoload off). Without
+        // it preloaded, the engine GRACEFULLY DISABLES encryption (plaintext
+        // spill, today's behavior) rather than breaking — current_setting reads
+        // back `false`, and a larger-than-memory query still spills+succeeds.
+        let eng = local_scoped_engine(&[]);
+        assert_eq!(
+            current_temp_file_encryption(&eng).await,
+            Value::Bool(false),
+            "without the httpfs crypto provider, encryption must be gracefully disabled"
+        );
+        let rs = eng
+            .execute(SPILL_SQL, spill_lease(64 * 1024 * 1024, 0))
+            .await
+            .expect("larger-than-memory query must still spill+succeed (plaintext fallback)");
+        assert_eq!(rs.rows[0][0], Value::Int(10_000_000));
+    }
+
+    #[tokio::test]
+    async fn encrypted_spill_succeeds_when_httpfs_preloaded() {
+        // VERIFICATION (P0 #2): with the `httpfs` crypto provider preloaded,
+        // temp_file_encryption is ENABLED on the `:memory:` connection AND a
+        // larger-than-memory query completes via the ENCRYPTED on-disk spill.
+        let eng = local_scoped_engine(&["httpfs"]);
+        if current_temp_file_encryption(&eng).await != Value::Bool(true) {
+            eprintln!("SKIP encrypted_spill_succeeds: httpfs unavailable in this environment");
+            return;
+        }
+        let rs = eng
+            .execute(SPILL_SQL, spill_lease(64 * 1024 * 1024, 0))
+            .await
+            .expect("larger-than-memory query must spill+succeed WITH encryption on");
+        assert_eq!(
+            rs.rows[0][0],
+            Value::Int(10_000_000),
+            "encrypted spilled aggregation must still be correct"
+        );
+    }
+
+    #[tokio::test]
+    async fn over_cap_spill_is_rejected_by_max_temp_directory_size() {
+        // VERIFICATION (P0 #1): a larger-than-memory query under a TINY on-disk
+        // spill cap must be REJECTED by `max_temp_directory_size` (a bounded
+        // error) rather than filling the disk — exercised on the ENCRYPTED path
+        // when httpfs is available, else the plaintext fallback. Either way this
+        // proves the query genuinely spills (it errors only because it hit the cap).
+        let eng = local_scoped_engine(&["httpfs"]);
+        let r = eng
+            .execute(SPILL_SQL, spill_lease(64 * 1024 * 1024, 16 * 1024 * 1024))
+            .await;
+        let err = r.expect_err("over-cap spill must be rejected, not allowed to fill disk");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("temp") || msg.contains("temporary") || msg.contains("disk"),
+            "error should reference the temp-directory size cap, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn temp_directory_uses_the_provided_spill_dir() {
+        // P0 #3: when the worker provides a per-job spill dir (the SAME path it
+        // declares as the OS sandbox's writable scope), the engine sets
+        // `temp_directory` to exactly that path — so spill is confined to it.
+        let eng = DuckDbEngine::new().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().to_string();
+        let ctx = JobContext {
+            spill_dir: Some(path.clone()),
+            ..Default::default()
+        };
+        let rs = eng
+            .execute_job(
+                "SELECT current_setting('temp_directory') AS t",
+                lease(),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rs.rows[0][0],
+            Value::Text(path),
+            "temp_directory must equal the worker-provided (sandbox-writable) dir"
         );
     }
 

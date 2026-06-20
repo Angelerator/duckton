@@ -731,7 +731,7 @@ dependencies = [
 
 [[package]]
 name = "console-server"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "axum",
  "blake3",
@@ -2977,7 +2977,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "p2p-config"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "p2p-proto",
  "serde",
@@ -2990,7 +2990,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-extension"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "duckdb",
@@ -3007,7 +3007,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-node"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3041,7 +3041,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-proto"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "blake3",
  "hex",
@@ -3053,7 +3053,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-settlement"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -3070,7 +3070,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-transport"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3094,7 +3094,7 @@ dependencies = [
 
 [[package]]
 name = "p2p-trust"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "blake3",
  "chacha20poly1305",

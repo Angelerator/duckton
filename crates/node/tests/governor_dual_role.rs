@@ -24,6 +24,7 @@ fn budget(memory_bytes: u64, threads: u32, max_jobs: u32, reserved: f64) -> Budg
         max_jobs,
         per_job_memory_bytes: 100,
         per_job_threads: 1,
+        max_spill_bytes: 0,
         local_reserved_fraction: reserved,
         data_classes: vec![DataClassCfg::Public],
     }

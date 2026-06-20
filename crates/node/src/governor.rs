@@ -89,8 +89,18 @@ impl CapacityGovernor {
         } else {
             0.0
         };
+        // The served ceiling reserves `fraction * budget` for local work, BUT it
+        // must never drop below a single `per_job_memory_bytes` — otherwise a node
+        // that bids on (advertises) a per-job unit it cannot then admit would
+        // reject every normal dispatch ("at capacity") and starve serving. The
+        // common case (a per-job-sized dispatch on a node serving at its budget)
+        // must always be admittable, so we clamp the ceiling up to at least one
+        // per-job, capped at the total budget. With `budget >> per_job` (the usual
+        // multi-job host) the floor is inert and the local reservation is fully
+        // preserved; it only ever bites the degenerate per_job ≈ budget case.
+        let per_job_floor = budget.per_job_memory_bytes.min(budget.memory_bytes);
         let served_memory_ceiling =
-            ((budget.memory_bytes as f64) * (1.0 - fraction)).floor() as u64;
+            (((budget.memory_bytes as f64) * (1.0 - fraction)).floor() as u64).max(per_job_floor);
         let max_jobs = max_concurrent_jobs.max(1);
         Arc::new(Self {
             memory_total: budget.memory_bytes,
@@ -272,6 +282,7 @@ mod tests {
             max_jobs: 8,
             per_job_memory_bytes: 100,
             per_job_threads: 1,
+            max_spill_bytes: 0,
             local_reserved_fraction: 0.0,
             data_classes: vec![DataClassCfg::Public],
         }
@@ -319,6 +330,25 @@ mod tests {
         // …but the reserved 200 is still available to LOCAL (no starvation).
         let _local = g.try_reserve(Role::Local, 200, 1).unwrap();
         assert_eq!(g.free_memory(), 0);
+    }
+
+    #[test]
+    fn served_ceiling_never_drops_below_one_per_job() {
+        // Degenerate dual-role node: per-job share == whole budget. Even with a
+        // local reservation, a single per-job-sized served job MUST be admittable
+        // (the node bids on this unit); the reservation may not make it reject the
+        // capacity it advertised.
+        let mut b = budget(1000, 8);
+        b.per_job_memory_bytes = 1000;
+        let g = CapacityGovernor::new(&b, 8, 0.1, true);
+        assert_eq!(
+            g.served_memory_ceiling(),
+            1000,
+            "ceiling clamps up to one per-job so the advertised unit is admittable"
+        );
+        let _served = g
+            .try_reserve(Role::Served, 1000, 1)
+            .expect("a per-job-sized served job must be admittable at the budget");
     }
 
     #[test]

@@ -1031,6 +1031,7 @@ async fn export_console_snapshot() {
         }),
         memory_limit_bytes: 4 * 1024 * 1024 * 1024,
         threads: 8,
+        max_spill_bytes: 0,
         verify_mode: VerifyMode::Quorum,
         sealed_key: None,
         result_parallelism: Some(4),

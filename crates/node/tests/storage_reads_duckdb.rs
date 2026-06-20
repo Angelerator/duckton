@@ -28,6 +28,7 @@ fn lease() -> ExecLease {
     ExecLease {
         memory_bytes: 256 * 1024 * 1024,
         threads: 1,
+        max_spill_bytes: 0,
     }
 }
 
@@ -141,6 +142,7 @@ async fn parquet_modular_encryption_roundtrip() {
         parquet_keys: vec![(key_name.to_string(), key_bytes.clone())],
         input_snapshot: None,
         signed_inputs: Vec::new(),
+        spill_dir: None,
     };
 
     // Write an encrypted Parquet file (footer + columns encrypted with the key).
@@ -223,6 +225,7 @@ async fn scoped_s3_secret_installs_when_httpfs_available() {
         parquet_keys: Vec::new(),
         input_snapshot: None,
         signed_inputs: Vec::new(),
+        spill_dir: None,
     };
 
     // List secrets — succeeds only if httpfs registered the s3 secret type and
@@ -318,6 +321,7 @@ async fn sealed_minio_credential_installs_scoped_secret() {
         parquet_keys: Vec::new(),
         input_snapshot: None,
         signed_inputs: Vec::new(),
+        spill_dir: None,
     };
 
     let rs = eng
@@ -376,6 +380,7 @@ async fn presigned_inputs_rewrite_sql_and_install_no_secret() {
             uri: original_uri.to_string(),
             url: real.display().to_string(),
         }],
+        spill_dir: None,
     };
     let sql = format!("SELECT count(*) AS c FROM read_parquet('{original_uri}')");
     let rs = eng.execute_job(&sql, lease(), &ctx).await.unwrap();

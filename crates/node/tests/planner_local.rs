@@ -198,6 +198,7 @@ async fn prefer_local_runs_free_local_path() {
             ExecLease {
                 memory_bytes: 1 << 20,
                 threads: 1,
+                max_spill_bytes: 0,
             },
         )
         .await

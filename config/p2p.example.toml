@@ -256,6 +256,11 @@ threads              = 2
 max_jobs             = 3
 per_job_memory_bytes = 1073741824          # 1 GiB default per-job lease
 per_job_threads      = 1
+max_spill_bytes      = 0                    # hard cap (bytes) on a job's on-disk
+                                           #  spill (DuckDB max_temp_directory_size).
+                                           #  0 = unbounded (back-compat default);
+                                           #  set e.g. 4294967296 (4 GiB) to bound
+                                           #  spill-to-disk DoS from a runaway query.
 data_classes         = ["public"]          # public | internal | sensitive
 
 [trust]
@@ -311,6 +316,12 @@ key_ttl_secs        = 900                  # sealed data-key lifetime
 # enabling remote access REQUIRES complementary OS-level egress filtering (the
 # OS sandbox is separately deferred; see §9.4).
 enable_remote_access = false
+# Encrypt DuckDB's on-disk spill (temp) files at rest with an ephemeral per-
+# connection key (temp_file_encryption). Default true so an untrusted query's
+# intermediate spill is not readable plaintext on the host disk. The engine
+# feature-detects support at init and disables it gracefully if the running
+# DuckDB build rejects it; set false to opt out explicitly.
+temp_file_encryption = true
 # Fail engine init if a preload_extensions entry can't be loaded. Required
 # extensions are pre-loaded at init, NEVER INSTALL/LOAD'd at query time.
 require_extensions   = true

@@ -1472,7 +1472,7 @@
     "tls": "TLS 1.3 · mutual auth pinned to Ed25519 node identities",
     "transport": "QUIC (Quinn + rustls), loopback",
     "wireSchemaVersion": 1,
-    "workspaceVersion": "0.6.0"
+    "workspaceVersion": "0.6.1"
   },
   "overview": {
     "attestationMix": [

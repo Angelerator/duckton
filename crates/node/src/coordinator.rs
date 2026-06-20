@@ -1202,8 +1202,30 @@ impl Coordinator {
                     );
                     debug!("{last_reason}; re-dispatching to a fresh candidate set");
                     // Route around the non-delivering providers next attempt.
+                    let excluded_before = excluded.len();
                     for t in tried {
                         excluded.insert(t);
+                    }
+                    // No-progress guard (no-hang invariant): if this attempt could
+                    // not exclude any NEW provider, the next attempt would re-select
+                    // the identical candidate set and fail the identical way — an
+                    // unbounded spin. This happens when a worker bids "accept" then
+                    // rejects/abandons every dispatch (e.g. an "at capacity"
+                    // admission decline) and the candidate carries no stable node id
+                    // to route around (a bootstrap/TOFU seed address). With the
+                    // default unlimited retries + self-refilling token bucket that
+                    // would hang the query forever, so terminate now with a clear,
+                    // actionable error instead of blocking indefinitely.
+                    if excluded.len() == excluded_before {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::Exhausted {
+                            attempts: retries + 1,
+                            reason: format!(
+                                "{last_reason}; re-dispatch cannot make progress: the only \
+                                 reachable provider(s) keep declining/abandoning the job \
+                                 (e.g. \"at capacity\") and no alternative candidate is available"
+                            ),
+                        });
                     }
                     // Stop conditions (in priority order).
                     if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
@@ -1255,9 +1277,22 @@ impl Coordinator {
                     last_reason = format!("attempt {} resource-exceeded: {reason}", retries + 1);
                     debug!("{last_reason}; excluding OOMed nodes and re-routing to higher-capacity nodes");
                     saw_resource_exceeded = true;
+                    let floor_before = capacity_floor;
                     capacity_floor = capacity_floor.max(max_tried_capacity);
+                    let excluded_before = excluded.len();
                     for n in oomed {
                         excluded.insert(n);
+                    }
+                    // No-progress guard (no-hang invariant): re-routing here only
+                    // helps if the next attempt can either exclude a new provider or
+                    // raise the capacity floor (to filter the OOMing nodes out). If
+                    // NEITHER advanced — e.g. the only reachable provider advertises
+                    // unknown (0) free memory and carries no stable node id to route
+                    // around — the loop would re-select it forever. Terminate with
+                    // the dedicated capacity error rather than spin indefinitely.
+                    if excluded.len() == excluded_before && capacity_floor == floor_before {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
                     }
                     // Same stop conditions as the Inconclusive path.
                     if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
@@ -1783,8 +1818,16 @@ impl Coordinator {
             sql: sql.to_string(),
             query_hash: query_hash.clone(),
             credential,
+            // The per-job admission target the worker reserves against its budget.
+            // The worker ADDS its own spill tolerance to the engine's memory_limit
+            // (see `handle_dispatch`), mirroring the local path — so the tolerance
+            // is soft engine headroom, NOT an inflated reservation that could push
+            // a host whose per-job share equals its whole budget over capacity.
             memory_limit_bytes: cfg.budget.per_job_memory_bytes,
             threads: cfg.budget.per_job_threads,
+            // Bound the served job's on-disk spill (DuckDB max_temp_directory_size);
+            // 0 ⇒ no requester cap (the worker applies its own configured cap).
+            max_spill_bytes: cfg.budget.max_spill_bytes,
             verify_mode,
             sealed_key: None,
             result_parallelism: Some(cfg.transport.result.parallelism as u32),
@@ -2547,6 +2590,8 @@ impl Coordinator {
                 .saturating_add(cfg.planner.spill_tolerance_bytes)
                 .max(64 * 1024 * 1024),
             threads: cfg.budget.per_job_threads.max(1),
+            // Bound our OWN query's on-disk spill too (0 ⇒ unbounded, back-compat).
+            max_spill_bytes: cfg.budget.max_spill_bytes,
         };
         let job_id = JobId::new();
         let exec = local.engine().execute(sql, lease).await;
