@@ -213,6 +213,285 @@ fn rand_hex(n_bytes: usize) -> String {
     hex::encode(buf)
 }
 
+// ---------------------------------------------------------------------------
+// Presigned-URL credential mode (requester side, architecture §9.2)
+// ---------------------------------------------------------------------------
+
+/// Produces **presigned, time-limited read URLs** for a job's pinned input
+/// objects (presigned credential mode). The REQUESTER holds the cloud
+/// credentials and signs a narrow, per-object HTTPS URL; the commodity WORKER
+/// reads it with plain HTTPS and **no secret on the host** (DuckDB
+/// `read_parquet('<signed https url>')`, no `CREATE SECRET`).
+///
+/// Pluggable so S3 SigV4 / Azure user-delegation SAS / GCS signed-URL signers
+/// slot in behind one trait, exactly like [`StorageCredentialProvider`].
+///
+/// ## Honest scope
+/// A presigned URL is a **bearer** artifact: anyone holding it can re-read that
+/// one object until it expires. That is expected and is the deliberate trade —
+/// the win is that **no reusable credential** (access key / session token) ever
+/// reaches the worker, only an expiring read capability scoped to one object.
+pub trait PresignProvider: Send + Sync {
+    /// Provider id (matches the storage `ProviderRegistry` ids: `s3` / `az` /
+    /// `gcs` / …, or `fake-presign` for the no-cloud deterministic signer).
+    fn provider_id(&self) -> &str;
+
+    /// Sign `uri` (e.g. `s3://bucket/key.parquet`) for `ttl_secs`, returning the
+    /// presigned HTTPS URL a worker can read with no credential.
+    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError>;
+}
+
+/// A no-cloud, deterministic presigner used for the open-grid default and tests.
+///
+/// It emits a correctly-SHAPED, per-object, expiring signed URL form (host +
+/// object path + `X-Amz-Expires` + a deterministic `X-Amz-Signature`) WITHOUT
+/// real cloud crypto, so the end-to-end presigned wiring (coordinator → dispatch
+/// → worker rewrite → no-secret HTTPS read) can be exercised with no cloud
+/// account. Swap in [`S3PresignProvider`] (or an Azure/GCS signer) for a real
+/// deployment. The signature is a deterministic function of the URI ONLY (not the
+/// wall clock), so two requesters signing the same object agree — handy for
+/// tests — while the embedded `X-Amz-Expires`/`X-Amz-Date` still carry the TTL.
+pub struct FakePresignProvider {
+    host: String,
+}
+
+impl Default for FakePresignProvider {
+    fn default() -> Self {
+        Self {
+            host: "presigned.local".to_string(),
+        }
+    }
+}
+
+impl FakePresignProvider {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl PresignProvider for FakePresignProvider {
+    fn provider_id(&self) -> &str {
+        "fake-presign"
+    }
+
+    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError> {
+        // Drop the scheme, keep `host_or_bucket/key…` as the object path so the
+        // signed URL stays per-object and recognizable.
+        let path = uri.split_once("://").map(|(_, rest)| rest).unwrap_or(uri);
+        let path = path.trim_start_matches('/');
+        let expires_at = now_secs() + ttl_secs;
+        // Deterministic per-object signature (URI-only) — no real crypto.
+        let mut h = blake3::Hasher::new();
+        h.update(b"duckdb-p2p-presign-v1");
+        h.update(uri.as_bytes());
+        let sig = hex::encode(&h.finalize().as_bytes()[..16]);
+        Ok(format!(
+            "https://{}/{}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires={}&X-Amz-Date={}&X-Amz-SignedHeaders=host&X-Amz-Signature={}",
+            self.host,
+            crate::datasource::aws_uri_encode(path, false),
+            ttl_secs,
+            expires_at,
+            sig
+        ))
+    }
+}
+
+/// Real AWS S3 (and S3-compatible / MinIO) **SigV4 query-string presigner**.
+///
+/// Given the requester's S3 credentials it signs a per-object, time-limited GET
+/// URL (`X-Amz-Algorithm`/`X-Amz-Credential`/`X-Amz-Date`/`X-Amz-Expires`/
+/// `X-Amz-SignedHeaders`/`X-Amz-Signature`, `UNSIGNED-PAYLOAD`). The worker reads
+/// it with plain HTTPS and no secret. Virtual-hosted URLs are produced for AWS;
+/// when an `endpoint` is set (MinIO / S3-compatible) path-style URLs against that
+/// host are produced instead.
+///
+/// The credentials live ONLY on the requester (never shipped to the worker), so
+/// this is constructed by the operator and injected — `default_presign_provider`
+/// returns the no-cloud [`FakePresignProvider`] because secrets are deliberately
+/// never read from config.
+pub struct S3PresignProvider {
+    access_key: String,
+    secret_key: String,
+    region: String,
+    /// Optional S3-compatible endpoint host (e.g. `minio.local:9000`); when set,
+    /// path-style URLs are produced. `None` ⇒ virtual-hosted AWS URLs.
+    endpoint: Option<String>,
+    /// HTTPS (true, default) vs plain HTTP (MinIO dev).
+    use_ssl: bool,
+}
+
+impl S3PresignProvider {
+    pub fn new(
+        access_key: impl Into<String>,
+        secret_key: impl Into<String>,
+        region: impl Into<String>,
+    ) -> Self {
+        Self {
+            access_key: access_key.into(),
+            secret_key: secret_key.into(),
+            region: region.into(),
+            endpoint: None,
+            use_ssl: true,
+        }
+    }
+
+    /// Set an S3-compatible endpoint (MinIO) and TLS flag (path-style URLs).
+    pub fn with_endpoint(mut self, endpoint: impl Into<String>, use_ssl: bool) -> Self {
+        self.endpoint = Some(endpoint.into());
+        self.use_ssl = use_ssl;
+        self
+    }
+
+    /// Sign at an explicit `now` (Unix seconds) — the testable core of
+    /// [`PresignProvider::presign`].
+    pub fn presign_at(
+        &self,
+        uri: &str,
+        ttl_secs: u64,
+        now: u64,
+    ) -> Result<String, crate::datasource::DataSourceError> {
+        use crate::datasource::{aws_uri_encode, DataSourceError};
+
+        let rest = uri.split_once("://").map(|(_, r)| r).unwrap_or(uri);
+        let (bucket, key) = rest.split_once('/').ok_or_else(|| {
+            DataSourceError::MalformedToken(format!("s3 uri missing bucket/key: {uri}"))
+        })?;
+        if bucket.is_empty() || key.is_empty() {
+            return Err(DataSourceError::MalformedToken(format!(
+                "s3 uri missing bucket/key: {uri}"
+            )));
+        }
+
+        let scheme = if self.use_ssl { "https" } else { "http" };
+        let (host, canonical_uri) = match &self.endpoint {
+            // Path-style for an S3-compatible endpoint (MinIO).
+            Some(ep) => (
+                ep.clone(),
+                format!("/{}/{}", bucket, aws_uri_encode(key, false)),
+            ),
+            // Virtual-hosted AWS URL.
+            None => (
+                format!("{bucket}.s3.{}.amazonaws.com", self.region),
+                format!("/{}", aws_uri_encode(key, false)),
+            ),
+        };
+
+        let (amz_date, datestamp) = format_amz_date(now);
+        let credential_scope = format!("{datestamp}/{}/s3/aws4_request", self.region);
+        let credential = format!("{}/{}", self.access_key, credential_scope);
+
+        // Canonical query string: params sorted by key, each URL-encoded.
+        let mut params: Vec<(String, String)> = vec![
+            ("X-Amz-Algorithm".into(), "AWS4-HMAC-SHA256".into()),
+            ("X-Amz-Credential".into(), credential),
+            ("X-Amz-Date".into(), amz_date.clone()),
+            ("X-Amz-Expires".into(), ttl_secs.to_string()),
+            ("X-Amz-SignedHeaders".into(), "host".into()),
+        ];
+        params.sort_by(|a, b| a.0.cmp(&b.0));
+        let canonical_query = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", aws_uri_encode(k, true), aws_uri_encode(v, true)))
+            .collect::<Vec<_>>()
+            .join("&");
+
+        let canonical_headers = format!("host:{host}\n");
+        let signed_headers = "host";
+        let payload_hash = "UNSIGNED-PAYLOAD";
+        let canonical_request = format!(
+            "GET\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+        );
+
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{}",
+            sha256_hex(canonical_request.as_bytes())
+        );
+
+        let signing_key = sigv4_signing_key(&self.secret_key, &datestamp, &self.region, "s3");
+        let signature = hex::encode(hmac_sha256(&signing_key, string_to_sign.as_bytes()));
+
+        Ok(format!(
+            "{scheme}://{host}{canonical_uri}?{canonical_query}&X-Amz-Signature={signature}"
+        ))
+    }
+}
+
+impl PresignProvider for S3PresignProvider {
+    fn provider_id(&self) -> &str {
+        "s3"
+    }
+
+    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError> {
+        self.presign_at(uri, ttl_secs, now_secs())
+    }
+}
+
+/// Build the requester-side presigner for the presigned credential mode. Returns
+/// the no-cloud, deterministic [`FakePresignProvider`] — real S3/Azure/GCS
+/// signers need the requester's cloud credentials, which (by design) are NEVER
+/// read from config; an operator constructs [`S3PresignProvider`] (etc.) and
+/// injects it with `Coordinator::with_presign_provider`.
+pub fn default_presign_provider(
+    _cfg: &p2p_config::StorageConfig,
+) -> Option<Arc<dyn PresignProvider>> {
+    Some(Arc::new(FakePresignProvider::new()))
+}
+
+/// HMAC-SHA256(key, msg).
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
+    use hmac::{Hmac, Mac};
+    let mut mac =
+        <Hmac<sha2::Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(msg);
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Lowercase hex SHA-256 of `data`.
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(data);
+    hex::encode(h.finalize())
+}
+
+/// Derive the SigV4 signing key: HMAC chain over date → region → service →
+/// `aws4_request`, seeded with `"AWS4" + secret`.
+fn sigv4_signing_key(secret: &str, datestamp: &str, region: &str, service: &str) -> Vec<u8> {
+    let k_date = hmac_sha256(format!("AWS4{secret}").as_bytes(), datestamp.as_bytes());
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    hmac_sha256(&k_service, b"aws4_request")
+}
+
+/// Format a Unix timestamp as the SigV4 `(amz_date, datestamp)` pair in UTC:
+/// `("YYYYMMDDTHHMMSSZ", "YYYYMMDD")`. Uses Hinnant's civil-from-days algorithm
+/// so no date/time crate dependency is needed.
+fn format_amz_date(epoch_secs: u64) -> (String, String) {
+    let days = (epoch_secs / 86_400) as i64;
+    let rem = epoch_secs % 86_400;
+    let (hh, mm, ss) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let (y, mo, d) = civil_from_days(days);
+    (
+        format!("{y:04}{mo:02}{d:02}T{hh:02}{mm:02}{ss:02}Z"),
+        format!("{y:04}{mo:02}{d:02}"),
+    )
+}
+
+/// Convert days since the Unix epoch (1970-01-01) to a `(year, month, day)`
+/// civil date (Howard Hinnant's public-domain algorithm).
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    (y + if m <= 2 { 1 } else { 0 }, m, d)
+}
+
 /// Encrypted-at-rest object store over local files (Parquet-Modular-Encryption
 /// stand-in). Each object is encrypted with a per-object 32-byte data key.
 pub struct EncryptedObjectStore {
@@ -458,5 +737,84 @@ mod tests {
         let opened = enclave.open_key(&sealed).unwrap();
         let plaintext = store.get("secret.parquet", &opened).unwrap();
         assert_eq!(plaintext, b"sensitive rows");
+    }
+
+    // ---- Presigned credential mode ----
+
+    #[test]
+    fn fake_presign_yields_per_object_scoped_urls() {
+        let p = FakePresignProvider::new();
+        let a = p.presign("s3://bucket/events/2024/a.parquet", 900).unwrap();
+        let b = p.presign("s3://bucket/events/2024/b.parquet", 900).unwrap();
+        // Each URL is HTTPS, scoped to its own object path, and distinct.
+        assert!(a.starts_with("https://"));
+        assert!(a.contains("bucket/events/2024/a.parquet"), "{a}");
+        assert!(b.contains("bucket/events/2024/b.parquet"), "{b}");
+        assert_ne!(a, b, "each object gets a distinct signed URL");
+        // Time-limited bearer artifact: carries an expiry + a signature, no creds.
+        assert!(a.contains("X-Amz-Expires=900"), "{a}");
+        assert!(a.contains("X-Amz-Signature="), "{a}");
+        assert!(!a.contains("secret"), "no credential material in the URL: {a}");
+        // Deterministic per-object signature (URI-only) ⇒ two signs agree.
+        assert_eq!(
+            p.presign("s3://bucket/events/2024/a.parquet", 900).unwrap(),
+            a
+        );
+    }
+
+    #[test]
+    fn s3_presign_sigv4_is_well_formed_and_scoped() {
+        // Virtual-hosted AWS URL, fixed clock for determinism.
+        let p = S3PresignProvider::new("AKIDEXAMPLE", "secretkey", "us-east-1");
+        let url = p
+            .presign_at("s3://my-bucket/data/part-0.parquet", 600, 1_700_000_000)
+            .unwrap();
+        assert!(url.starts_with("https://my-bucket.s3.us-east-1.amazonaws.com/data/part-0.parquet?"));
+        assert!(url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"));
+        assert!(url.contains("X-Amz-Expires=600"));
+        assert!(url.contains("X-Amz-Credential=AKIDEXAMPLE%2F"));
+        assert!(url.contains("X-Amz-SignedHeaders=host"));
+        assert!(url.contains("X-Amz-Signature="));
+        // Deterministic at a fixed clock (the whole point of `presign_at`).
+        assert_eq!(
+            p.presign_at("s3://my-bucket/data/part-0.parquet", 600, 1_700_000_000)
+                .unwrap(),
+            url
+        );
+        // A different object signs differently (per-object scope).
+        let other = p
+            .presign_at("s3://my-bucket/data/part-1.parquet", 600, 1_700_000_000)
+            .unwrap();
+        assert_ne!(other, url);
+    }
+
+    #[test]
+    fn s3_presign_path_style_for_minio_endpoint() {
+        let p = S3PresignProvider::new("minioadmin", "miniosecret", "us-east-1")
+            .with_endpoint("minio.local:9000", false);
+        let url = p
+            .presign_at("s3://warehouse/delta/part.parquet", 300, 1_700_000_000)
+            .unwrap();
+        // Path-style against the endpoint host, plain HTTP (use_ssl=false).
+        assert!(
+            url.starts_with("http://minio.local:9000/warehouse/delta/part.parquet?"),
+            "{url}"
+        );
+        assert!(url.contains("X-Amz-Signature="));
+    }
+
+    #[test]
+    fn default_presign_provider_is_the_fake_no_cloud_signer() {
+        let cfg = p2p_config::StorageConfig::default();
+        let p = default_presign_provider(&cfg).expect("a presigner is always available");
+        assert_eq!(p.provider_id(), "fake-presign");
+    }
+
+    #[test]
+    fn amz_date_formats_known_instant() {
+        // 2023-11-14T22:13:20Z is Unix 1_700_000_000.
+        let (amz, date) = format_amz_date(1_700_000_000);
+        assert_eq!(amz, "20231114T221320Z");
+        assert_eq!(date, "20231114");
     }
 }

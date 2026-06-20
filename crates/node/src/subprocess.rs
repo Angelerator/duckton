@@ -56,6 +56,11 @@ pub struct JobRequest {
     /// verification). Carried in-band so the sandboxed child reads the pinned
     /// object VERSIONS, exactly like the in-process path. `None` ⇒ unpinned.
     pub input_snapshot: Option<InputSnapshot>,
+    /// Presigned credential mode: per-object signed read URLs carried in-band so
+    /// the sandboxed child rewrites the SQL and reads via plain HTTPS with no
+    /// secret, exactly like the in-process path. Empty ⇒ the secret-based path.
+    #[serde(default)]
+    pub signed_inputs: Vec<p2p_proto::SignedInput>,
     /// How often (ms) the child emits a [`JobProgress`] heartbeat while executing
     /// (so stall detection sees liveness under `process_per_job`). `0` ⇒ only the
     /// leading "executing" heartbeat is sent.
@@ -131,6 +136,7 @@ where
         // The pinned input snapshot is carried in-band over the pipe, so the
         // sandboxed child enforces the pin exactly like the in-process path.
         input_snapshot: req.input_snapshot,
+        signed_inputs: req.signed_inputs,
     };
     let lease = ExecLease {
         memory_bytes: req.memory_bytes,
@@ -290,6 +296,7 @@ impl SubprocessEngine {
             credential: ctx.credential.clone(),
             parquet_keys: ctx.parquet_keys.clone(),
             input_snapshot: ctx.input_snapshot.clone(),
+            signed_inputs: ctx.signed_inputs.clone(),
             progress_interval_ms: self.progress_interval_ms,
         };
         let bytes = p2p_proto::to_bytes(&req)
@@ -410,6 +417,7 @@ mod tests {
             credential: None,
             parquet_keys: vec![],
             input_snapshot: Some(snapshot.clone()),
+            signed_inputs: vec![],
             progress_interval_ms: 0,
         };
         write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())
@@ -440,6 +448,7 @@ mod tests {
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
+            signed_inputs: vec![],
             progress_interval_ms: 0,
         };
         let bytes = p2p_proto::to_bytes(&req).unwrap();
@@ -482,6 +491,7 @@ mod tests {
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
+            signed_inputs: vec![],
             progress_interval_ms: 0,
         };
         write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())
@@ -515,6 +525,7 @@ mod tests {
             credential: None,
             parquet_keys: vec![],
             input_snapshot: None,
+            signed_inputs: vec![],
             progress_interval_ms: 20,
         };
         write_frame(&mut client, &p2p_proto::to_bytes(&req).unwrap())

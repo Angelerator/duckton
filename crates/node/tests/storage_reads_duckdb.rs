@@ -140,6 +140,7 @@ async fn parquet_modular_encryption_roundtrip() {
         credential: None,
         parquet_keys: vec![(key_name.to_string(), key_bytes.clone())],
         input_snapshot: None,
+        signed_inputs: Vec::new(),
     };
 
     // Write an encrypted Parquet file (footer + columns encrypted with the key).
@@ -221,6 +222,7 @@ async fn scoped_s3_secret_installs_when_httpfs_available() {
         }),
         parquet_keys: Vec::new(),
         input_snapshot: None,
+        signed_inputs: Vec::new(),
     };
 
     // List secrets — succeeds only if httpfs registered the s3 secret type and
@@ -315,6 +317,7 @@ async fn sealed_minio_credential_installs_scoped_secret() {
         credential: Some(scoped),
         parquet_keys: Vec::new(),
         input_snapshot: None,
+        signed_inputs: Vec::new(),
     };
 
     let rs = eng
@@ -338,6 +341,56 @@ async fn sealed_minio_credential_installs_scoped_secret() {
                  ({e}). A live MinIO read needs httpfs (+ delta) extensions + a running MinIO."
             );
         }
+    }
+}
+
+/// Presigned credential mode: the engine REWRITES the SQL's pinned object
+/// reference to the requester-signed URL carried in `JobContext::signed_inputs`
+/// and reads it with NO `CREATE SECRET` installed. To exercise the rewrite +
+/// no-secret path fully offline (no live cloud / no httpfs), the "signed URL"
+/// here points at a local fixture inside `allowed_directories`; the assertion is
+/// that the engine read THROUGH the rewritten reference AND that
+/// `duckdb_secrets()` stays empty (zero reusable secret on the host).
+#[tokio::test]
+async fn presigned_inputs_rewrite_sql_and_install_no_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("part-0.parquet");
+    let cfg = local_scoped_cfg(dir.path().to_str().unwrap());
+    let eng = DuckDbEngine::from_storage_config(&cfg).unwrap();
+
+    // Materialize a local Parquet fixture (allowed dir ⇒ COPY TO permitted).
+    let copy = format!(
+        "COPY (SELECT i FROM generate_series(1,7) t(i)) TO '{}' (FORMAT parquet)",
+        real.display()
+    );
+    eng.execute(&copy, lease()).await.unwrap();
+
+    // The job SQL references the ORIGINAL (s3) object; the requester signed it to
+    // a URL the worker reads directly. No credential is attached (presigned mode).
+    let original_uri = "s3://acme-lake/orders/part-0.parquet";
+    let ctx = JobContext {
+        credential: None,
+        parquet_keys: Vec::new(),
+        input_snapshot: None,
+        signed_inputs: vec![p2p_proto::SignedInput {
+            uri: original_uri.to_string(),
+            url: real.display().to_string(),
+        }],
+    };
+    let sql = format!("SELECT count(*) AS c FROM read_parquet('{original_uri}')");
+    let rs = eng.execute_job(&sql, lease(), &ctx).await.unwrap();
+    assert_eq!(rs.rows[0][0], Value::Int(7), "engine read via the signed URL");
+
+    // The presigned path installs NO secret: duckdb_secrets() is empty.
+    let secrets = eng
+        .execute_job("SELECT count(*) AS n FROM duckdb_secrets()", lease(), &ctx)
+        .await;
+    if let Ok(rs) = secrets {
+        assert_eq!(
+            rs.rows[0][0],
+            Value::Int(0),
+            "presigned mode must install no secret"
+        );
     }
 }
 

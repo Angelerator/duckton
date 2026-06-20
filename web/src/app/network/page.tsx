@@ -4,10 +4,14 @@ import {
   Cable,
   Cpu,
   Fingerprint,
+  Lock,
   Radio,
   Route,
+  Scale,
   Server,
+  ShieldCheck,
   Signal,
+  Split,
   Waypoints,
   Wifi,
 } from "lucide-react";
@@ -85,6 +89,28 @@ type DiscoveryCfg = {
 const discovery = (config.value.discovery ?? {}) as DiscoveryCfg;
 const nat = discovery.nat ?? {};
 const discoveryMode = discovery.mode ?? "kademlia+gossip";
+
+/* ---- closure posture + routing/failover (real GridConfig) ---------------- */
+const cfgStr = (v: unknown, d = ""): string => (typeof v === "string" ? v : d);
+const cfgNum = (v: unknown, d = 0): number => (typeof v === "number" ? v : d);
+const cfgBool = (v: unknown): boolean => v === true;
+
+const security = (config.value.security ?? {}) as Record<string, unknown>;
+const membership = (config.value.membership ?? {}) as Record<string, unknown>;
+const securityMode = cfgStr(security.mode, "public");
+const isPrivate = securityMode === "private";
+const groupEnforcement = cfgStr(membership.group_enforcement, "soft");
+const memberNetworks = Array.isArray(membership.networks)
+  ? (membership.networks as unknown[]).filter((x): x is string => typeof x === "string")
+  : [];
+
+const planner = (config.value.planner ?? {}) as Record<string, unknown>;
+const scheduler = (config.value.scheduler ?? {}) as Record<string, unknown>;
+const plannerPrefer = cfgStr(planner.prefer, "auto");
+const sizeThresholdBytes = cfgNum(planner.size_threshold_bytes);
+const ramFraction = cfgNum(planner.ram_fraction);
+const localExecution = cfgBool(planner.local_execution_enabled);
+const maxRetries = cfgNum(scheduler.max_retries);
 
 /* a real worker whose gossiped capability record we render verbatim */
 const sample = nodes.find((n) => n.attestation === "L2") ?? nodes[0];
@@ -205,6 +231,115 @@ export default function NetworkPage() {
 
       {/* Circular node-communication graph (plotly) */}
       <CommGraphCard />
+
+      {/* Closure posture + smart routing / failover */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <div className="flex items-start justify-between gap-2">
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="size-4 text-primary" /> Closure posture
+              </CardTitle>
+              <Badge variant={isPrivate ? "warn" : "muted"} className="font-mono">
+                {securityMode}
+              </Badge>
+            </div>
+            <CardDescription>
+              The single <span className="font-mono">[security].mode</span> switch between the open
+              public grid and a fully closed company / enterprise grid.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <dl>
+              <KV label="mode">
+                <Badge variant={isPrivate ? "warn" : "muted"} className="font-mono">
+                  {securityMode}
+                </Badge>
+              </KV>
+              <KV label="group enforcement">
+                <span className="font-mono">{groupEnforcement}</span>
+              </KV>
+              <KV label="networks">
+                <span className="font-mono">{memberNetworks.join(", ") || "default"}</span>
+              </KV>
+            </dl>
+            <div className="space-y-1.5 text-xs">
+              {[
+                "allowlist mTLS — outsiders refused at the transport layer",
+                "cryptographic group tokens (never soft declared labels)",
+                "fail-closed discovery — drop unknown-labeled peers",
+                "default-deny requester roster — serve only roster members",
+              ].map((line) => (
+                <div key={line} className="flex items-start gap-2">
+                  <Lock
+                    className={`mt-0.5 size-3 shrink-0 ${
+                      isPrivate ? "text-[var(--warn)]" : "text-muted-foreground"
+                    }`}
+                  />
+                  <span className="text-muted-foreground">{line}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-muted-foreground border-t pt-2 text-xs">
+              {isPrivate
+                ? "PRIVATE: the closed pool is enforced; a misconfigured node fails to start (fail-closed)."
+                : "PUBLIC (this run): zero-config grid. Setting mode = private requires an allowlist roster, token group enforcement, and an explicit non-default network — else the node refuses to start."}{" "}
+              The requester↔TLS-peer identity binding (an offer&apos;s requester_id must equal the
+              authenticated mTLS peer) is <span className="text-foreground">always on</span> in both
+              modes.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Split className="size-4 text-primary" /> Smart routing &amp; failover
+            </CardTitle>
+            <CardDescription>
+              A pre-flight, metadata-only size estimate picks local-vs-remote automatically, and
+              over-capacity jobs reroute to bigger hosts instead of failing.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <dl>
+              <KV label="prefer">
+                <Badge variant="info" className="font-mono">
+                  {plannerPrefer}
+                </Badge>
+              </KV>
+              <KV label="local size threshold">{bytes(sizeThresholdBytes, 0)}</KV>
+              <KV label="local RAM fraction">{Math.round(ramFraction * 100)}%</KV>
+              <KV label="local execution">
+                <Badge variant={localExecution ? "ok" : "muted"}>
+                  {localExecution ? "enabled" : "remote-only"}
+                </Badge>
+              </KV>
+              <KV label="re-dispatch retries">
+                {maxRetries === 0 ? "unlimited" : maxRetries}
+              </KV>
+            </dl>
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-start gap-2">
+                <Route className="text-primary mt-0.5 size-3 shrink-0" />
+                <span className="text-muted-foreground">
+                  Size-based routing: a job estimated to fit runs FREE in the node&apos;s own
+                  locked-down DuckDB; one that exceeds the local threshold/headroom is dispatched to
+                  the grid.
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Scale className="text-primary mt-0.5 size-3 shrink-0" />
+                <span className="text-muted-foreground">
+                  Robust failover: a &ldquo;too big&rdquo; / OOM job reroutes to higher-capacity hosts
+                  (excluding only failed nodes); only when none remain does it return{" "}
+                  <span className="font-mono">ExceedsCapacity</span>.
+                </span>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Swarm */}
       <Card>

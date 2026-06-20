@@ -2,11 +2,14 @@ import type { Metadata } from "next";
 import {
   BadgeCheck,
   Ban,
+  Database,
   Eye,
   Fingerprint,
+  Gauge,
   GitCommit,
   Hash,
   Lock,
+  Route,
   ScrollText,
   ShieldCheck,
   Users,
@@ -41,7 +44,7 @@ import {
 } from "@/components/common/atoms";
 import { CopyId } from "@/components/common/copy";
 import { Explainer, InfoHint } from "@/components/common/explain";
-import { flagged, receipts, trust, workers } from "@/lib/data";
+import { config, flagged, receipts, trust, workers } from "@/lib/data";
 import { ago, durationSecs, pct } from "@/lib/format";
 import { TrustPlots } from "./plots";
 import type { AttestationLevel, FaultClass } from "@/lib/types";
@@ -54,6 +57,22 @@ export const metadata: Metadata = {
 /* -------------------------------------------------------------- derivations */
 
 const { weights } = trust; // real α/β/γ/δ from the running trust engine
+
+// Real `economics.ranking` from the live config: the composite SELECTION score
+// (distinct from the trust soft-score above). Read defensively.
+const rankingCfg = (((config.value.economics ?? {}) as Record<string, unknown>)
+  .ranking ?? {}) as Record<string, unknown>;
+const rnum = (v: unknown, d = 0): number => (typeof v === "number" ? v : d);
+const rankingTerms: { label: string; weight: number; note: string }[] = [
+  { label: "quality", weight: rnum(rankingCfg.w_quality), note: "success · latency · throughput · completion" },
+  { label: "stake (reliability-gated)", weight: rnum(rankingCfg.w_stake), note: "amplifies already-reliable hosts only" },
+  { label: "price", weight: rnum(rankingCfg.w_price), note: "cheaper bids rank higher" },
+  { label: "latency", weight: rnum(rankingCfg.w_latency), note: "counterparty-MEASURED commit speed (anti-game)" },
+  { label: "throughput", weight: rnum(rankingCfg.w_throughput), note: "counterparty-MEASURED bytes/sec (anti-game)" },
+  { label: "capability", weight: rnum(rankingCfg.capability_weight), note: "proven ability to handle heavy work" },
+];
+const stakeReliabilityFloor = rnum(rankingCfg.stake_reliability_floor);
+const newcomerCeiling = rnum(rankingCfg.newcomer_trust_ceiling, 1);
 
 const faultBadge: Record<FaultClass, { v: "destructive" | "warn" | "muted"; t: string }> = {
   provider: { v: "destructive", t: "provider" },
@@ -466,6 +485,57 @@ export default function TrustPage() {
         </CardContent>
       </Card>
 
+      {/* Selection score — composite ranking (perf + capability + gated stake) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Gauge className="size-4 text-primary" /> Selection score &amp; routing
+          </CardTitle>
+          <CardDescription>
+            Beyond the hard gates and trust above, eligible hosts are ranked by a composite
+            selection score. Performance and capability terms are driven by{" "}
+            <span className="text-foreground">counterparty-measured</span> signals (never
+            self-reported ETA), so a host genuinely faster / higher-throughput / proven to handle
+            heavy work wins dispatch more often. Real <span className="font-mono">economics.ranking</span> weights:
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {rankingTerms.map((t) => (
+            <div key={t.label} className="grid grid-cols-12 items-center gap-3">
+              <div className="col-span-12 sm:col-span-4">
+                <div className="text-sm font-medium">{t.label}</div>
+                <div className="text-muted-foreground text-xs">{t.note}</div>
+              </div>
+              <div className="col-span-8 sm:col-span-5">
+                <div className="bg-secondary h-1.5 w-full overflow-hidden rounded-full">
+                  <div
+                    className="bg-primary h-full rounded-full"
+                    style={{ width: `${Math.min(100, t.weight * 100)}%` }}
+                  />
+                </div>
+              </div>
+              <div className="text-muted-foreground col-span-4 text-right font-mono text-xs sm:col-span-3">
+                w = {t.weight.toFixed(2)}
+              </div>
+            </div>
+          ))}
+          <Separator />
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Badge variant="muted" className="font-mono">
+              stake_reliability_floor = {stakeReliabilityFloor.toFixed(2)}
+            </Badge>
+            <Badge variant="muted" className="font-mono">
+              newcomer_trust_ceiling = {newcomerCeiling.toFixed(2)}
+            </Badge>
+            <span className="text-muted-foreground">
+              The stake term is gated on verified-success rate, and brand-new identities are capped
+              below the top ranks until they build real history — so neither stake nor a lucky
+              streak can buy selection.
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Verification */}
       <Card>
         <CardHeader>
@@ -616,6 +686,28 @@ export default function TrustPage() {
                   Inject queries whose answer is already known. A worker that returns the wrong hash
                   is marked Incorrect and slashed — exactly what happened to the flagged providers
                   below.
+                </p>
+              </div>
+            </div>
+
+            {/* 5 — Source-data-drift verification */}
+            <div className="bg-card flex gap-3 rounded-lg border p-4 sm:col-span-2">
+              <div className="bg-primary/10 text-primary flex size-8 shrink-0 items-center justify-center rounded-lg [&_svg]:size-4">
+                <Database />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <span className="text-muted-foreground/60 font-mono text-xs">5</span>
+                  Source-data-drift verification
+                  <InfoHint text="Workers must agree on the SAME input, not just the same query — quorum is fingerprint-aware so a stale or swapped source can't silently win." />
+                </div>
+                <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
+                  Redundant execution only proves agreement if every racer read the{" "}
+                  <span className="text-foreground">same source data</span>. The requester pins an
+                  input snapshot (<span className="font-mono">input_snapshot</span> on the dispatch)
+                  and each worker returns an <span className="font-mono">input_fingerprint</span>; the
+                  quorum is fingerprint-aware, so results computed over a drifted, stale, or swapped
+                  source are partitioned out instead of contaminating the agreed hash.
                 </p>
               </div>
             </div>

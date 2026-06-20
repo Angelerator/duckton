@@ -26,6 +26,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::engine::QueryEngine;
 use crate::estimator::WorkingSetEstimate;
+use crate::governor::{CapacityGovernor, GovernorLease, Role};
 
 /// Where the planner decided a query should run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,15 +206,63 @@ pub struct LocalExecutor {
     used_bytes: AtomicU64,
     slots: Arc<Semaphore>,
     max_jobs: usize,
+    /// Threads each local job reserves from the process-wide governor.
+    job_threads: u32,
+    /// Floor applied to each reservation's byte count so a no-/tiny-estimate
+    /// local job still declares a representative footprint to the governor and
+    /// the local-budget CAS (otherwise own queries would account ~0 against the
+    /// process-wide cap). `0` for the standalone executor (no floor → today's
+    /// accounting, used by unit tests).
+    min_reservation_bytes: u64,
+    /// Process-wide capacity governor shared with the worker-side
+    /// [`crate::admission::AdmissionController`]. When set, each local
+    /// reservation also claims from the governor so own + served work cannot
+    /// jointly oversubscribe the machine. `None` ⇒ standalone (today's behavior;
+    /// used by unit tests and single-component setups).
+    governor: Option<Arc<CapacityGovernor>>,
 }
 
 impl LocalExecutor {
-    /// Build from the engine, the node's total memory budget (bytes) and the
-    /// planner config (`ram_fraction` = alpha, `max_concurrent_local_jobs`).
+    /// Build a standalone executor (no process-wide governor) from the engine,
+    /// the node's total memory budget (bytes) and the planner config
+    /// (`ram_fraction` = alpha, `max_concurrent_local_jobs`).
     pub fn new(
         engine: Arc<dyn QueryEngine>,
         budget_memory_bytes: u64,
         cfg: &PlannerConfig,
+    ) -> Arc<Self> {
+        Self::build(engine, budget_memory_bytes, cfg, 1, 0, None)
+    }
+
+    /// Build an executor wired to the shared process-wide [`CapacityGovernor`]
+    /// (the dual-role path): each local reservation also reserves `job_threads`
+    /// and at least `per_job_memory_bytes` from the governor, so own queries are
+    /// accounted against the same hard cap as served jobs.
+    pub fn governed(
+        engine: Arc<dyn QueryEngine>,
+        budget_memory_bytes: u64,
+        cfg: &PlannerConfig,
+        job_threads: u32,
+        per_job_memory_bytes: u64,
+        governor: Arc<CapacityGovernor>,
+    ) -> Arc<Self> {
+        Self::build(
+            engine,
+            budget_memory_bytes,
+            cfg,
+            job_threads,
+            per_job_memory_bytes,
+            Some(governor),
+        )
+    }
+
+    fn build(
+        engine: Arc<dyn QueryEngine>,
+        budget_memory_bytes: u64,
+        cfg: &PlannerConfig,
+        job_threads: u32,
+        min_reservation_bytes: u64,
+        governor: Option<Arc<CapacityGovernor>>,
     ) -> Arc<Self> {
         let local_budget_bytes = ((budget_memory_bytes as f64) * cfg.ram_fraction) as u64;
         let max_jobs = cfg.max_concurrent_local_jobs.max(1);
@@ -223,6 +272,9 @@ impl LocalExecutor {
             used_bytes: AtomicU64::new(0),
             slots: Arc::new(Semaphore::new(max_jobs)),
             max_jobs,
+            job_threads: job_threads.max(1),
+            min_reservation_bytes,
+            governor,
         })
     }
 
@@ -251,25 +303,69 @@ impl LocalExecutor {
 
     /// Reserve a local execution slot + `reserve_bytes` of headroom. Returns a
     /// [`LocalReservation`] that releases both on drop, or `None` if no slot is
-    /// free (locally saturated). Memory over-reservation is allowed up to the
-    /// spill tolerance enforced by the planner; the reservation itself just
-    /// tracks accounting so concurrent jobs see reduced headroom.
+    /// free (locally saturated), if the reservation would exceed the local
+    /// budget, or if the shared [`CapacityGovernor`] is at capacity.
+    ///
+    /// The memory reservation is committed with a hard compare-and-swap against
+    /// `local_budget_bytes` (mirroring the worker-side admission CAS), so racing
+    /// concurrent local jobs can never over-account past the local budget — the
+    /// planner pre-check alone could let two jobs that each fit individually both
+    /// commit and oversubscribe.
     pub fn reserve(self: &Arc<Self>, reserve_bytes: u64) -> Option<LocalReservation> {
+        let reserve_bytes = reserve_bytes.max(self.min_reservation_bytes);
         let permit = Arc::clone(&self.slots).try_acquire_owned().ok()?;
-        self.used_bytes.fetch_add(reserve_bytes, Ordering::AcqRel);
+
+        // Hard CAS against the local budget (so concurrent local jobs can't
+        // over-account). On failure the slot permit is released by `permit`'s
+        // drop and the job is routed to the grid.
+        let mut cur = self.used_bytes.load(Ordering::Relaxed);
+        loop {
+            let next = cur.checked_add(reserve_bytes)?;
+            if next > self.local_budget_bytes {
+                return None;
+            }
+            match self.used_bytes.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => cur = observed,
+            }
+        }
+
+        // Process-wide governor: own work shares the hard machine cap with
+        // served jobs. If the governor is at capacity, undo the local accounting
+        // and route to the grid.
+        let governor_lease = match &self.governor {
+            Some(g) => match g.try_reserve(Role::Local, reserve_bytes, self.job_threads) {
+                Some(lease) => Some(lease),
+                None => {
+                    self.used_bytes.fetch_sub(reserve_bytes, Ordering::AcqRel);
+                    return None;
+                }
+            },
+            None => None,
+        };
+
         Some(LocalReservation {
             owner: Arc::clone(self),
             reserved_bytes: reserve_bytes,
             _permit: permit,
+            _governor_lease: governor_lease,
         })
     }
 }
 
-/// A held local execution reservation; releases its RAM + slot on drop.
+/// A held local execution reservation; releases its RAM + slot (and the shared
+/// governor reservation, if any) on drop.
 pub struct LocalReservation {
     owner: Arc<LocalExecutor>,
     reserved_bytes: u64,
     _permit: OwnedSemaphorePermit,
+    /// Released first (before the local accounting below) on drop.
+    _governor_lease: Option<GovernorLease>,
 }
 
 impl Drop for LocalReservation {
@@ -500,6 +596,63 @@ mod tests {
         drop(r1);
         assert_eq!(ex.headroom_bytes(), 400);
         assert!(ex.slot_available());
+    }
+
+    #[test]
+    fn reserve_cas_rejects_over_budget_local_reservation() {
+        // Gap #3: a reservation that would push `used_bytes` past the local
+        // budget is rejected by the hard CAS even when a slot is free, so racing
+        // concurrent local jobs can't over-account. local_budget = 0.5 * 1000.
+        let engine = Arc::new(crate::engine::MockEngine::deterministic()) as Arc<dyn QueryEngine>;
+        let mut c = cfg();
+        c.ram_fraction = 0.5;
+        c.max_concurrent_local_jobs = 8; // slots are NOT the binding constraint here
+        let ex = LocalExecutor::new(engine, 1_000, &c);
+        assert_eq!(ex.local_budget_bytes(), 500);
+
+        let _r = ex.reserve(400).expect("400 <= 500 fits");
+        // A free slot remains, but 400 + 200 > 500 ⇒ the CAS rejects.
+        assert!(ex.slot_available());
+        assert!(ex.reserve(200).is_none(), "over-budget reservation must be rejected");
+        // A reservation that fits the remaining 100 still succeeds.
+        let _r2 = ex.reserve(100).expect("400 + 100 == 500 fits exactly");
+        assert_eq!(ex.headroom_bytes(), 0);
+    }
+
+    #[test]
+    fn governed_reserve_claims_from_shared_governor_and_releases_on_drop() {
+        use crate::governor::{CapacityGovernor, Role};
+        use p2p_config::{BudgetConfig, DataClassCfg};
+
+        let budget = BudgetConfig {
+            memory_bytes: 1000,
+            threads: 4,
+            max_jobs: 4,
+            per_job_memory_bytes: 100,
+            per_job_threads: 1,
+            local_reserved_fraction: 0.0,
+            data_classes: vec![DataClassCfg::Public],
+        };
+        let governor = CapacityGovernor::new(&budget, 4, 0.0, true);
+        let engine = Arc::new(crate::engine::MockEngine::deterministic()) as Arc<dyn QueryEngine>;
+        let mut c = cfg();
+        c.ram_fraction = 1.0; // local budget == full 1000 (governor is the cap)
+        c.max_concurrent_local_jobs = 4;
+        let ex = LocalExecutor::governed(engine, 1000, &c, 1, 0, Arc::clone(&governor));
+
+        // Pre-occupy 800 of the governor on the SERVED role.
+        let served = governor.try_reserve(Role::Served, 800, 1).unwrap();
+        // Local fits in the remaining 200 of the shared pool…
+        let r = ex.reserve(200).expect("200 fits the remaining governor headroom");
+        assert_eq!(governor.free_memory(), 0);
+        // …but a further local reservation is refused by the governor even though
+        // the LOCAL budget (1000) would allow it — the shared cap binds.
+        assert!(ex.reserve(1).is_none());
+        // Dropping the local reservation returns its bytes to the shared pool.
+        drop(r);
+        assert_eq!(governor.free_memory(), 200);
+        drop(served);
+        assert_eq!(governor.free_memory(), 1000);
     }
 
     #[test]

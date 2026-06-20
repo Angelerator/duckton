@@ -94,36 +94,35 @@ agreeing wallet verifier, and **refunds the remainder to the requester**. A
 15% fee and 5% commission are *still* collected, so the platform and verifiers
 earn on every paid job regardless of the node mix.
 
-The flows below were **broadcast live on TON testnet** and read back from chain.
-Amounts are scaled to **1/10** of the prior full-amount run (base = 0.004 TON) for
-a low-cost re-verification; the **split percentages (15% / 5%) are identical**. The
-full-amount proof — all seven scenarios incl. the complete staking
-deposit → 1:1 receipt mint → unbond lifecycle and every negative — is in
-[**docs/HOW_IT_WORKS.md**](docs/HOW_IT_WORKS.md).
+Every scenario below — **including the full staking deposit → 1:1 receipt-mint →
+unbond lifecycle and all three negatives** — was **freshly broadcast on TON testnet
+in a single run** and read back from chain. Paid-split scenarios use base =
+`0.004 TON`, staking uses `0.1 TON`, and the negatives use base = `0.04 TON`; the
+**split percentages (15% / 5%) are enforced on-chain** regardless of scale. Full
+per-scenario addresses, tx hashes and balance deltas are captured in
+[`ton/deployments/readme_proof.testnet.env`](ton/deployments/readme_proof.testnet.env).
 
 Each escrow permanently retains `MIN_TONS_FOR_STORAGE` = **0.05 TON** as a storage
 reserve (funded from the deploy buffer, not from `B`), and every payout leg pays a
 tiny per-message storage rent (~0.00006 TON) on landing — so a recipient's balance
 delta is its gross leg minus that rent, and the numbers reconcile exactly.
 
-| # | Scenario | Real captured money flow (TON) | On-chain |
+| # | Scenario | Real captured on-chain result | On-chain |
 |---|---|---|---|
-| 1 | **Paid, wallet winner** | winner `+0.003941` (base 0.004) · treasury `+0.000541` (15%) · verifier `+0.000141` (5%) · requester refund `0.029048` · escrow keeps `0.05` reserve | [escrow](https://testnet.tonviewer.com/kQAu9lXxoz85k_Vybi0gc7L-qOaha2LbWl9pncoL5ZCNVaYz) |
-| 2 | **Paid, free (walletless) winner** | winner `0` · base `0.004` refunded to requester · treasury `+0.000548` (15%, still collected) · verifier `+0.000148` (5%) · escrow keeps `0.05` | [escrow](https://testnet.tonviewer.com/kQA7gKDku9jO_ejMabspoXraox9a1U9zXLg3wnavlIo9KCBy) |
-| 4 | **Staking 7-day lock** | immediate `StakeWithdraw` → on-chain abort `exit_code=203 COOLDOWN_NOT_ELAPSED`; `readyAt` = `unbondingAt + 604800` = **exactly 7 days**; receipt jetton `0.1` minted 1:1 and transfer-locked; vault state unchanged | [vault](https://testnet.tonviewer.com/kQAYPc8qAo5YUKpgcTANIAi1umHrEhrp2nG_Lnkycvo0G29q) |
+| 1 | **Paid, wallet winner** | winner `+0.003942` (base 0.004) · treasury `+0.000542` (**15%**) · verifier `+0.000142` (**5%**) · requester refund `0.044048` · escrow keeps `0.05` reserve · zero bounces | [escrow](https://testnet.tonviewer.com/kQCm-5xu8NcHbU48bq4PjuXkK1kh1krJsrlSLaDryV7FTqtO) |
+| 2 | **Paid, free (walletless) winner** | winner `0` · base `0.004` refunded to requester · treasury `+0.000548` (**15%, still collected**) · verifier `+0.000148` (**5%**) · escrow keeps `0.05` | [escrow](https://testnet.tonviewer.com/kQDPZOxVA-tUyL8Vj6DzzVM_q4_iAT1qNEqUpgIwxUXU-Lv0) |
+| 3 | **Reject: wrong platform fee** | settle with `platformFee ≠ base×15%` → settle aborts on-chain `exit_code=285 FEE_MISMATCH`; escrow stays unsettled | [escrow](https://testnet.tonviewer.com/kQBXFEcTCNbFKBo0wbfD-pDAXRD3m9372A2epS8WoSYFCM-m) |
+| 4 | **Reject: under-funded escrow** | `B = 0.01 < winner + 15% + 5%` → settle aborts on-chain `exit_code=226 PAYOUT_EXCEEDS_ESCROW` (on-chain twin of the off-chain coverage preflight) | [escrow](https://testnet.tonviewer.com/kQDvzlLEtgpbAHjSG9SkCAWAUZLSEMoZHK2ulmI_6cdA2KEk) |
+| 5 | **Reject: mismatched treasury** | escrow `get_fee_recipient` = requester `≠ GlobalParams.fee_recipient` (treasury) → honest coordinator refuses (`SettleError::TreasuryMismatch`); never funded/settled | [escrow](https://testnet.tonviewer.com/kQCcmrwdCsjU0vvjQOcG7j38oIuUuq_YifTvWTOQfyZ8_8oc) |
+| 6 | **Staking: deposit → 1:1 receipt mint** | deposit `0.1` → **Duckton receipt jetton `0.1` minted 1:1** to the node (transfer-locked); vault `staked` 0→`0.1`, `eligible` false→**true** | [vault](https://testnet.tonviewer.com/kQC82rUQhAghIclYjBPSQIX0XnIB8G4Zlj3nfbFtY77DTe76) |
+| 7 | **Staking: 7-day unbond lock** | unbond sets `readyAt = unbondingAt + 604800` = **exactly 7 days**; an immediate `StakeWithdraw` aborts on-chain `exit_code=203 COOLDOWN_NOT_ELAPSED` and the stake stays locked | [vault](https://testnet.tonviewer.com/kQC82rUQhAghIclYjBPSQIX0XnIB8G4Zlj3nfbFtY77DTe76) |
 
 Verified live and reused (not redeployed): the
 [`GlobalParams`](https://testnet.tonviewer.com/kQC_cuafJQo9cycuivJfPHE5XGMrvZUP-1sN1Kq0jtZg3dna)
 singleton (`platform_fee_bps=1500`, `participation_commission_bps=500`,
-`fee_recipient` = treasury). Full per-scenario addresses, tx hashes and balance
-deltas are captured in `ton/deployments/readme_proof.testnet.env`.
-
-Proven at **full amounts** in the prior run (not re-broadcast here, to save gas) —
-see [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md): the **wrong-fee** reject
-(`exit_code=285 FEE_MISMATCH`), the **under-funded** reject
-(`exit_code=226 PAYOUT_EXCEEDS_ESCROW`), the **mismatched-treasury** honest-
-coordinator refusal (escrow `get_fee_recipient` ≠ `GlobalParams.fee_recipient`),
-and the full staking deposit → receipt-mint → unbond lifecycle.
+`fee_recipient` = treasury), read back via `get_fee_recipient` /
+`get_platform_fee_bps`. The end-to-end narrative is in
+[docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
 
 ## Workspace layout
 

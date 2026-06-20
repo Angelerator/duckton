@@ -38,9 +38,14 @@ use p2p_trust::InMemoryTrustStore;
 use crate::admission::AdmissionController;
 use crate::antiabuse::{Blocklist, RateLimiter};
 use crate::coordinator::{Coordinator, CoordinatorError, QueryOutcome};
+use crate::governor::CapacityGovernor;
 use crate::discovery::{Candidate, StaticDiscovery};
 use crate::engine::QueryEngine;
-use crate::estimator::WorkingSetEstimate;
+use crate::estimator::{
+    csv_metadata, delta_metadata, estimate_table_files, estimate_text, estimate_working_set,
+    has_data_source, ndjson_metadata, EstimateParams, Projection, QueryShape, ScanEstimate,
+    WorkingSetEstimate,
+};
 use crate::planner::{DefaultPlanner, LocalExecutor, LocalOrRemotePlanner};
 use crate::worker::{Worker, WorkerParams};
 
@@ -84,6 +89,12 @@ pub struct Node {
     has_grid_targets: bool,
     /// Whether a wallet / stake registry is wired (gates `payment => 'paid'`).
     has_wallet: bool,
+    /// Process-wide capacity governor shared between this node's OWN local
+    /// execution path (in the coordinator's `LocalExecutor`) and the host
+    /// [`Worker`]'s `AdmissionController`. It is the single hard machine cap that
+    /// stops own + served work from jointly oversubscribing RAM / threads / job
+    /// slots when the node plays both roles.
+    governor: Arc<CapacityGovernor>,
 }
 
 impl Node {
@@ -132,7 +143,29 @@ impl Node {
         // Retain a handle to the engine so the node can also host (worker) with
         // the same engine; `LocalExecutor` takes its own clone for local exec.
         let engine_for_host = Arc::clone(&engine);
-        let local = LocalExecutor::new(engine, config.budget.memory_bytes, &config.planner);
+
+        // Process-wide capacity governor: the single hard machine cap shared by
+        // the node's OWN local execution and the jobs it SERVES as a host, so the
+        // two roles can never jointly oversubscribe RAM / threads / job slots.
+        // `local_active` keys off whether this node will ever run its own
+        // queries: a remote-only node (local execution disabled) gets the full
+        // budget for serving, exactly as before (back-compat).
+        let local_active = config.planner.enabled && config.planner.local_execution_enabled;
+        let governor = CapacityGovernor::new(
+            &config.budget,
+            config.limits.worker_pool_size,
+            config.budget.local_reserved_fraction,
+            local_active,
+        );
+
+        let local = LocalExecutor::governed(
+            engine,
+            config.budget.memory_bytes,
+            &config.planner,
+            config.budget.per_job_threads,
+            config.budget.per_job_memory_bytes,
+            Arc::clone(&governor),
+        );
         let planner: Arc<dyn LocalOrRemotePlanner> =
             Arc::new(DefaultPlanner::new(config.planner.clone()));
 
@@ -156,16 +189,33 @@ impl Node {
             coordinator = coordinator.with_blocklist(blocklist);
         }
 
-        // Sealed/scoped credential delivery (architecture §9.2): only when the
-        // operator opts into remote object-store reads (`enable_remote_access`) do
-        // we mint per-job credentials — so a default node (local data, egress off)
-        // attaches no credential, exactly as before. The cloud issuers are the
-        // crate's shaped-but-fake providers (swap in real STS/SAS for production).
+        // Per-job storage access (architecture §9.2): only when the operator opts
+        // into remote object-store reads (`enable_remote_access`) do we wire an
+        // access-granting provider — so a default node (local data, egress off)
+        // attaches nothing, exactly as before. The mode selects HOW the worker is
+        // granted read access:
+        //  * presigned (default open grid): the requester signs per-object HTTPS
+        //    URLs so commodity workers read with NO secret on the host.
+        //  * scoped_secret / sealed: mint a short-lived scoped credential the
+        //    worker turns into a `CREATE SECRET` (cloud issuers are the crate's
+        //    shaped-but-fake providers; swap in real STS/SAS for production).
         if config.storage.enable_remote_access {
-            if let Some(provider) =
-                crate::storage::default_credential_provider(&config.storage)
-            {
-                coordinator = coordinator.with_credential_provider(provider);
+            match config.storage.credential_mode {
+                p2p_config::CredentialMode::Presigned => {
+                    if let Some(provider) =
+                        crate::storage::default_presign_provider(&config.storage)
+                    {
+                        coordinator = coordinator.with_presign_provider(provider);
+                    }
+                }
+                p2p_config::CredentialMode::ScopedSecret
+                | p2p_config::CredentialMode::Sealed => {
+                    if let Some(provider) =
+                        crate::storage::default_credential_provider(&config.storage)
+                    {
+                        coordinator = coordinator.with_credential_provider(provider);
+                    }
+                }
             }
         }
 
@@ -175,6 +225,7 @@ impl Node {
             engine: engine_for_host,
             has_grid_targets,
             has_wallet: false,
+            governor,
         })
     }
 
@@ -331,7 +382,11 @@ impl Node {
     /// without standing up a QUIC accept loop.
     pub(crate) fn host_worker(&self) -> Worker {
         let transport = self.coordinator.transport();
-        let admission = AdmissionController::new(&self.config.budget);
+        // Share the process-wide governor so SERVED jobs reserve from the same
+        // hard cap as the node's OWN local execution (no dual-role
+        // oversubscription).
+        let admission =
+            AdmissionController::governed(&self.config.budget, Arc::clone(&self.governor));
         let params = WorkerParams::from_config(&self.config);
         let mut worker = Worker::new(
             transport,
@@ -363,11 +418,15 @@ impl Node {
             };
             worker = worker.with_antiabuse(&self.config, blocklist, rate_limiter);
         }
-        // OS-level execution sandbox policy (architecture §9.4). A configured
-        // `[sandbox]` backend + egress allow-list applies on the live host; the
-        // hard, kill-the-job-not-the-node enforcement is the process-per-job
-        // `SubprocessEngine` path wired in `host_engine`.
-        worker = worker.with_sandbox(&self.config);
+        // OS-level execution sandbox policy (architecture §9.4). The HOST-serving
+        // path is secure-by-default (`host_sandbox()` returns the OS sandbox +
+        // process-per-job posture) while the requester's OWN self-run path is
+        // never sandboxed. A configured `[sandbox]` backend + egress allow-list
+        // applies on the live host; the hard, kill-the-job-not-the-node
+        // enforcement is the process-per-job `SubprocessEngine` path wired in
+        // `host_engine`.
+        let host_sandbox = self.host_sandbox();
+        worker = worker.with_sandbox(&host_sandbox, &self.config.storage);
 
         // Fail-safe remote-access guard (architecture §9.4, G8): a host that
         // opted into remote object-store reads (`storage.enable_remote_access`)
@@ -390,6 +449,21 @@ impl Node {
         worker
     }
 
+    /// The effective sandbox config for the HOST-serving path. The host is
+    /// secure-by-default: when the operator left `[sandbox]` at the (neutral)
+    /// global default, the host applies [`SandboxConfig::host_serving_secure`] (OS
+    /// sandbox + process-per-job ON). Any explicit `[sandbox]` customization
+    /// (e.g. `backend = "none"`, or tuned limits/egress) is honored verbatim, so
+    /// an operator can still opt the host out. This NEVER affects the requester's
+    /// own self-run path, which uses the global neutral default.
+    fn host_sandbox(&self) -> p2p_config::SandboxConfig {
+        if self.config.sandbox == p2p_config::SandboxConfig::default() {
+            p2p_config::SandboxConfig::host_serving_secure()
+        } else {
+            self.config.sandbox.clone()
+        }
+    }
+
     /// Whether the host can confine a remote-access job's network EGRESS to the
     /// pinned storage endpoints (architecture §9.4). Egress is only actually
     /// filtered on the OS-sandboxed process-per-job path, so this requires: the
@@ -398,7 +472,7 @@ impl Node {
     /// `host_engine` falls back to in-process, where egress is unfiltered).
     fn host_remote_egress_confined(&self) -> bool {
         use p2p_config::SandboxBackend::*;
-        let sb = &self.config.sandbox;
+        let sb = self.host_sandbox();
         if !sb.enabled || !sb.process_per_job {
             return false;
         }
@@ -419,11 +493,11 @@ impl Node {
     /// G1/G8 enforcement). The flag-on-but-unconfigured case warns and keeps the
     /// in-process default, so the working path is never destabilized.
     fn host_engine(&self) -> Arc<dyn QueryEngine> {
-        let sb = &self.config.sandbox;
+        let sb = self.host_sandbox();
         if sb.process_per_job && sb.enabled {
             match std::env::var("P2P_JOB_EXEC") {
                 Ok(path) if !path.trim().is_empty() => {
-                    let sandbox = crate::sandbox::build(sb);
+                    let sandbox = crate::sandbox::build(&sb);
                     return Arc::new(crate::subprocess::SubprocessEngine::new(
                         sandbox,
                         path,
@@ -520,37 +594,214 @@ impl Node {
     }
 }
 
-/// A **conservative** cheap pre-flight working-set estimate (P1-2): returns a
-/// (tiny) estimate ONLY for a query with no data source at all (a pure in-memory
-/// scalar like `SELECT 1 + 1`), so `auto` keeps it on the free local path rather
-/// than shipping it to the grid. Any query that references a data source — which
-/// the locked-down local engine cannot read anyway (no FS / no network) — yields
-/// `None`, preserving today's routing exactly. A wrong guess only affects the
-/// local-vs-remote *route* (the adaptive local-exec failover re-dispatches to the
-/// grid on a resource blow-up), never the result, so this stays safe.
+/// A cheap, metadata-only pre-flight working-set estimate (P1-2 / Part B).
 ///
-/// The full estimate source — a SQL-source analyzer (referenced tables/columns/
-/// predicates + blocking-operator shape) and engine-backed Parquet/`EXPLAIN`
-/// probes — is deferred (see `docs/IMPROVEMENT_ROADMAP.md`); this hook is where it
-/// plugs in.
+/// Returns:
+///  * a (tiny, zero-size) estimate for a query with NO data source (a pure
+///    in-memory scalar like `SELECT 1 + 1`), so `auto` keeps it on the free local
+///    path; and
+///  * a **real, approximate** size estimate for a data-source query whose
+///    sources we can size from local file/object metadata WITHOUT a scan
+///    (Parquet/CSV/JSON file sizes, a Delta `_delta_log`); the estimate then
+///    drives the requester's REMOTE size-based capability gate + worker bid
+///    sizing (the locked-down local engine still cannot read external data, so a
+///    data query is never routed local — see `Coordinator::run_query_planned`);
+///    and
+///  * `None` when the size is genuinely UNKNOWABLE pre-flight — a remote object
+///    (`s3://…`) we cannot stat, a glob we cannot expand, a referenced table /
+///    table function (`range(…)`, an attached DB) with no on-disk literal, or a
+///    referenced local path that does not exist — preserving today's routing
+///    (remote in `auto`) exactly.
+///
+/// HONEST scope: this is deliberately approximate. It does NOT parse projections,
+/// predicates, or blocking-operator shape, so it assumes a full scan
+/// (`Projection::All`, no pruning) and a streaming plan; Parquet size is
+/// approximated from the on-disk file size × the columnar decompression ratio
+/// (no footer is read without the engine). It therefore tends to OVER-estimate,
+/// which is the safe direction for a capacity gate. The richer engine-backed
+/// source (Parquet footer / `EXPLAIN` cardinality / operator shape) is deferred.
 fn preflight_estimate(sql: &str) -> Option<WorkingSetEstimate> {
-    // Any external data source ⇒ no cheap estimate (route as today). The classifier
-    // is deliberately conservative (see [`crate::estimator::has_data_source`]):
-    // only confirmed pure in-memory queries get a (tiny) local estimate, because
-    // the locked-down local engine cannot read external data.
-    if crate::estimator::has_data_source(sql) {
+    // Pure in-memory query (no data source) ⇒ a confidently-tiny local estimate.
+    if !has_data_source(sql) {
+        return Some(WorkingSetEstimate {
+            scanned_uncompressed_bytes: 0,
+            estimated_rows: 0,
+            scan_buffer_bytes: 0,
+            group_by_bytes: 0,
+            join_build_bytes: 0,
+            sort_bytes: 0,
+            peak_working_set_bytes: 0,
+            estimated_runtime_ms: 0,
+        });
+    }
+    // Data-source query: size it from local metadata if we can; otherwise `None`
+    // (unknowable ⇒ route as today).
+    size_data_sources(sql)
+}
+
+/// Maximum bytes sampled from a text (CSV/JSON) file to derive its average row
+/// width (a bounded "HEAD"-style probe — never a full scan).
+const PREFLIGHT_TEXT_SAMPLE_BYTES: usize = 64 * 1024;
+
+/// Best-effort metadata-only size estimate for a data-source query, summing the
+/// referenced LOCAL sources. Returns `None` (unknowable ⇒ route remote as today)
+/// unless EVERY referenced data-source literal can be sized from local metadata.
+fn size_data_sources(sql: &str) -> Option<WorkingSetEstimate> {
+    let literals = extract_string_literals(sql);
+    let params = EstimateParams::default();
+    let mut total_scanned: u64 = 0;
+    let mut total_rows: u64 = 0;
+    let mut sized_sources = 0usize;
+
+    for lit in literals {
+        // A remote scheme (`s3://`, `https://`, …) cannot be stat-ed pre-flight,
+        // and a glob cannot be expanded here ⇒ the whole estimate is unknowable.
+        if lit.contains("://") {
+            return None;
+        }
+        if lit.contains('*') || lit.contains('?') || lit.contains('[') {
+            return None;
+        }
+        let path = std::path::Path::new(&lit);
+        let looks_like_data = matches!(
+            path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+            Some("parquet" | "csv" | "tsv" | "json" | "ndjson" | "jsonl")
+        );
+        // Only treat a literal as a data source if it has a data extension or
+        // actually exists on disk; an arbitrary string literal (e.g. a `WHERE`
+        // value) is ignored.
+        if !looks_like_data && !path.exists() {
+            continue;
+        }
+        match scan_estimate_for_path(path, &params) {
+            Some(est) => {
+                total_scanned = total_scanned.saturating_add(est.scanned_uncompressed_bytes);
+                total_rows = total_rows.saturating_add(est.total_rows);
+                sized_sources += 1;
+            }
+            // A data-looking source we could not size (missing/unreadable) ⇒
+            // unknowable; route as today rather than guessing.
+            None => return None,
+        }
+    }
+
+    // No on-disk source literal at all (e.g. `FROM mytable`, `FROM range(100)`):
+    // the size is unknowable pre-flight ⇒ route remote, exactly as today.
+    if sized_sources == 0 {
         return None;
     }
-    Some(WorkingSetEstimate {
-        scanned_uncompressed_bytes: 0,
-        estimated_rows: 0,
-        scan_buffer_bytes: 0,
-        group_by_bytes: 0,
-        join_build_bytes: 0,
-        sort_bytes: 0,
-        peak_working_set_bytes: 0,
-        estimated_runtime_ms: 0,
-    })
+
+    let avg_row_width_bytes = if total_rows > 0 {
+        total_scanned / total_rows
+    } else {
+        0
+    };
+    let scan = ScanEstimate {
+        scanned_uncompressed_bytes: total_scanned,
+        total_rows,
+        estimated_output_rows: total_rows,
+        avg_row_width_bytes,
+        units_total: sized_sources,
+        units_scanned: sized_sources,
+        projected_columns: 0,
+    };
+    // No plan ⇒ assume a streaming scan (we cannot see blocking operators here);
+    // the peak is the bounded scan buffer. This intentionally under-states peak
+    // RAM but states the SCANNED bytes accurately — the proven-`max_input_bytes`
+    // half of the capability gate keys on scanned bytes, which is what we know.
+    Some(estimate_working_set(&scan, &QueryShape::streaming(), &params))
+}
+
+/// Metadata-only [`ScanEstimate`] for one local path. Delta directory →
+/// `_delta_log`; CSV/TSV/JSON/NDJSON → bounded text sample; Parquet → file size ×
+/// decompression ratio (no engine footer); any other existing file → raw size.
+/// `None` when the path can't be sized (missing / unreadable).
+fn scan_estimate_for_path(path: &std::path::Path, params: &EstimateParams) -> Option<ScanEstimate> {
+    // Delta table directory (a `_delta_log/` of JSON commits — pure-Rust read).
+    if path.is_dir() {
+        if path.join("_delta_log").is_dir() {
+            let meta = delta_metadata(path).ok()?;
+            return Some(estimate_table_files(&meta, &Projection::All, &[], params));
+        }
+        return None;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
+        Some("csv") => {
+            let meta = csv_metadata(path, b',', PREFLIGHT_TEXT_SAMPLE_BYTES).ok()?;
+            Some(estimate_text(&meta, &Projection::All, &[], params))
+        }
+        Some("tsv") => {
+            let meta = csv_metadata(path, b'\t', PREFLIGHT_TEXT_SAMPLE_BYTES).ok()?;
+            Some(estimate_text(&meta, &Projection::All, &[], params))
+        }
+        Some("json" | "ndjson" | "jsonl") => {
+            let meta = ndjson_metadata(path, PREFLIGHT_TEXT_SAMPLE_BYTES).ok()?;
+            Some(estimate_text(&meta, &Projection::All, &[], params))
+        }
+        Some("parquet") => {
+            // No pure-Rust footer reader here (engine-gated): approximate the
+            // uncompressed scanned bytes from the on-disk size × the columnar
+            // decompression ratio. Over-estimates (safe for a capacity gate).
+            let size = std::fs::metadata(path).ok()?.len();
+            let scanned = ((size as f64) * params.columnar_decompression_ratio).round() as u64;
+            Some(raw_scan_estimate(scanned))
+        }
+        // Any other existing file: use its raw size as the scanned footprint.
+        _ => {
+            let size = std::fs::metadata(path).ok()?.len();
+            Some(raw_scan_estimate(size))
+        }
+    }
+}
+
+/// A [`ScanEstimate`] for a single opaque source of `scanned_bytes` whose row
+/// count is unknown (one scanned unit, no per-row detail).
+fn raw_scan_estimate(scanned_bytes: u64) -> ScanEstimate {
+    ScanEstimate {
+        scanned_uncompressed_bytes: scanned_bytes,
+        total_rows: 0,
+        estimated_output_rows: 0,
+        avg_row_width_bytes: 0,
+        units_total: 1,
+        units_scanned: 1,
+        projected_columns: 0,
+    }
+}
+
+/// Extract single-quoted string literals from SQL (DuckDB file/object literals
+/// are single-quoted; `''` is an escaped quote). Comment/dollar-quote naive —
+/// good enough for the conservative pre-flight router, which only ACTS on a
+/// literal that also looks like / resolves to a local data source.
+fn extract_string_literals(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\'' {
+            let mut lit = String::new();
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == b'\'' {
+                    // `''` escapes a single quote inside the literal.
+                    if i + 1 < bytes.len() && bytes[i + 1] == b'\'' {
+                        lit.push('\'');
+                        i += 2;
+                        continue;
+                    }
+                    break;
+                }
+                lit.push(bytes[i] as char);
+                i += 1;
+            }
+            out.push(lit);
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Parse configured bootstrap seeds (`quic://host:port`, `host:port`, or a bare
@@ -580,9 +831,102 @@ fn resolve_seeds(seeds: &[String]) -> Vec<Candidate> {
 mod tests {
     use super::{preflight_estimate, Node};
     use crate::engine::MockEngine;
-    use p2p_config::GridConfig;
+    use crate::planner::{DefaultPlanner, LocalOrRemotePlanner, PlanRequest, Route};
+    use p2p_config::{GridConfig, PlannerConfig, PreferMode};
     use p2p_proto::{BidDecision, DataClass, JobId, NodeId, Offer, QueryHash};
+    use std::io::Write;
     use std::sync::Arc;
+
+    // ----- Pre-flight estimate (Part B.1) -----
+
+    #[test]
+    fn preflight_pure_in_memory_query_is_tiny_local_estimate() {
+        // No data source ⇒ a confidently-tiny (zero-size) estimate, so `auto`
+        // keeps the query on the free local path.
+        let est = preflight_estimate("SELECT 1 + 1").expect("pure query gets an estimate");
+        assert_eq!(est.scanned_uncompressed_bytes, 0);
+        assert_eq!(est.peak_working_set_bytes, 0);
+    }
+
+    #[test]
+    fn preflight_unknowable_sources_yield_none() {
+        // A remote object we cannot stat pre-flight ⇒ None (route remote as today).
+        assert!(preflight_estimate("SELECT * FROM read_parquet('s3://bucket/k.parquet')").is_none());
+        // A glob we cannot expand here ⇒ None.
+        assert!(preflight_estimate("SELECT * FROM read_csv_auto('/data/*.csv')").is_none());
+        // A relation / table function with no on-disk literal ⇒ None.
+        assert!(preflight_estimate("SELECT * FROM range(100)").is_none());
+        assert!(preflight_estimate("SELECT * FROM my_table").is_none());
+        // A data-looking local literal that does not exist ⇒ None (unknowable).
+        assert!(preflight_estimate("SELECT * FROM read_csv_auto('/nope/missing.csv')").is_none());
+    }
+
+    #[test]
+    fn preflight_sizes_a_real_local_csv_by_metadata() {
+        // A real local CSV is sized from its on-disk metadata (no scan / no engine):
+        // the estimate is non-trivial and scales with the file.
+        let dir = tempfile::tempdir().unwrap();
+        let small = dir.path().join("small.csv");
+        let big = dir.path().join("big.csv");
+        {
+            let mut f = std::fs::File::create(&small).unwrap();
+            writeln!(f, "id,name").unwrap();
+            for i in 0..50 {
+                writeln!(f, "{i},row-{i}").unwrap();
+            }
+        }
+        {
+            let mut f = std::fs::File::create(&big).unwrap();
+            writeln!(f, "id,name").unwrap();
+            for i in 0..200_000 {
+                writeln!(f, "{i},a-much-longer-row-value-{i}").unwrap();
+            }
+        }
+        let q = |p: &std::path::Path| format!("SELECT * FROM read_csv_auto('{}')", p.display());
+        let small_est = preflight_estimate(&q(&small)).expect("local csv is sizeable");
+        let big_est = preflight_estimate(&q(&big)).expect("local csv is sizeable");
+        assert!(small_est.scanned_uncompressed_bytes > 0);
+        assert!(
+            big_est.scanned_uncompressed_bytes > small_est.scanned_uncompressed_bytes,
+            "the bigger file must estimate a larger scan"
+        );
+    }
+
+    #[test]
+    fn estimate_drives_local_vs_remote_routing_by_size() {
+        // The planner routes by the pre-flight estimate's real size: a SMALL one
+        // fits locally; a LARGE one (scanned bytes over the threshold) goes remote.
+        let mut pc = PlannerConfig::default();
+        pc.enabled = true;
+        pc.local_execution_enabled = true;
+        pc.prefer = PreferMode::Auto;
+        pc.size_threshold_bytes = 64 * 1024 * 1024; // 64 MiB local cap
+        let planner = DefaultPlanner::new(pc);
+
+        let small = super::WorkingSetEstimate {
+            scanned_uncompressed_bytes: 1_000,
+            estimated_rows: 100,
+            scan_buffer_bytes: 1_000,
+            group_by_bytes: 0,
+            join_build_bytes: 0,
+            sort_bytes: 0,
+            peak_working_set_bytes: 1_000,
+            estimated_runtime_ms: 1,
+        };
+        let large = super::WorkingSetEstimate {
+            scanned_uncompressed_bytes: 4 * 1024 * 1024 * 1024,
+            peak_working_set_bytes: 4 * 1024 * 1024 * 1024,
+            ..small.clone()
+        };
+        let req = |est| PlanRequest {
+            prefer: PreferMode::Auto,
+            estimate: Some(est),
+            headroom_bytes: 8 * 1024 * 1024 * 1024,
+            local_slot_available: true,
+        };
+        assert_eq!(planner.decide(&req(small)).route, Route::Local);
+        assert_eq!(planner.decide(&req(large)).route, Route::Remote);
+    }
 
     #[tokio::test]
     async fn host_worker_wires_cost_gate_from_config() {
@@ -949,6 +1293,48 @@ mod tests {
             node2.host_worker().bid_for(&mk_offer()).decision,
             BidDecision::Accept
         ));
+    }
+
+    #[tokio::test]
+    async fn host_sandbox_is_secure_by_default_but_self_run_is_not_sandboxed() {
+        // Task #2: the secure sandbox posture is HOST-only. The global default is
+        // neutral (off), so a pure requester is never force-sandboxed; the host
+        // serving path applies the secure posture at spawn_host.
+        let node = Node::with_config(
+            GridConfig::default(),
+            Arc::new(MockEngine::deterministic()),
+        )
+        .unwrap();
+
+        // Global default is neutral (the requester's self-run posture).
+        assert!(!node.config().sandbox.enabled);
+        assert!(!node.config().sandbox.process_per_job);
+
+        // The HOST-serving path is secure-by-default (sandbox + process-per-job).
+        let host = node.host_sandbox();
+        assert!(host.enabled && host.process_per_job);
+
+        // The requester's OWN local self-run path runs in-process and is never
+        // sandboxed — a local query still returns a row under the neutral default.
+        let outcome = node
+            .query("SELECT 1 AS x", p2p_config::QueryOverrides::default())
+            .await
+            .unwrap();
+        assert!(outcome.executed_locally, "self-run must stay in-process");
+    }
+
+    #[tokio::test]
+    async fn host_sandbox_honors_explicit_operator_optout() {
+        // An explicit `[sandbox]` customization is honored verbatim for the host
+        // (not overridden by the secure host defaults) — e.g. backend = none opts
+        // a host out of the OS sandbox.
+        let mut cfg = GridConfig::default();
+        cfg.sandbox.backend = p2p_config::SandboxBackend::None;
+        cfg.validate().unwrap();
+        let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
+        let host = node.host_sandbox();
+        assert_eq!(host.backend, p2p_config::SandboxBackend::None);
+        assert!(!host.enabled, "operator opt-out is respected on the host");
     }
 
     #[test]

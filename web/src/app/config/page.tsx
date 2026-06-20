@@ -115,6 +115,8 @@ function flattenSection(value: unknown, prefix = ""): FlatRow[] {
 const SECTION_ORDER = [
   "transport",
   "discovery",
+  "membership",
+  "security",
   "trust",
   "economics",
   "scheduler",
@@ -135,8 +137,10 @@ const SECTION_ORDER = [
 const SECTION_NOTES: Record<string, string> = {
   transport: "QUIC tuning — congestion control, kernel offloads, compression, 0-RTT.",
   discovery: "How peers are found and gossiped: mode, gossipsub, Kademlia, NAT traversal.",
+  membership: "Request-scoping labels: logical networks, capability groups, region, group enforcement.",
+  security: "Closure posture — the single public / private (enterprise) mode switch.",
   trust: "Effective-trust weights, attestation floor, quorum and canary auditing.",
-  economics: "Settlement parameters — only engaged when a job is paid.",
+  economics: "Settlement, fees (15% / 5%), time-based pricing and reliability-gated stake weighting — only engaged when a job is paid.",
   scheduler: "Dispatch, retries, timeouts, replicas and the verify mode.",
   network: "QUIC socket binding, windows and stream limits.",
   protocol: "Wire protocol versioning and engine-version matching.",

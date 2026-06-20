@@ -11,6 +11,8 @@ use p2p_config::{BudgetConfig, DataClassCfg};
 use p2p_proto::DataClass;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
+use crate::governor::{CapacityGovernor, GovernorLease, Role};
+
 /// Tracks current usage against the configured budget.
 pub struct AdmissionController {
     memory_bytes: u64,
@@ -21,10 +23,27 @@ pub struct AdmissionController {
     /// Caps concurrent admitted jobs (== max_jobs).
     job_slots: Arc<Semaphore>,
     max_jobs: u32,
+    /// Process-wide capacity governor shared with the requester-side
+    /// [`crate::planner::LocalExecutor`]. When set, an admitted job also reserves
+    /// from the governor so served + own work cannot jointly oversubscribe the
+    /// machine. `None` ⇒ standalone (today's behavior; used by tests and
+    /// serve-only tooling that builds a controller directly).
+    governor: Option<Arc<CapacityGovernor>>,
 }
 
 impl AdmissionController {
+    /// Build a standalone controller (no process-wide governor).
     pub fn new(budget: &BudgetConfig) -> Arc<Self> {
+        Self::build(budget, None)
+    }
+
+    /// Build a controller wired to the shared process-wide [`CapacityGovernor`]
+    /// (the dual-role path): each admission also reserves from the governor.
+    pub fn governed(budget: &BudgetConfig, governor: Arc<CapacityGovernor>) -> Arc<Self> {
+        Self::build(budget, Some(governor))
+    }
+
+    fn build(budget: &BudgetConfig, governor: Option<Arc<CapacityGovernor>>) -> Arc<Self> {
         Arc::new(Self {
             memory_bytes: budget.memory_bytes,
             threads: budget.threads,
@@ -33,6 +52,7 @@ impl AdmissionController {
             used_threads: AtomicU32::new(0),
             job_slots: Arc::new(Semaphore::new(budget.max_jobs as usize)),
             max_jobs: budget.max_jobs,
+            governor,
         })
     }
 
@@ -110,11 +130,28 @@ impl AdmissionController {
             }
         }
 
+        // Process-wide governor: served work shares the hard machine cap with the
+        // node's own (local) queries. If the governor refuses (machine cap or the
+        // served-memory ceiling reached), undo this controller's accounting and
+        // reject the admission so own + served work can't oversubscribe.
+        let governor_lease = match &self.governor {
+            Some(g) => match g.try_reserve(Role::Served, memory_bytes, threads) {
+                Some(lease) => Some(lease),
+                None => {
+                    self.used_memory.fetch_sub(memory_bytes, Ordering::AcqRel);
+                    self.used_threads.fetch_sub(threads, Ordering::AcqRel);
+                    return None;
+                }
+            },
+            None => None,
+        };
+
         Some(Lease {
             controller: Arc::clone(self),
             memory_bytes,
             threads,
             _permit: permit,
+            _governor_lease: governor_lease,
         })
     }
 }
@@ -133,6 +170,8 @@ pub struct Lease {
     memory_bytes: u64,
     threads: u32,
     _permit: OwnedSemaphorePermit,
+    /// Released alongside this lease (returns the shared governor reservation).
+    _governor_lease: Option<GovernorLease>,
 }
 
 impl Lease {
@@ -167,6 +206,7 @@ mod tests {
             max_jobs: 2,
             per_job_memory_bytes: 100,
             per_job_threads: 1,
+            local_reserved_fraction: 0.0,
             data_classes: vec![DataClassCfg::Public],
         }
     }

@@ -20,9 +20,9 @@ use p2p_config::{
 use p2p_node::{
     AdmissionController, Candidate, CandidateFilter, Coordinator, CoordinatorError, Discovery,
     LivenessFilteredDiscovery, LivenessView, MockEngine, QueryEngine, StaticDiscovery, SwimVerdict,
-    Worker, WorkerParams,
+    Worker, WorkerParams, WorkingSetEstimate,
 };
-use p2p_proto::{Attestation, Bid, BidDecision, NodeId, Offer, Progress, Wire};
+use p2p_proto::{Ack, Attestation, Bid, BidDecision, NodeId, Offer, Progress, Wire};
 use p2p_settlement::types::{Amount, SlashError};
 use p2p_settlement::{InMemoryStakeRegistry, SlashReason, StakeRegistry};
 use p2p_transport::endpoint::{read_msg, write_msg};
@@ -707,4 +707,235 @@ async fn unstaked_provider_is_not_fined() {
         "an unstaked provider has no bond to fine, got {:?}",
         reg.slashes(),
     );
+}
+
+// ===========================================================================
+// Robust failover + size-based capability gate (Part A.1 / Part B.2)
+// ===========================================================================
+
+/// Accept bid advertising a chosen free-memory capacity (drives the size gate /
+/// re-route capacity floor).
+fn accept_bid_mem(offer: &Offer, worker_id: &NodeId, free_mem: u64) -> Bid {
+    let mut b = accept_bid(offer, worker_id);
+    b.free_mem_bytes = free_mem;
+    b
+}
+
+/// A hand-rolled worker that ACCEPTS (advertising `free_mem`) then, on dispatch,
+/// reports an OUT-OF-MEMORY failure — i.e. the job was too big for it. The
+/// requester classifies this as `ResourceExceeded`.
+async fn spawn_oom_worker(free_mem: u64) -> WorkerHandle {
+    let transport = transport();
+    let node_id = transport.local_node_id().clone();
+    let addr = transport.local_addr().unwrap();
+    let t = transport.clone();
+    let nid = node_id.clone();
+    let task = tokio::spawn(async move {
+        while let Some(Ok(conn)) = t.accept().await {
+            let nid = nid.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (mut send, mut recv) = match conn.accept_bi().await {
+                        Ok(x) => x,
+                        Err(_) => break,
+                    };
+                    let nid = nid.clone();
+                    tokio::spawn(async move {
+                        match read_msg(&mut recv).await {
+                            Ok(Wire::Offer(o)) => {
+                                let _ = write_msg(
+                                    &mut send,
+                                    &Wire::Bid(accept_bid_mem(&o, &nid, free_mem)),
+                                )
+                                .await;
+                                let _ = send.finish();
+                            }
+                            Ok(Wire::Dispatch(d)) => {
+                                let _ = write_msg(
+                                    &mut send,
+                                    &Wire::Ack(Ack {
+                                        job_id: d.job_id.clone(),
+                                        ok: false,
+                                        detail: "Out of Memory Error: failed to allocate".into(),
+                                    }),
+                                )
+                                .await;
+                                let _ = send.finish();
+                            }
+                            _ => {}
+                        }
+                    });
+                }
+            });
+        }
+    });
+    WorkerHandle {
+        node_id,
+        addr,
+        _transport: transport,
+        _task: task,
+    }
+}
+
+fn estimate(scanned: u64, peak: u64) -> WorkingSetEstimate {
+    WorkingSetEstimate {
+        scanned_uncompressed_bytes: scanned,
+        estimated_rows: 0,
+        scan_buffer_bytes: 0,
+        group_by_bytes: 0,
+        join_build_bytes: 0,
+        sort_bytes: 0,
+        peak_working_set_bytes: peak,
+        estimated_runtime_ms: 0,
+    }
+}
+
+/// A job that OOMs a subset of (low-capacity) nodes re-routes to higher-capacity
+/// nodes and SUCCEEDS — consensus `ResourceExceeded` is NOT terminal.
+#[tokio::test]
+async fn oom_subset_reroutes_to_higher_capacity_and_succeeds() {
+    let oom1 = spawn_oom_worker(1 << 20).await; // advertises 1 MiB
+    let oom2 = spawn_oom_worker(1 << 20).await;
+    let h1 = spawn_worker(Arc::new(MockEngine::deterministic())).await; // 4 GiB free
+    let h2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    // Attempt 1 sees the OOM-prone low-capacity nodes; attempt 2 the big ones.
+    let disc = Arc::new(ScriptedDiscovery::new(vec![
+        candidates_of(&[&oom1, &oom2]),
+        candidates_of(&[&h1, &h2]),
+    ]));
+    let coord = coord_with(disc, fast_cfg(2, 2), store()).await;
+
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified, "must succeed after re-routing past the OOMed nodes");
+    assert!(
+        outcome
+            .participants
+            .iter()
+            .all(|p| *p == h1.node_id || *p == h2.node_id),
+        "the job must run on the higher-capacity nodes, not the OOMed ones"
+    );
+}
+
+/// A job too big for ALL nodes (every node OOMs, none bigger remains) terminates
+/// cleanly with the dedicated `ExceedsCapacity` error — after trying the biggest.
+#[tokio::test]
+async fn job_too_big_for_all_nodes_terminates_exceeds_capacity() {
+    let small1 = spawn_oom_worker(1 << 20).await; // 1 MiB
+    let small2 = spawn_oom_worker(1 << 20).await;
+    let big1 = spawn_oom_worker(100 << 20).await; // 100 MiB — bigger, still OOMs
+    let big2 = spawn_oom_worker(100 << 20).await;
+    let disc = Arc::new(ScriptedDiscovery::new(vec![
+        candidates_of(&[&small1, &small2]),
+        candidates_of(&[&big1, &big2]),
+        vec![], // nothing higher-capacity remains
+    ]));
+    let coord = coord_with(disc, fast_cfg(2, 2), store()).await;
+
+    let err = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::ExceedsCapacity { .. }),
+        "a job too big for every node must terminate as ExceedsCapacity, got {err:?}"
+    );
+}
+
+/// A consensus LOGIC error (bad SQL) stays TERMINAL `Infeasible` — it is NOT
+/// re-routed (retrying cannot fix a binder error) and never becomes
+/// `ExceedsCapacity`.
+#[tokio::test]
+async fn consensus_logic_error_is_terminal_not_rerouted() {
+    let mk = || {
+        Arc::new(MockEngine::failing(
+            "Binder Error: Referenced column \"nope\" not found",
+        )) as Arc<dyn QueryEngine>
+    };
+    let a = spawn_worker(mk()).await;
+    let b = spawn_worker(mk()).await;
+    let c = spawn_worker(mk()).await;
+    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&a, &b, &c]), 64));
+    let coord = coord_with(disc, fast_cfg(3, 2), store()).await;
+
+    let err = coord
+        .run_query("SELECT nope FROM t", QueryOverrides::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::Infeasible { .. }),
+        "a logic error must stay terminal (no pointless retries / no reroute), got {err:?}"
+    );
+}
+
+/// On an `Inconclusive` attempt, only the silent/failed providers are excluded —
+/// a node that COMMITTED a correct result but lost the hedged race stays eligible
+/// and is reused on the retry (Part A.2).
+#[tokio::test]
+async fn inconclusive_keeps_correct_but_lost_node_eligible() {
+    let h = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    let s = spawn_silent_worker().await;
+    let h2 = spawn_worker(Arc::new(MockEngine::deterministic())).await;
+    // Attempt 1: `h` commits but `s` is silent ⇒ quorum (2) not reached ⇒
+    // Inconclusive, excluding ONLY `s`. Attempt 2: `h` (still eligible) + `h2`
+    // both commit ⇒ success. Were `h` wrongly excluded, attempt 2 would have only
+    // `h2` and never reach quorum.
+    let disc = Arc::new(ScriptedDiscovery::new(vec![
+        candidates_of(&[&h, &s]),
+        candidates_of(&[&h, &h2]),
+    ]));
+    let coord = coord_with(disc, fast_cfg(2, 2), store()).await;
+
+    let outcome = coord
+        .run_query("SELECT 1", QueryOverrides::default())
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+    assert!(
+        outcome.participants.contains(&h.node_id),
+        "the correct-but-lost node must stay eligible and be reused on retry"
+    );
+}
+
+/// The size gate drops a candidate whose advertised capacity clearly cannot hold
+/// the job's estimated peak working set — BEFORE dispatch — so an oversize job
+/// against an undersized node yields no eligible worker.
+#[tokio::test]
+async fn capability_gate_excludes_oversize_candidate() {
+    let small = spawn_oom_worker(1 << 20).await; // advertises 1 MiB free
+    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&small]), 64));
+    let coord = coord_with(disc, fast_cfg(1, 1), store()).await;
+
+    // Estimated peak 8 GiB ≫ 1 MiB (+ spill) ⇒ the only node is gated out.
+    let big = estimate(8 << 30, 8 << 30);
+    let err = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(big))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, CoordinatorError::InsufficientWorkers { have: 0, .. }),
+        "the undersized node must be gated out before dispatch, got {err:?}"
+    );
+}
+
+/// COLD-START SAFETY: a newcomer with NO proven capability history is NEVER
+/// excluded by the size gate — even by a huge SCANNED estimate — as long as it
+/// advertises ample free memory. Normal queries therefore never starve.
+#[tokio::test]
+async fn newcomer_without_history_is_not_excluded_by_size_gate() {
+    let h = spawn_worker(Arc::new(MockEngine::deterministic())).await; // 4 GiB free, no history
+    let disc = Arc::new(StaticDiscovery::new(candidates_of(&[&h]), 64));
+    let coord = coord_with(disc, fast_cfg(1, 1), store()).await;
+
+    // Huge scanned bytes, tiny peak: the proven-max gate must NOT fire (no proven
+    // history), and the advertised-memory gate is satisfied by the big free_mem.
+    let est = estimate(10 << 30, 1 << 20);
+    let outcome = coord
+        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(est))
+        .await
+        .unwrap();
+    assert!(outcome.verified);
+    assert_eq!(outcome.winner.as_ref(), Some(&h.node_id));
 }

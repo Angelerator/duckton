@@ -1036,6 +1036,7 @@ async fn export_console_snapshot() {
         result_parallelism: Some(4),
         compression: None,
         input_snapshot: None,
+        signed_inputs: Vec::new(),
         cap_deadline_ms: None,
     };
     let commit = ResultCommit {

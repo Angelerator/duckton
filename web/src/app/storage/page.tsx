@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import {
   Cloud,
+  Cpu,
   Database,
   FileText,
   HardDrive,
@@ -9,6 +10,7 @@ import {
   Lock,
   LockKeyhole,
   Server,
+  ShieldCheck,
   Boxes,
   CheckCircle2,
   AlertTriangle,
@@ -55,6 +57,14 @@ const strList = (v: unknown): string[] =>
 const defaultProvider = str(storageCfg.provider); // e.g. "local-fake"
 const enabledProviders = strList(storageCfg.enabled_providers);
 const enabledFormats = strList(storageCfg.enabled_formats); // e.g. csv/json/parquet
+
+// The real `[sandbox]` section of the running node's GridConfig. The OS-level
+// execution sandbox is now SECURE BY DEFAULT for the host-serving path.
+const sandboxCfg = (config.value.sandbox ?? {}) as Record<string, unknown>;
+const sandboxEnabled = sandboxCfg.enabled === true;
+const sandboxBackend = str(sandboxCfg.backend) ?? "auto";
+const sandboxProcessPerJob = sandboxCfg.process_per_job === true;
+const sandboxEgressMode = str(sandboxCfg.egress_mode) ?? "inherit_storage";
 
 /* --------------------------------------------------------------- providers */
 
@@ -578,6 +588,69 @@ export default function StoragePage() {
             Net effect: storage operators and host operators both see only ciphertext; plaintext
             exists only inside an L2 enclave or, for public data, transiently in a laptop&apos;s RAM
             under quorum + reputation guards.
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* OS execution sandbox (now hardened, secure by default) */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <ShieldCheck className="size-4 text-primary" /> OS execution sandbox
+              </CardTitle>
+              <CardDescription>
+                The boundary <span className="text-foreground">around</span> job execution,
+                complementing DuckDB&apos;s own lockdown. Now hardened and secure-by-default for the
+                host-serving path — the live <span className="font-mono">[sandbox]</span> section of
+                this node&apos;s config.
+              </CardDescription>
+            </div>
+            <Badge variant={sandboxEnabled ? "ok" : "muted"} className="gap-1">
+              {sandboxEnabled ? <CheckCircle2 className="size-3" /> : null}
+              {sandboxEnabled ? "enabled" : "off"}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <dl className="rounded-lg border px-4 py-1">
+              <KV label="enabled">
+                <Badge variant={sandboxEnabled ? "ok" : "muted"}>{String(sandboxEnabled)}</Badge>
+              </KV>
+              <KV label="process per job">
+                <Badge variant={sandboxProcessPerJob ? "ok" : "muted"}>
+                  {String(sandboxProcessPerJob)}
+                </Badge>
+              </KV>
+              <KV label="backend">
+                <span className="font-mono text-xs">{sandboxBackend}</span>
+              </KV>
+              <KV label="egress mode">
+                <span className="font-mono text-xs">{sandboxEgressMode}</span>
+              </KV>
+            </dl>
+            <div className="text-muted-foreground space-y-2 text-xs leading-relaxed">
+              <div className="flex items-start gap-2">
+                <Cpu className="text-primary mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  <span className="text-foreground font-medium">Process-per-job + OS confinement.</span>{" "}
+                  Each FOREIGN job runs in an OS-sandboxed child process (Linux cgroups+seccomp, macOS
+                  Seatbelt, Windows Job Objects via <span className="font-mono">backend = auto</span>).
+                </span>
+              </div>
+              <div className="flex items-start gap-2">
+                <Lock className="text-primary mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  <span className="text-foreground font-medium">Real DuckDB lockdown.</span>{" "}
+                  enable_external_access off, locked configuration, scoped allowed-directories,
+                  ephemeral temp. Where OS confinement can&apos;t apply, the host fails{" "}
+                  <span className="text-foreground">safe</span> — it refuses to serve remote-access
+                  jobs unconfined rather than running them exposed.
+                </span>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

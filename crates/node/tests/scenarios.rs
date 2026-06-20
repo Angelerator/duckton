@@ -242,6 +242,7 @@ async fn scenario_many_concurrent_jobs_across_workers() {
         max_jobs: 64,
         per_job_memory_bytes: 64 * 1024 * 1024,
         per_job_threads: 1,
+        local_reserved_fraction: 0.0,
         data_classes: vec![DataClassCfg::Public],
     };
     let w1 =

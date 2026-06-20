@@ -381,6 +381,52 @@ A worker must process **plaintext** in RAM to run SQL. Therefore:
 - On **commodity laptops (L0/L1)**, a determined operator with kernel access **can** read query memory. We do **not** claim otherwise. We shrink blast radius (scoped creds, no-spill/encrypted-temp, locked-down DuckDB) and rely on trust/quorum/reputation.
 - For **true confidentiality from the operator (L2)**, run the worker's DuckDB inside a **hardware TEE** (Intel TDX / AMD SEV-SNP / AWS Nitro) and use **attestation-gated key release**: the data key is encrypted to the enclave's key and released **only after** the enclave proves (remote attestation) it runs an allowlisted, unmodified DuckDB image in genuine hardware-encrypted memory. This pattern is proven on DuckDB (CWI's **DuckDB-SGX2** ran TPC-H SF30 at **<2× overhead** over encrypted Parquet). Route **sensitive** workloads to the L2 tier only.
 
+#### 9.3.1 Confidential tier (TEE) flow
+
+When **sensitive** data must be hidden even from the host operator, the job runs on
+an **L2 / TEE** worker under attestation-gated key release. The end-to-end flow
+(types in `p2p-node::storage` + `p2p-trust::attestation`):
+
+1. **Enclave sealing keypair.** The worker generates an X25519 **sealing keypair
+   _inside_ the enclave** (`Enclave::new` → `SealingKeypair`); the private half
+   never leaves hardware-encrypted memory. `Enclave::sealing_pubkey()` exposes only
+   the public half.
+2. **Attestation quote (binding).** On an offer the enclave produces a quote
+   binding `(enclave measurement ‖ sealing pubkey ‖ offer nonce)`
+   (`Enclave::attest(nonce)` → `Attestor::produce`). Binding the sealing pubkey
+   into the quote is what stops a man-in-the-middle from substituting its own key;
+   the fresh per-offer **nonce** stops replay.
+3. **Requester verification.** The requester verifies the quote before releasing
+   anything (`AttestationVerifier::verify`, e.g. `AllowlistVerifier`): the **vendor
+   certificate chain**, an **allowlisted enclave measurement** (the exact, audited
+   DuckDB image), the required **attestation level** (≥ L2), and that the **nonce**
+   and **bound sealing key** match this exchange. Any mismatch ⇒ fail closed, no
+   key is released.
+4. **Seal the secret to the enclave key.** Only on a passing quote does the
+   requester seal the **scoped storage credential / data key** to the enclave's
+   sealing pubkey (X25519 + ChaCha20-Poly1305, `seal_to` / `CloudCredential::seal_token`
+   / `KeyRelease::release`). The plaintext key material never travels and never
+   persists; the opaque token is ciphertext only (`sealed:v1:…`).
+5. **Decrypt + execute in encrypted RAM.** The enclave opens the sealed blob
+   just-in-time with its private sealing key (`Enclave::open_key` /
+   `StorageSetup::resolve_credential`) and runs unmodified DuckDB over the
+   encrypted-at-rest Parquet **inside hardware-encrypted memory** — host root
+   cannot read the plaintext.
+6. **Quorum-verified result.** The result is still hash-committed and
+   quorum-verified like any other job (§11), so the L2 tier adds **confidentiality**
+   on top of the grid's existing **verified correctness**.
+
+**Routing & honest scope.** **Sensitive** data routes **only** to L2/TEE workers
+(the `min_level = L2` hard gate, §7.5); commodity (L0/L1) nodes give
+**verified-correctness, not confidentiality** — a determined operator there can
+read query RAM, which we do not hide. **Current status:** the protocol, the
+sealing crypto (X25519 + ChaCha20-Poly1305), attestation binding/verification,
+allowlist + nonce + level checks, and encrypted-at-rest are implemented and
+unit-tested behind a **software mock attestor** (`MockAttestor`); a **genuine TEE
+quote** (Intel TDX / AMD SEV-SNP / AWS Nitro) and the vendor cert-chain verifier
+plug in behind the same `Attestor` / `AttestationVerifier` traits and require real
+TEE **hardware**, which is pending (Phase 4, §19).
+
 ### 9.4 Protecting the worker from a malicious query
 Running arbitrary SQL from strangers is dangerous. The execution DuckDB is locked down:
 - `SET enable_external_access = false` except the scoped storage endpoint.

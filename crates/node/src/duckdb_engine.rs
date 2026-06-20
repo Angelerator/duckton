@@ -258,6 +258,18 @@ impl DuckDbEngine {
         conn.execute_batch(crate::engine::LOCK_CONFIGURATION_SQL)
             .map_err(|e| EngineError::Rejected(format!("lock configuration: {e}")))?;
 
+        // Presigned credential mode: rewrite the pinned object references to the
+        // requester-signed HTTPS URLs so the read goes over plain HTTPS with NO
+        // secret installed (no `CREATE SECRET` ran above when `credential` is
+        // absent). Empty `signed_inputs` ⇒ the SQL is unchanged.
+        let rewritten;
+        let sql: &str = if ctx.signed_inputs.is_empty() {
+            sql
+        } else {
+            rewritten = crate::datasource::rewrite_signed_urls(sql, &ctx.signed_inputs);
+            &rewritten
+        };
+
         let mut stmt = conn
             .prepare(sql)
             .map_err(|e| EngineError::Exec(format!("prepare: {e}")))?;

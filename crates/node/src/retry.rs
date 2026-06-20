@@ -168,16 +168,29 @@ impl FaultTally {
         self.silent += 1;
     }
 
-    /// Whether a consensus of selected providers failed the **same deterministic
-    /// way** (all infeasible, or all resource-exceeded) so the failure is
-    /// attributable to the **job**, not the providers — i.e. STOP re-dispatching.
-    /// Transient silence/timeouts never count as consensus-infeasible.
+    /// Whether a consensus of selected providers reported the query **logically
+    /// infeasible** the same way (bad SQL: syntax / binder / catalog / missing
+    /// data). This is a TERMINAL job fault — retrying cannot help, so STOP.
+    ///
+    /// Deliberately distinct from [`Self::is_consensus_resource_exceeded`]: an
+    /// OOM/too-big consensus is NOT terminal (it can be re-routed to
+    /// higher-capacity nodes), whereas a logic error is. Transient
+    /// silence/timeouts never count as consensus here.
     pub fn is_consensus_infeasible(&self, fraction: f64) -> bool {
         is_job_consensus_failure(self.infeasible, self.selected, fraction)
-            || is_job_consensus_failure(self.resource_exceeded, self.selected, fraction)
     }
 
-    /// A human-readable reason for the consensus-infeasible stop.
+    /// Whether a consensus of selected providers exceeded resources (OOM / the
+    /// job was too big for them) the same way. UNLIKE
+    /// [`Self::is_consensus_infeasible`] this is NOT terminal: the job can be
+    /// re-dispatched to OTHER, higher-capacity nodes (more free memory / a bigger
+    /// proven `max_input_bytes` / more spill headroom). It only becomes terminal
+    /// once no higher-capacity candidate remains.
+    pub fn is_consensus_resource_exceeded(&self, fraction: f64) -> bool {
+        is_job_consensus_failure(self.resource_exceeded, self.selected, fraction)
+    }
+
+    /// A human-readable reason for the consensus-infeasible (logic error) stop.
     pub fn consensus_reason(&self, fraction: f64) -> Option<String> {
         if is_job_consensus_failure(self.infeasible, self.selected, fraction) {
             Some(format!(
@@ -185,10 +198,18 @@ impl FaultTally {
                  unsatisfiable) — job fault, not a provider fault",
                 self.infeasible, self.selected
             ))
-        } else if is_job_consensus_failure(self.resource_exceeded, self.selected, fraction) {
+        } else {
+            None
+        }
+    }
+
+    /// A human-readable reason for a consensus resource-exceeded (too-big) outcome
+    /// that triggers a re-route to higher-capacity nodes.
+    pub fn resource_exceeded_reason(&self, fraction: f64) -> Option<String> {
+        if is_job_consensus_failure(self.resource_exceeded, self.selected, fraction) {
             Some(format!(
-                "{}/{} selected providers exceeded resources running this query — the job is too \
-                 expensive (job fault, not a provider fault)",
+                "{}/{} selected providers exceeded resources running this query — too big for \
+                 them; re-routing to higher-capacity nodes",
                 self.resource_exceeded, self.selected
             ))
         } else {
@@ -253,13 +274,15 @@ mod tests {
 
     #[test]
     fn fault_tally_consensus_infeasible_only_on_same_deterministic_failure() {
-        // 3 providers, all infeasible → consensus-infeasible (stop).
+        // 3 providers, all infeasible → consensus-infeasible (terminal stop).
         let mut t = FaultTally::new(3);
         t.record(Verdict::Infeasible);
         t.record(Verdict::Infeasible);
         t.record(Verdict::Infeasible);
         assert!(t.is_consensus_infeasible(0.67));
         assert!(t.consensus_reason(0.67).is_some());
+        // …but it is NOT a resource-exceeded consensus (the two classes are split).
+        assert!(!t.is_consensus_resource_exceeded(0.67));
 
         // 3 providers, all silent (timeout) → transient, NOT consensus (retry).
         let mut t2 = FaultTally::new(3);
@@ -274,5 +297,30 @@ mod tests {
         t3.record_silent();
         t3.record_silent();
         assert!(!t3.is_consensus_infeasible(0.67));
+    }
+
+    #[test]
+    fn fault_tally_resource_exceeded_is_a_separate_nonterminal_class() {
+        // 3 providers, all OOM → consensus RESOURCE-EXCEEDED (re-route, not stop):
+        // it is the resource class, NOT the (terminal) infeasible class.
+        let mut t = FaultTally::new(3);
+        t.record(Verdict::ResourceExceeded);
+        t.record(Verdict::ResourceExceeded);
+        t.record(Verdict::ResourceExceeded);
+        assert!(t.is_consensus_resource_exceeded(0.67));
+        assert!(t.resource_exceeded_reason(0.67).is_some());
+        assert!(
+            !t.is_consensus_infeasible(0.67),
+            "OOM consensus must NOT be classified as a terminal logic error"
+        );
+        assert!(t.consensus_reason(0.67).is_none());
+
+        // Mixed 1 OOM + 2 silent → not a consensus of either class.
+        let mut t2 = FaultTally::new(3);
+        t2.record(Verdict::ResourceExceeded);
+        t2.record_silent();
+        t2.record_silent();
+        assert!(!t2.is_consensus_resource_exceeded(0.67));
+        assert!(!t2.is_consensus_infeasible(0.67));
     }
 }

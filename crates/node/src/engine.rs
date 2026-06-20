@@ -82,11 +82,19 @@ pub struct JobContext {
     /// `versionId` passed via the secret/URL); the mock engine ignores it.
     /// `None` ⇒ no pin (today's behavior).
     pub input_snapshot: Option<p2p_proto::InputSnapshot>,
+    /// **Presigned credential mode.** Per-object presigned read URLs: the real
+    /// engine rewrites the SQL's object references to these signed HTTPS URLs and
+    /// reads them with NO `CREATE SECRET` (no reusable secret on the host). Empty
+    /// ⇒ the secret-based path via [`Self::credential`] (today's behavior).
+    pub signed_inputs: Vec<p2p_proto::SignedInput>,
 }
 
 impl JobContext {
     pub fn is_empty(&self) -> bool {
-        self.credential.is_none() && self.parquet_keys.is_empty() && self.input_snapshot.is_none()
+        self.credential.is_none()
+            && self.parquet_keys.is_empty()
+            && self.input_snapshot.is_none()
+            && self.signed_inputs.is_empty()
     }
 }
 

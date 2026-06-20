@@ -1541,6 +1541,9 @@ async fn credential_provider_attaches_without_breaking_query() {
     let st = store();
     let coord = coordinator(&[&w], base_cfg(1, 1), st as Arc<dyn TrustStore>)
         .await
+        // Scoped-secret mode: the wired credential provider is actually used to
+        // mint a per-job credential (the default mode is now presigned).
+        .with_credential_mode(p2p_config::CredentialMode::ScopedSecret)
         .with_credential_provider(Arc::new(p2p_node::FakeStsS3Provider::new("eu-west-1")));
     let outcome = coord
         .run_query("SELECT 1", QueryOverrides::default())
@@ -1881,9 +1884,12 @@ async fn metered_job_bills_actual_seconds_and_refunds_unused_escrow() {
 
 /// HARD cap deadline: a metered job whose execution exceeds `cap_seconds` is
 /// ABORTED at the cap (no grace) and classified as a resource/job fault. With a
-/// consensus of providers overrunning, the query is `Infeasible` — NO escrow is
-/// opened/settled and NO stake is slashed (the data was simply too big for the
-/// bid cap; the providers are blameless).
+/// consensus of providers overrunning, the job is TOO BIG for the bid cap — a
+/// resource-exceeded (NOT logic-infeasible) outcome (Part A.1). The coordinator
+/// excludes the overrunning nodes and re-routes to higher-capacity nodes; with no
+/// higher-capacity node available it terminates as `ExceedsCapacity`. Either way
+/// NO escrow is opened/settled and NO stake is slashed (the providers are
+/// blameless — they just lost the cap race).
 #[tokio::test]
 async fn metered_overrun_past_cap_aborts_with_no_settle_and_no_slash() {
     const TON: Amount = 1_000_000_000;
@@ -1911,8 +1917,9 @@ async fn metered_overrun_past_cap_aborts_with_no_settle_and_no_slash() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, p2p_node::CoordinatorError::Infeasible { .. }),
-        "a consensus cap overrun is a job fault (Infeasible), got {err:?}",
+        matches!(err, p2p_node::CoordinatorError::ExceedsCapacity { .. }),
+        "a consensus cap overrun is a resource/job fault that re-routes then \
+         terminates as ExceedsCapacity (not the terminal logic-error Infeasible), got {err:?}",
     );
 
     // NO escrow opened/settled (the job never reached a verified quorum).

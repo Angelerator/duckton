@@ -14,6 +14,7 @@ import {
 } from "@/lib/network-mode";
 import { TonConnectProvider, WalletButton } from "@/lib/ton-connect";
 import { LiveProvider, LiveStatus } from "@/lib/live";
+import { meta } from "@/lib/data";
 
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
   return (
@@ -51,12 +52,20 @@ function SidebarFooter() {
       <div className="mt-1.5 flex items-center justify-between">
         <span className="text-muted-foreground">protocol</span>
         <Badge variant="muted" className="font-mono">
-          p2p/0.2.0
+          p2p/{meta.protocolVersion}
         </Badge>
       </div>
       <div className="mt-1.5 flex items-center justify-between">
+        <span className="text-muted-foreground">duckton</span>
+        <span className="inline-flex items-center gap-1.5">
+          <Badge variant="ok" className="font-mono">
+            community v{meta.workspaceVersion}
+          </Badge>
+        </span>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between">
         <span className="text-muted-foreground">engine</span>
-        <span className="font-mono">duckdb-1.1.3</span>
+        <span className="font-mono">{meta.engineVersion}</span>
       </div>
     </div>
   );

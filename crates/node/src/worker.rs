@@ -384,13 +384,22 @@ impl Worker {
         self
     }
 
-    /// Attach an OS-level execution sandbox (architecture §9.4) resolved from
-    /// config. The egress allow-list and read-only fixture paths are derived
-    /// from the `[storage]` section so a job can reach object storage but
-    /// nothing else. When `cfg.sandbox.enabled = false` this is a no-op and the
-    /// worker behaves exactly as before.
-    pub fn with_sandbox(mut self, cfg: &p2p_config::GridConfig) -> Self {
-        let sandbox = sandbox::build(&cfg.sandbox);
+    /// Attach an OS-level execution sandbox (architecture §9.4) resolved from the
+    /// HOST-serving sandbox config + the `[storage]` section. The egress
+    /// allow-list and read-only fixture paths are derived from `[storage]` so a
+    /// job can reach object storage but nothing else. When `sandbox_cfg.enabled =
+    /// false` this is a no-op and the worker behaves exactly as before.
+    ///
+    /// Takes the sandbox config explicitly (not the whole `GridConfig`) so the
+    /// caller can pass the **host-serving** posture — the secure defaults applied
+    /// at `Node::spawn_host` — without forcing those defaults onto the requester's
+    /// own self-run path.
+    pub fn with_sandbox(
+        mut self,
+        sandbox_cfg: &SandboxConfig,
+        storage_cfg: &p2p_config::StorageConfig,
+    ) -> Self {
+        let sandbox = sandbox::build(sandbox_cfg);
         // LOUD warning: with the no-op sandbox backend there is NO OS-level
         // process isolation or egress control — `enter_job` is a documented
         // no-op, so untrusted queries run in-process. If remote object-storage
@@ -398,7 +407,7 @@ impl Worker {
         // query and arbitrary network/filesystem egress is the DuckDB
         // configuration lockdown (which cannot scope network egress). Make sure
         // the operator does not believe the deployment is OS-sandboxed.
-        if sandbox.name() == "noop" && cfg.storage.enable_remote_access {
+        if sandbox.name() == "noop" && storage_cfg.enable_remote_access {
             warn!(
                 sandbox_backend = sandbox.name(),
                 "NO OS-LEVEL SANDBOX: storage.enable_remote_access=true but the effective \
@@ -415,10 +424,10 @@ impl Worker {
         // falls back to in-process THERE, so no (now-stale) warning is emitted here.
         self.sandbox = SandboxPolicy {
             sandbox,
-            cfg: Arc::new(cfg.sandbox.clone()),
-            egress: Arc::new(EgressAllowList::derive(&cfg.sandbox, &cfg.storage)),
-            read_only_paths: Arc::new(cfg.storage.allowed_local_paths.clone()),
-            remote_access: cfg.storage.enable_remote_access,
+            cfg: Arc::new(sandbox_cfg.clone()),
+            egress: Arc::new(EgressAllowList::derive(sandbox_cfg, storage_cfg)),
+            read_only_paths: Arc::new(storage_cfg.allowed_local_paths.clone()),
+            remote_access: storage_cfg.enable_remote_access,
         };
         self
     }
@@ -1046,6 +1055,9 @@ impl Worker {
             credential: dispatch.credential.clone(),
             parquet_keys: Vec::new(),
             input_snapshot: dispatch.input_snapshot.clone(),
+            // Presigned credential mode: per-object signed HTTPS URLs the engine
+            // rewrites the SQL to read with no secret on the host.
+            signed_inputs: dispatch.signed_inputs.clone(),
         };
 
         // Engage the OS-level execution sandbox (architecture §9.4) for the

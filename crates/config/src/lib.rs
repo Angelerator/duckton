@@ -1029,6 +1029,15 @@ pub struct BudgetConfig {
     pub per_job_memory_bytes: u64,
     /// Per-job default thread lease.
     pub per_job_threads: u32,
+    /// Fraction in `[0,1)` of `memory_bytes` permanently reserved for the node's
+    /// OWN (local) queries on a **dual-role** node (one that both runs its own
+    /// queries and serves others). The process-wide capacity governor caps the
+    /// memory held by SERVED jobs at `(1 - local_reserved_fraction) *
+    /// memory_bytes`, so serving can never consume 100% and lock the node out of
+    /// running its own work. It has NO effect on a serve-only node (local
+    /// execution disabled) or a local-only node, so existing single-role
+    /// deployments keep their full effective capacity (back-compat).
+    pub local_reserved_fraction: f64,
     /// Data classes the host is willing to serve.
     pub data_classes: Vec<DataClassCfg>,
 }
@@ -1041,6 +1050,7 @@ impl Default for BudgetConfig {
             max_jobs: 3,
             per_job_memory_bytes: 1024 * 1024 * 1024,
             per_job_threads: 1,
+            local_reserved_fraction: 0.1,
             data_classes: vec![DataClassCfg::Public],
         }
     }
@@ -1155,12 +1165,42 @@ impl Default for SybilConfig {
     }
 }
 
+/// How a worker is granted read access to a job's pinned input objects
+/// (architecture §9.2). Layers like everything else (default → TOML → env).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CredentialMode {
+    /// **Default (open commodity grid).** The REQUESTER signs per-object,
+    /// time-limited read URLs (S3 SigV4 query-string presign / Azure
+    /// user-delegation SAS / GCS signed URL) from the job's pinned
+    /// `input_snapshot`, and the worker reads them via plain HTTPS with NO
+    /// `CREATE SECRET` — **zero reusable secret reaches the host**. A presigned
+    /// URL is a bearer artifact scoped to one object until it expires.
+    #[default]
+    Presigned,
+    /// The requester issues a short-lived, prefix-scoped credential (STS session
+    /// token / SAS / downscoped token) carried PLAINTEXT in the `Dispatch`; the
+    /// worker mints a read-only `CREATE SECRET` from it. The credential reaches
+    /// the host (in cleartext), so use this only with trusted/L2 hosts.
+    ScopedSecret,
+    /// Same scoped credential, but SEALED (X25519 + ChaCha20-Poly1305) to the
+    /// selected worker's attestation-bound sealing key so the plaintext never
+    /// travels. Requires the worker's sealing public key (confidential/L2 tier);
+    /// falls back to scoped-secret delivery when no sealing key is available.
+    Sealed,
+}
+
 /// Object-storage / credential settings (architecture §9.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     /// Default/primary credential-provider id: "local-fake" | "s3" | "az" | "gcs".
     pub provider: String,
+    /// How a worker is granted read access to the job's pinned objects:
+    /// `presigned` (default — requester-signed per-object HTTPS URLs, no secret on
+    /// the host), `scoped_secret` (plaintext scoped credential → `CREATE SECRET`),
+    /// or `sealed` (scoped credential sealed to the worker's enclave key).
+    pub credential_mode: CredentialMode,
     /// Endpoint URL (used by local fake or S3-compatible / MinIO stores), e.g.
     /// `minio.local:9000`. Top-level default; per-provider overrides live in
     /// `[storage.provider_options.<id>]`.
@@ -1213,6 +1253,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             provider: "local-fake".to_string(),
+            credential_mode: CredentialMode::default(),
             endpoint: None,
             region: None,
             url_style: None,
@@ -1469,12 +1510,17 @@ impl Default for SandboxLimitsConfig {
 /// OS-level execution sandbox configuration (`[sandbox]`, architecture §9.4).
 ///
 /// Layers like everything else: defaults → TOML → `P2P_SANDBOX_*` env →
-/// per-call. SECURE BY DEFAULT for the HOST serving path (`enabled` +
-/// `process_per_job` default ON) — a node that serves OTHER peers' jobs runs
-/// them OS-sandboxed in a child process; `backend = auto` degrades to a no-op on
-/// platforms with no OS sandbox so a node never crashes, and where confinement
-/// can't be applied the host fails SAFE. The requester's OWN local self-run path
-/// is never process-isolated (it runs in-process under the DuckDB lockdown).
+/// per-call. The GLOBAL default is the NEUTRAL/no-op posture (`enabled` +
+/// `process_per_job` OFF) so a pure REQUESTER is never force-sandboxed — its own
+/// local self-run path always runs in-process under the DuckDB lockdown and needs
+/// no protection from itself. The SECURE posture (OS sandbox + process-per-job
+/// ON) is applied ONLY to the HOST-serving path at [`Node::spawn_host`] (see
+/// [`SandboxConfig::host_serving_secure`]): a node that serves OTHER peers' jobs
+/// runs them OS-sandboxed in a child process. `backend = auto` degrades to a
+/// no-op on platforms with no OS sandbox so a node never crashes, and where
+/// confinement can't be applied the host fails SAFE. To run a host WITHOUT the
+/// sandbox, set `backend = "none"` (any explicit `[sandbox]` customization is
+/// honored verbatim and not overridden by the host secure defaults).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SandboxConfig {
@@ -1516,25 +1562,40 @@ pub struct SandboxConfig {
 impl Default for SandboxConfig {
     fn default() -> Self {
         Self {
-            // Secure-by-default for the HOST serving path (architecture §9.4): a
-            // node that serves OTHER peers' jobs runs them OS-sandboxed,
-            // process-per-job, by default. This does NOT affect the requester's
-            // OWN local self-run path (which runs `self.engine` in-process and is
-            // never process-isolated — you need no protection from yourself).
-            // Where OS confinement can't be applied (no child executor / an
-            // unsupported backend) the host fails SAFE: it keeps the DuckDB SQL
-            // lockdown and falls back to in-process for FREE/local jobs, but
-            // refuses to serve remote-access jobs unconfined (see
-            // `Node::host_remote_egress_confined`). `backend = auto` degrades to a
-            // no-op on platforms with no OS sandbox, so this never crashes.
-            enabled: true,
+            // NEUTRAL global default (architecture §9.4): the OS sandbox is OFF in
+            // the base config so a pure REQUESTER that only runs its own queries is
+            // never force-sandboxed (its self-run path runs in-process under the
+            // DuckDB lockdown — no protection from yourself is needed). The SECURE
+            // posture (sandbox + process-per-job ON) is applied to the HOST-serving
+            // path at `Node::spawn_host` via `SandboxConfig::host_serving_secure`,
+            // NOT baked in globally. `backend = auto` is retained so that when the
+            // host secure defaults DO turn the sandbox on, it picks the right OS
+            // backend (and degrades to a no-op where none exists, never crashing).
+            enabled: false,
             backend: SandboxBackend::Auto,
             limits: SandboxLimitsConfig::default(),
             egress_mode: SandboxEgressMode::InheritStorage,
             egress_allowlist: Vec::new(),
             temp_dir_policy: SandboxTempDirPolicy::Ephemeral,
             temp_dir: None,
+            process_per_job: false,
+        }
+    }
+}
+
+impl SandboxConfig {
+    /// The SECURE HOST-serving posture: OS sandbox + process-per-job ON, every
+    /// other knob at its (neutral) default. Applied by `Node::spawn_host` /
+    /// `Node::host_worker` to the path that SERVES other peers' jobs, so a host is
+    /// secure-by-default while the requester's OWN local self-run path (which uses
+    /// the global neutral default) is never process-isolated. An operator who
+    /// customizes `[sandbox]` at all (e.g. `backend = "none"`) is honored verbatim
+    /// instead of this posture — see `Node::host_sandbox`.
+    pub fn host_serving_secure() -> Self {
+        Self {
+            enabled: true,
             process_per_job: true,
+            ..Self::default()
         }
     }
 }
@@ -1861,6 +1922,9 @@ impl GridConfig {
                 "P2P_BUDGET_MEMORY_BYTES" => self.budget.memory_bytes = parse(k, v)?,
                 "P2P_BUDGET_THREADS" => self.budget.threads = parse(k, v)?,
                 "P2P_BUDGET_MAX_JOBS" => self.budget.max_jobs = parse(k, v)?,
+                "P2P_BUDGET_LOCAL_RESERVED_FRACTION" => {
+                    self.budget.local_reserved_fraction = parse(k, v)?
+                }
                 "P2P_METADATA_REFRESH_INTERVAL_SECS" => {
                     self.metadata.refresh_interval_secs = parse(k, v)?
                 }
@@ -1870,6 +1934,18 @@ impl GridConfig {
                 "P2P_POW_DIFFICULTY_BITS" => self.sybil.pow_difficulty_bits = parse(k, v)?,
                 "P2P_WORKER_POOL_SIZE" => self.limits.worker_pool_size = parse(k, v)?,
                 "P2P_STORAGE_PROVIDER" => self.storage.provider = v.clone(),
+                "P2P_STORAGE_CREDENTIAL_MODE" => {
+                    self.storage.credential_mode = match v.trim().to_ascii_lowercase().as_str() {
+                        "presigned" => CredentialMode::Presigned,
+                        "scoped_secret" | "scoped-secret" => CredentialMode::ScopedSecret,
+                        "sealed" => CredentialMode::Sealed,
+                        other => {
+                            return Err(ConfigError::Invalid(format!(
+                                "P2P_STORAGE_CREDENTIAL_MODE must be presigned|scoped_secret|sealed, got `{other}`"
+                            )))
+                        }
+                    }
+                }
                 "P2P_STORAGE_ENDPOINT" => self.storage.endpoint = Some(v.clone()),
                 "P2P_STORAGE_REGION" => self.storage.region = Some(v.clone()),
                 "P2P_STORAGE_URL_STYLE" => self.storage.url_style = Some(v.clone()),
@@ -2270,6 +2346,13 @@ impl GridConfig {
         }
         if self.budget.max_jobs == 0 {
             return inv("budget.max_jobs must be >= 1".into());
+        }
+        if !(self.budget.local_reserved_fraction >= 0.0 && self.budget.local_reserved_fraction < 1.0)
+        {
+            return inv(format!(
+                "budget.local_reserved_fraction must be in [0,1), got {}",
+                self.budget.local_reserved_fraction
+            ));
         }
         if self.network.keepalive_ms == 0 {
             return inv("network.keepalive_ms must be >= 1".into());
@@ -2909,19 +2992,31 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_defaults_are_secure_for_hosts_and_valid() {
-        // Secure-by-default for the host serving path (§9.4): OS sandbox +
-        // process-per-job default ON. `backend = auto` degrades to a no-op on
-        // platforms with no OS sandbox, so a node never crashes; the requester's
-        // own self-run path is unaffected (it runs in-process regardless).
+    fn sandbox_global_default_is_neutral_host_posture_is_secure() {
+        // The GLOBAL default is NEUTRAL (§9.4): a pure requester is never
+        // force-sandboxed — its self-run path runs in-process regardless. The
+        // SECURE posture (OS sandbox + process-per-job ON) is the host-serving
+        // default applied at spawn_host via `host_serving_secure`. `backend = auto`
+        // degrades to a no-op on platforms with no OS sandbox, so a node never
+        // crashes.
         let cfg = GridConfig::default();
-        assert!(cfg.sandbox.enabled);
-        assert!(cfg.sandbox.process_per_job);
+        assert!(!cfg.sandbox.enabled, "global default sandbox is off");
+        assert!(
+            !cfg.sandbox.process_per_job,
+            "global default process-per-job is off"
+        );
         assert_eq!(cfg.sandbox.backend, SandboxBackend::Auto);
         assert_eq!(cfg.sandbox.egress_mode, SandboxEgressMode::InheritStorage);
         assert_eq!(cfg.sandbox.limits.mode, SandboxLimitsMode::InheritBudget);
         assert_eq!(cfg.sandbox.temp_dir_policy, SandboxTempDirPolicy::Ephemeral);
         cfg.validate().unwrap();
+
+        // The host-serving posture flips on the OS sandbox + process-per-job while
+        // leaving every other knob at its neutral default.
+        let host = SandboxConfig::host_serving_secure();
+        assert!(host.enabled && host.process_per_job);
+        assert_eq!(host.backend, SandboxBackend::Auto);
+        assert_eq!(host.egress_mode, SandboxEgressMode::InheritStorage);
     }
 
     #[test]

@@ -385,8 +385,9 @@ pub struct RankingEconomics {
     /// Weight of the **measured proven-capability** term in the selection score
     /// (the grid-wide capability model): `+ capability_weight · capability_confidence`,
     /// where confidence is the Wilson-shrunk fraction of counterparty-measured
-    /// successes. `0.0` (default) reproduces today's selection exactly; a small
-    /// positive value biases heavy work toward peers proven to handle it.
+    /// successes. Defaults to a small `0.1` — a no-op on a fresh grid (confidence
+    /// is 0 with no proven history) that gently biases heavy work toward peers
+    /// proven to handle it once self-measured capability exists. `0.0` disables it.
     pub capability_weight: f64,
     /// **Newcomer trust ceiling** (anti-cheat / cheap-fresh-identity guardrail): a
     /// thin-history node — fewer than `newcomer_obs_threshold` verified
@@ -436,7 +437,12 @@ impl Default for RankingEconomics {
             w_throughput: 0.15,
             exploration_rate: 0.0,
             exploration_saturation: 20,
-            capability_weight: 0.0,
+            // Small, conservative default so MEASURED proven capability gives a
+            // gentle pull in selection / tie-breaks. It is a strict no-op on a
+            // fresh grid: `capability_confidence` is 0 for any peer with no proven
+            // history, so the term contributes 0 to every score until real
+            // self-measured capability is gossiped in.
+            capability_weight: 0.1,
             newcomer_trust_ceiling: 1.0,
             newcomer_obs_threshold: 20,
             // Deny stake any ranking pull until a node has proven roughly a

@@ -141,6 +141,26 @@ pub struct Bid {
     pub cap_seconds: u64,
 }
 
+/// A presigned, time-limited read URL for one pinned input object (presigned
+/// credential mode, architecture §9.2). The requester signs a per-object,
+/// short-TTL HTTPS URL (S3 SigV4 query-string presign / Azure user-delegation
+/// SAS / GCS signed URL) from a job's pinned `input_snapshot` and ships it so the
+/// worker rewrites the SQL's object reference to `url` and reads it with plain
+/// HTTPS — **no `CREATE SECRET`, no reusable credential on the host**.
+///
+/// Honest scope: a presigned URL is a *bearer* artifact — whoever holds it can
+/// re-read that one object until it expires. That is expected; the win is that
+/// **no reusable credential** (access key / session token) ever reaches the
+/// commodity worker, only a narrow, expiring read capability per object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedInput {
+    /// The original object URI exactly as it appears in the job SQL (e.g.
+    /// `s3://bucket/key.parquet`). The worker replaces this literal with `url`.
+    pub uri: String,
+    /// The presigned HTTPS URL the worker reads instead of `uri`.
+    pub url: String,
+}
+
 /// A scoped, short-lived storage credential delivered inside a [`Dispatch`]
 /// (architecture §9.2). In tests this points at a local fake object store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,7 +182,9 @@ pub struct Dispatch {
     /// The full SQL text to execute.
     pub sql: String,
     pub query_hash: QueryHash,
-    /// Per-job scoped credential (optional; absent for purely local test data).
+    /// Per-job scoped credential (optional; absent for purely local test data,
+    /// and absent in **presigned** credential mode where [`Self::signed_inputs`]
+    /// carries per-object signed URLs instead).
     pub credential: Option<ScopedCredential>,
     /// Memory lease for the execution connection (bytes).
     pub memory_limit_bytes: u64,
@@ -188,6 +210,14 @@ pub struct Dispatch {
     /// exactly today's behavior.
     #[serde(default)]
     pub input_snapshot: Option<InputSnapshot>,
+    /// **Presigned credential mode.** Per-object presigned read URLs for the
+    /// pinned input objects: the requester signs short-TTL HTTPS URLs and the
+    /// worker rewrites the SQL's object references to them, reading via plain
+    /// HTTPS with NO `CREATE SECRET` / no reusable credential on the host. Empty
+    /// (default / scoped-secret / sealed modes / an older requester) ⇒ the
+    /// secret-based path via [`Self::credential`], exactly today's behavior.
+    #[serde(default)]
+    pub signed_inputs: Vec<SignedInput>,
     /// Hard per-attempt execution deadline (milliseconds) derived from the metered
     /// `cap_seconds` of the worker's own bid: the worker ABORTS exactly at this cap
     /// (no grace window) and reports a resource/job fault (no provider penalty, no

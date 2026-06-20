@@ -268,6 +268,45 @@ fn sql_lit(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
 }
 
+/// RFC-3986 percent-encoding as required by AWS SigV4 (unreserved set
+/// `A-Za-z0-9-_.~` pass through; `/` is preserved in a path unless
+/// `encode_slash`). Used to build presigned S3 URLs and to encode the object
+/// path in the no-cloud fake presigner.
+pub fn aws_uri_encode(s: &str, encode_slash: bool) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b'/' if !encode_slash => out.push('/'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// **Worker side, presigned credential mode.** Rewrite the job SQL so each pinned
+/// input object reference (a single-quoted `'<uri>'` literal) is replaced by its
+/// presigned HTTPS `'<url>'`, letting the worker read it with plain HTTPS and NO
+/// `CREATE SECRET`. Only the exact, single-quoted object literal is replaced, so
+/// unrelated text is never touched. Longer URIs are substituted first so a URI
+/// that is a prefix of another cannot shadow it.
+pub fn rewrite_signed_urls(sql: &str, signed: &[p2p_proto::SignedInput]) -> String {
+    let mut pairs: Vec<&p2p_proto::SignedInput> = signed.iter().collect();
+    pairs.sort_by(|a, b| b.uri.len().cmp(&a.uri.len()));
+    let mut out = sql.to_string();
+    for s in pairs {
+        if s.uri.is_empty() {
+            continue;
+        }
+        let from = sql_lit(&s.uri);
+        let to = sql_lit(&s.url);
+        out = out.replace(&from, &to);
+    }
+    out
+}
+
 /// Validate and normalize a provider-specific `extra` secret OPTION KEY for safe,
 /// *unquoted* interpolation into a `CREATE SECRET (...)` option list. Unlike the
 /// option *values* (escaped via [`sql_lit`]), the key is an SQL identifier and is
@@ -1114,6 +1153,52 @@ mod tests {
             .create_secret_sql("s", &sc, &ProviderOptions::default())
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn rewrite_signed_urls_replaces_object_literals_only() {
+        let signed = vec![
+            p2p_proto::SignedInput {
+                uri: "s3://b/events/a.parquet".into(),
+                url: "https://signed.example/a?sig=1".into(),
+            },
+            p2p_proto::SignedInput {
+                uri: "s3://b/events/b.parquet".into(),
+                url: "https://signed.example/b?sig=2".into(),
+            },
+        ];
+        let sql = "SELECT * FROM read_parquet('s3://b/events/a.parquet') \
+                   UNION ALL SELECT * FROM read_parquet('s3://b/events/b.parquet')";
+        let out = rewrite_signed_urls(sql, &signed);
+        assert!(out.contains("'https://signed.example/a?sig=1'"), "{out}");
+        assert!(out.contains("'https://signed.example/b?sig=2'"), "{out}");
+        // The original object refs are gone — the worker reads only signed URLs.
+        assert!(!out.contains("s3://b/events/a.parquet"), "{out}");
+        assert!(!out.contains("s3://b/events/b.parquet"), "{out}");
+    }
+
+    #[test]
+    fn rewrite_signed_urls_prefers_longer_uris_first() {
+        // A URI that is a prefix of another must not shadow the longer one.
+        let signed = vec![
+            p2p_proto::SignedInput {
+                uri: "s3://b/data".into(),
+                url: "https://signed/short".into(),
+            },
+            p2p_proto::SignedInput {
+                uri: "s3://b/data/file.parquet".into(),
+                url: "https://signed/long".into(),
+            },
+        ];
+        let out = rewrite_signed_urls("FROM 's3://b/data/file.parquet'", &signed);
+        assert_eq!(out, "FROM 'https://signed/long'");
+    }
+
+    #[test]
+    fn aws_uri_encode_preserves_unreserved_and_path() {
+        assert_eq!(aws_uri_encode("a/b-c_d.e~f", false), "a/b-c_d.e~f");
+        assert_eq!(aws_uri_encode("a/b", true), "a%2Fb");
+        assert_eq!(aws_uri_encode("x y+z", false), "x%20y%2Bz");
     }
 
     #[test]

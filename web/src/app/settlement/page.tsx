@@ -12,8 +12,10 @@ import {
   Layers,
   Lock,
   LockKeyhole,
+  Percent,
   Scale,
   ShieldCheck,
+  Timer,
   Wallet,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -37,7 +39,7 @@ import { KV, PageHeader, SectionTitle, Stat } from "@/components/common/atoms";
 import { Explainer } from "@/components/common/explain";
 import { BarMini } from "@/components/common/charts";
 import { CopyId } from "@/components/common/copy";
-import { epochs, settlement, stakeAccounts } from "@/lib/data";
+import { config, epochs, settlement, stakeAccounts } from "@/lib/data";
 import { bytes, durationSecs, inFuture, ms, num, pct } from "@/lib/format";
 import { EarningsCalculator } from "./earnings-calculator";
 import { SettlementPlots } from "./plots";
@@ -127,6 +129,22 @@ const SLASH_SPLIT: { label: string; frac: number }[] = [
   { label: "to treasury", frac: settlement.slashing.toTreasury },
 ];
 
+/* --------------------------------------------- pricing & ranking (real cfg) */
+
+// The live `economics.pricing` / `economics.ranking` sections of this node's
+// GridConfig (from the snapshot), read defensively.
+const eco = (config.value.economics ?? {}) as Record<string, unknown>;
+const pricingCfg = (eco.pricing ?? {}) as Record<string, unknown>;
+const rankingCfg = (eco.ranking ?? {}) as Record<string, unknown>;
+const numOr = (v: unknown, d = 0): number => (typeof v === "number" ? v : d);
+const strOr = (v: unknown, d = ""): string => (typeof v === "string" ? v : d);
+
+const pricingModel = strOr(pricingCfg.model, "metered");
+const capMultiplier = numOr(pricingCfg.cap_multiplier, 5);
+const meteringTolerance = numOr(pricingCfg.metering_tolerance, 1.5);
+const wStake = numOr(rankingCfg.w_stake);
+const stakeReliabilityFloor = numOr(rankingCfg.stake_reliability_floor);
+
 export default function SettlementPage() {
   const totalBonded = stakeAccounts.reduce((a, s) => a + s.stakeTon, 0);
   const settledCount = settlement.events.filter((e) => e.type === "Settled").length;
@@ -198,6 +216,86 @@ export default function SettlementPage() {
           accent={proof?.verified ? "ok" : "destructive"}
           hint="A cryptographic check that a single receipt really is part of the anchored on-chain summary."
         />
+      </div>
+
+      {/* Economics model — fees, time-based pricing, reliability-gated stake */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Percent className="size-4 text-[var(--warn)]" /> Fee split
+            </CardTitle>
+            <CardDescription>
+              The admin defaults enforced on-chain in <span className="font-mono">GlobalParams</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <dl>
+              <KV label="platform fee φ">
+                <span className="font-semibold">{pct(settlement.fees.platformFeePct, 0)}</span>
+              </KV>
+              <KV label="verifier commission κ">
+                <span className="font-semibold">
+                  {pct(settlement.fees.participationCommissionFrac, 0)}
+                </span>
+              </KV>
+              <KV label="verification surcharge">
+                {pct(settlement.fees.verificationSurchargePct, 0)}
+              </KV>
+            </dl>
+            <p className="text-muted-foreground mt-2 text-xs">
+              φ is taken once on the escrow; κ is a flat cut paid to <em>each</em> agreeing
+              non-winner that helped form the quorum. The winner takes the bounded remainder.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Timer className="size-4 text-primary" /> Time-based pricing
+            </CardTitle>
+            <CardDescription>
+              The default <span className="font-mono">{pricingModel}</span> cost model for paid jobs.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <dl>
+              <KV label="formula">
+                <span className="font-mono text-xs">rate × seconds</span>
+              </KV>
+              <KV label="cap multiplier">{capMultiplier}×</KV>
+              <KV label="metering tolerance">{meteringTolerance.toFixed(1)}×</KV>
+            </dl>
+            <p className="text-muted-foreground mt-2 text-xs">
+              Cost = per-second rate × processing seconds. The {capMultiplier}× cap is both the
+              billing ceiling and a hard execution deadline; the escrow is sized to the worst case
+              (an up-front coverage check), and the unused remainder is refunded.
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Scale className="size-4 text-primary" /> Stake weighting
+            </CardTitle>
+            <CardDescription>
+              How bonded stake influences a host&apos;s selection ranking.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <dl>
+              <KV label="w_stake">{wStake.toFixed(2)}</KV>
+              <KV label="reliability floor">{stakeReliabilityFloor.toFixed(2)}</KV>
+            </dl>
+            <p className="text-muted-foreground mt-2 text-xs">
+              The stake ranking term is <span className="text-foreground">reliability-gated</span>:
+              it only amplifies hosts whose verified-success rate already clears the floor, so extra
+              stake can never rescue an unreliable node or buy its way to the top.
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Contracts */}

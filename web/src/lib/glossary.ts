@@ -67,6 +67,18 @@ export const GLOSSARY: Term[] = [
     impact: "Higher sensitivity automatically routes work to more-trusted, hardware-attested machines.",
     group: "Core",
   },
+  {
+    term: "Smart routing & failover",
+    what: "A pre-flight, metadata-only size estimate decides whether a query runs locally or on the grid; a job that turns out too big (or OOMs) is rerouted to higher-capacity hosts instead of failing.",
+    impact: "Small queries stay free and local; big ones find a machine that can handle them, and only error out when no host in the swarm can.",
+    group: "Core",
+  },
+  {
+    term: "SystemProfile",
+    what: "Non-personal machine-class metadata a host self-reports — CPU model/arch, RAM, disk, OS.",
+    impact: "Feeds analytics and size-based routing as a HINT; it is distinct from the donated compute budget and carries no personal data.",
+    group: "Core",
+  },
 
   // ---- Trust ----
   {
@@ -117,6 +129,18 @@ export const GLOSSARY: Term[] = [
     impact: "Stops an attacker from flooding the grid with fake workers to outvote honest ones.",
     group: "Trust",
   },
+  {
+    term: "Source-data-drift verification",
+    what: "Quorum is fingerprint-aware: the requester pins an input snapshot and each worker reports an input_fingerprint, so only results computed over the SAME source data are compared.",
+    impact: "A stale, swapped, or drifted data source can't silently win a quorum — agreement now proves same-query AND same-input.",
+    group: "Trust",
+  },
+  {
+    term: "Selection score",
+    what: "The composite ranking used to pick eligible hosts: quality, reliability-gated stake, price, and counterparty-measured latency, throughput and proven capability.",
+    impact: "Genuinely faster, higher-throughput, proven-capable hosts win dispatch more often — and the scores are measured by counterparties, not self-reported, so they can't be gamed.",
+    group: "Trust",
+  },
 
   // ---- Network ----
   {
@@ -141,6 +165,12 @@ export const GLOSSARY: Term[] = [
     term: "Bootstrap peer",
     what: "Any reachable node you contact once just to enter the swarm.",
     impact: "Not a central server — it holds no data, is never in the query path, and is freely replaceable.",
+    group: "Network",
+  },
+  {
+    term: "Private / enterprise mode",
+    what: "The [security].mode = private switch that turns the open grid into a fully closed company pool: allowlist mTLS, cryptographic group tokens, a non-default network, fail-closed discovery, and a default-deny requester roster.",
+    impact: "Outsiders can neither connect/impersonate nor be served, and a misconfigured private node fails to start (fail-closed) rather than leaking.",
     group: "Network",
   },
 
@@ -223,8 +253,32 @@ export const GLOSSARY: Term[] = [
   },
   {
     term: "Participation commission (κ)",
-    what: "A small fixed cut paid to each agreeing non-winner.",
+    what: "A small fixed cut (5%) paid to each agreeing non-winner.",
     impact: "Pays the workers whose matching results formed the quorum — so honest verification is worth doing.",
+    group: "Economics",
+  },
+  {
+    term: "Platform fee (φ)",
+    what: "The protocol/admin cut (15%) taken once from a paid job's escrow, enforced on-chain in GlobalParams.",
+    impact: "A fixed, transparent fee — the winner takes the bounded remainder after φ and the κ commissions.",
+    group: "Economics",
+  },
+  {
+    term: "Time-based pricing",
+    what: "The default metered cost model: cost = per-second rate × processing seconds. A 5× cap is both the billing ceiling and a hard deadline; the escrow is sized to the worst case up front and the unused remainder refunds.",
+    impact: "You pay for the compute time you actually use, can never be over-charged past the cap, and get the rest back.",
+    group: "Economics",
+  },
+  {
+    term: "Stake weighting (reliability-gated)",
+    what: "Bonded stake contributes to a host's selection ranking (w_stake), but only once its verified-success rate clears a reliability floor.",
+    impact: "Stake amplifies already-reliable hosts and can never let an unreliable one buy its way to the top.",
+    group: "Economics",
+  },
+  {
+    term: "Community registry (Duckton extension)",
+    what: "The duckton DuckDB extension is officially published — INSTALL duckton FROM community; LOAD duckton;",
+    impact: "Anyone can install the client with one SQL line, no build required.",
     group: "Economics",
   },
   {

@@ -283,6 +283,19 @@ vouch_weight        = 0.05
 [storage]
 provider            = "local-fake"         # default credential provider: local-fake | s3 | az | gcs
                                            # (use "s3" for AWS *and* self-hosted MinIO / S3-compatible)
+# How a worker is granted READ access to the job's pinned input objects:
+#   presigned     (DEFAULT, open commodity grid) — the REQUESTER signs per-object,
+#                 time-limited HTTPS read URLs and ships them; the worker reads via
+#                 plain HTTPS with NO `CREATE SECRET` / zero reusable secret on the
+#                 host. A presigned URL is a bearer artifact scoped to one object
+#                 until it expires (operator can re-read that object until then).
+#   scoped_secret — issue a short-lived, prefix-scoped credential carried plaintext
+#                 in the Dispatch; the worker mints a read-only `CREATE SECRET`.
+#                 The credential reaches the host — use only with trusted/L2 hosts.
+#   sealed        — same scoped credential, sealed (X25519+ChaCha20) to the worker's
+#                 attestation-bound key (confidential/L2 tier); falls back to
+#                 scoped_secret delivery when no sealing key is available.
+credential_mode     = "presigned"
 # endpoint          = "minio.local:9000"   # S3-compatible / MinIO host:port (host only; scheme via use_ssl)
 # region            = "us-east-1"          # MinIO accepts any region; must be set
 # url_style         = "path"               # "path" for MinIO/most self-hosted, "vhost" for AWS
@@ -379,15 +392,19 @@ max_local_latency_ms      = 10000           # latency budget for the local path 
 # The boundary AROUND job execution, complementing DuckDB's own lockdown
 # (enable_external_access / lock_configuration / allowed_directories / ephemeral
 # temp). DuckDB CANNOT scope network egress to specific endpoints — the OS must.
-# SECURE BY DEFAULT for the HOST serving path: enabled + process_per_job default
-# ON, so a node that serves OTHER peers' jobs runs them OS-sandboxed in a child
-# process. This does NOT affect the requester's OWN local self-run path (it runs
-# in-process and needs no protection from yourself). backend = auto degrades to a
-# no-op on platforms with no OS sandbox, so a node never crashes; where OS
-# confinement can't be applied the host fails SAFE (keeps the DuckDB SQL lockdown,
-# refuses to serve remote-access jobs unconfined).
+# HOST-ONLY secure default: the GLOBAL default below is NEUTRAL (off) so a pure
+# REQUESTER is never force-sandboxed — its own local self-run path always runs
+# in-process under the DuckDB lockdown (no protection from yourself is needed).
+# The SECURE posture (sandbox + process_per_job ON) is applied automatically to
+# the HOST-serving path at spawn_host (a node serving OTHER peers' jobs), so you
+# need not enable it here to be safe as a host. backend = auto degrades to a no-op
+# on platforms with no OS sandbox, so a node never crashes; where OS confinement
+# can't be applied the host fails SAFE (keeps the DuckDB SQL lockdown, refuses to
+# serve remote-access jobs unconfined). Any explicit [sandbox] setting below is
+# honored verbatim for the host (e.g. backend = "none" opts the host out).
 [sandbox]
-enabled        = true                      # master switch (false = no-op sandbox)
+enabled        = false                     # global master switch (off); the host
+                                           #  serving path turns it ON automatically
 backend        = "auto"                    # auto | none | rlimit | cgroups-seccomp |
                                            #  macos-seatbelt | windows-jobobject |
                                            #  android | ios
@@ -395,9 +412,10 @@ backend        = "auto"                    # auto | none | rlimit | cgroups-secc
                                            #  macOS->Seatbelt, Windows->Job Objects,
                                            #  Android->app sandbox+seccomp, iOS->app
                                            #  sandbox (in-process only), else rlimit
-process_per_job = true                     # run each FOREIGN job in an OS-sandboxed
-                                           #  child (needs P2P_JOB_EXEC; else falls
-                                           #  back to in-process under the lockdown)
+process_per_job = false                    # global default off; the host serving
+                                           #  path runs each FOREIGN job in an
+                                           #  OS-sandboxed child (needs P2P_JOB_EXEC;
+                                           #  else falls back to in-process lockdown)
 egress_mode    = "inherit_storage"         # inherit_storage | explicit
                                            #  inherit_storage derives the allow-list
                                            #  from [storage] endpoints/providers

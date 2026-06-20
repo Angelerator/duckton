@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use p2p_config::{DataClassCfg, GridConfig, QueryOverrides, VerifyModeCfg};
 use p2p_proto::{
-    Ack, Attestation, AttestationLevel, Bid, BidDecision, Cancel, DataClass, Dispatch, InputSnapshot,
-    JobId, NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict, VerifyMode, Wire,
+    Ack, Attestation, AttestationLevel, Bid, BidDecision, CapabilityProfile, Cancel, DataClass,
+    Dispatch, InputSnapshot, JobId, NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict,
+    VerifyMode, Wire,
 };
 use p2p_settlement::{
     ensure_escrow_covers, latency_score, required_escrow_total, throughput_score, Amount, JobRecord,
@@ -45,6 +46,62 @@ use crate::signer::IdentitySigner;
 /// the dispatch stream to a prompt job abort (it does not interpret the code).
 const LOSER_RESET_CODE: quinn::VarInt = quinn::VarInt::from_u32(7);
 
+/// Minimum self-measured successes before a node's PROVEN `max_input_bytes` is
+/// trusted as a HARD capacity ceiling for the size gate (Part B). Below this the
+/// proven record is too thin to be confident in, so it is NEVER used to exclude
+/// a candidate — the cold-start-safe reading of a "confidence-shrunk proven max".
+const PROVEN_GATE_MIN_SUCCESSES: u64 = 4;
+
+/// Proven-capacity INPUT gate (size-based routing, Part B): may a job that scans
+/// `scanned_bytes` be sent to a node with this (optional) gossiped proven
+/// capability profile? Deliberately conservative + cold-start safe:
+///  * `scanned_bytes == 0` (no/zero estimate) ⇒ always admit (route as today).
+///  * No proven profile, or one with too few successes to be confident
+///    (`< PROVEN_GATE_MIN_SUCCESSES`) ⇒ admit — a newcomer with no proven history
+///    is never excluded here (unknown ⇒ don't exclude).
+///  * Otherwise exclude ONLY when `scanned_bytes` clearly exceeds the node's
+///    all-time proven `max_input_bytes` PLUS its proven spill headroom
+///    (`max_temp_dir_bytes`).
+fn proven_capacity_admits(profile: Option<&CapabilityProfile>, scanned_bytes: u64) -> bool {
+    if scanned_bytes == 0 {
+        return true;
+    }
+    match profile {
+        Some(p) if p.successes >= PROVEN_GATE_MIN_SUCCESSES => {
+            let ceiling = p.max_input_bytes.saturating_add(p.max_temp_dir_bytes);
+            scanned_bytes <= ceiling
+        }
+        // Unknown / thin proven history ⇒ never exclude (cold-start safety).
+        _ => true,
+    }
+}
+
+/// Advertised-memory capacity gate (size-based routing, Part B): may a job whose
+/// estimated peak working set is `peak_bytes` be sent to a node that advertised
+/// `free_mem_bytes` in its bid (optionally extended by a PROVEN sustained peak)?
+/// Conservative + cold-start safe:
+///  * `peak_bytes == 0` (no/zero estimate) ⇒ always admit.
+///  * `free_mem_bytes == 0` (unknown / older peer) ⇒ admit (do not gate on what
+///    we do not know).
+///  * Otherwise capacity = `free_mem + spill_tolerance`, raised to any proven
+///    sustained peak (`max_peak_memory_bytes + max_temp_dir_bytes`); exclude only
+///    when `peak_bytes` exceeds that capacity.
+fn advertised_capacity_admits(
+    free_mem_bytes: u64,
+    profile: Option<&CapabilityProfile>,
+    peak_bytes: u64,
+    spill_tolerance: u64,
+) -> bool {
+    if peak_bytes == 0 || free_mem_bytes == 0 {
+        return true;
+    }
+    let mut capacity = free_mem_bytes.saturating_add(spill_tolerance);
+    if let Some(p) = profile {
+        capacity = capacity.max(p.max_peak_memory_bytes.saturating_add(p.max_temp_dir_bytes));
+    }
+    peak_bytes <= capacity
+}
+
 /// Errors from running a query on the grid.
 #[derive(Debug, thiserror::Error)]
 pub enum CoordinatorError {
@@ -66,6 +123,12 @@ pub enum CoordinatorError {
          (job fault, not a provider fault): {reason}"
     )]
     Infeasible { reason: String },
+    #[error(
+        "query exceeds the capacity of all available nodes — a consensus of selected providers \
+         ran out of resources (OOM / too big) and no higher-capacity node is available to \
+         re-route to: {reason}"
+    )]
+    ExceedsCapacity { reason: String },
     #[error(
         "re-dispatch exhausted after {attempts} attempt(s) without a usable result \
          (last reason: {reason})"
@@ -158,8 +221,19 @@ enum AttemptResult {
     /// the providers contacted this attempt (excluded next time).
     Inconclusive { tried: Vec<NodeId> },
     /// A consensus of selected providers failed the **same deterministic way**
-    /// (the query is infeasible) — STOP (job fault, no provider penalty).
+    /// (the query is infeasible — bad SQL) — STOP (job fault, no provider
+    /// penalty). Terminal: retrying cannot help.
     Infeasible { reason: String },
+    /// A consensus of selected providers ran OUT OF RESOURCES (OOM / the job was
+    /// too big for them). NOT terminal: exclude the OOMed nodes and re-route to
+    /// other, higher-capacity nodes. `oomed` are the providers to exclude;
+    /// `max_tried_capacity` is the largest free-memory capacity that already
+    /// failed (so the loop only keeps going while strictly bigger nodes exist).
+    ResourceExceeded {
+        oomed: Vec<NodeId>,
+        max_tried_capacity: u64,
+        reason: String,
+    },
     /// Enough providers committed but their result hashes did not agree — a
     /// genuine verification disagreement (terminal).
     QuorumDisagreement { agreement: usize, quorum: usize },
@@ -257,6 +331,16 @@ pub struct Coordinator {
     /// prefix-scoped credential and attaches it to each [`Dispatch`]. `None`
     /// (default) ⇒ `Dispatch.credential = None`, the unchanged local-data path.
     credential_provider: Option<Arc<dyn crate::storage::StorageCredentialProvider>>,
+    /// Per-object presigned-URL signer (presigned credential mode, architecture
+    /// §9.2). When wired AND the job's inputs are pinned, the coordinator signs a
+    /// short-TTL read URL per pinned object and ships them in `Dispatch.signed_inputs`
+    /// so the worker reads via plain HTTPS with NO secret on the host. `None`
+    /// (default) ⇒ no presigning (the secret-based path, or no remote access).
+    presign_provider: Option<Arc<dyn crate::storage::PresignProvider>>,
+    /// How a worker is granted read access to the pinned objects (presigned /
+    /// scoped-secret / sealed). Mirrors `storage.credential_mode`; selects between
+    /// the presign path and the scoped-credential path at dispatch time.
+    credential_mode: p2p_config::CredentialMode,
     /// Wallet↔node binding source (architecture §3.2 / G4). When wired, selection
     /// reputation is AGGREGATED across every node id bound to the same collateral
     /// wallet — so rotating the node key alone (re-binding the new id to the same
@@ -510,6 +594,7 @@ impl Coordinator {
         base_config: Arc<GridConfig>,
         engine_version: impl Into<String>,
     ) -> Self {
+        let credential_mode = base_config.storage.credential_mode;
         Self {
             transport,
             discovery,
@@ -521,6 +606,8 @@ impl Coordinator {
             planner: None,
             stake_registry: None,
             credential_provider: None,
+            presign_provider: None,
+            credential_mode,
             binding_store: None,
             settlement: None,
             record_anchor: None,
@@ -563,6 +650,27 @@ impl Coordinator {
         provider: Arc<dyn crate::storage::StorageCredentialProvider>,
     ) -> Self {
         self.credential_provider = Some(provider);
+        self
+    }
+
+    /// Wire a per-object presigned-URL signer (presigned credential mode,
+    /// architecture §9.2). When set AND the job's inputs are pinned, each pinned
+    /// object is signed into a short-TTL read URL shipped in
+    /// [`Dispatch::signed_inputs`], so the worker reads via plain HTTPS with NO
+    /// `CREATE SECRET` / no reusable credential on the host. Off by default ⇒ the
+    /// scoped-credential path (or no remote access).
+    pub fn with_presign_provider(
+        mut self,
+        provider: Arc<dyn crate::storage::PresignProvider>,
+    ) -> Self {
+        self.presign_provider = Some(provider);
+        self
+    }
+
+    /// Override the credential mode (presigned / scoped-secret / sealed). Defaults
+    /// from `storage.credential_mode`; exposed for explicit wiring/tests.
+    pub fn with_credential_mode(mut self, mode: p2p_config::CredentialMode) -> Self {
+        self.credential_mode = mode;
         self
     }
 
@@ -912,19 +1020,22 @@ impl Coordinator {
         // No pre-flight estimate on this entry point ⇒ the per-job observed input
         // size stays unknown (`0`). The estimate-aware entry is
         // [`Coordinator::run_query_planned`].
-        self.dispatch_to_grid(sql, cfg, &overrides, None).await
+        self.dispatch_to_grid(sql, cfg, &overrides, None, None).await
     }
 
     /// Dispatch a query to the grid (the non-local path shared by
     /// [`Coordinator::run_query`] and [`Coordinator::run_query_planned`]).
     /// `estimated_input_bytes` is the estimator's scanned-bytes estimate threaded
-    /// through to the per-job observed-size accounting (`None`/`0` = unknown).
+    /// through to the per-job observed-size accounting (`None`/`0` = unknown);
+    /// `estimated_peak_bytes` is the estimated peak working set used by the
+    /// size-based capability gate.
     async fn dispatch_to_grid(
         &self,
         sql: &str,
         mut cfg: GridConfig,
         overrides: &QueryOverrides,
         estimated_input_bytes: Option<u64>,
+        estimated_peak_bytes: Option<u64>,
     ) -> Result<QueryOutcome, CoordinatorError> {
         // Per-job data class from the request (`data_class => ...`), defaulting to
         // Public so the unset path is unchanged. It drives the worker admission
@@ -976,6 +1087,7 @@ impl Coordinator {
             data_class,
             &scope,
             estimated_input_bytes,
+            estimated_peak_bytes,
         )
         .await
     }
@@ -998,6 +1110,7 @@ impl Coordinator {
         data_class: DataClass,
         scope: &RequestScope,
         estimated_input_bytes: Option<u64>,
+        estimated_peak_bytes: Option<u64>,
     ) -> Result<QueryOutcome, CoordinatorError> {
         let mut excluded: HashSet<NodeId> = HashSet::new();
         let mut backoff = Backoff::new(
@@ -1013,6 +1126,13 @@ impl Coordinator {
         let mut last_refill = Instant::now();
         let mut retries: u32 = 0;
         let mut last_reason = String::from("no attempt completed");
+        // Capacity-aware re-route state (Part A.1): once a consensus of nodes OOMs
+        // ("too big"), we exclude them and only re-route to STRICTLY higher-capacity
+        // nodes (`capacity_floor` = the largest free-memory capacity that already
+        // failed). If a subsequent attempt then finds no candidates, the failure is
+        // terminal `ExceedsCapacity` rather than a generic exhaustion.
+        let mut capacity_floor: u64 = 0;
+        let mut saw_resource_exceeded = false;
 
         let result = loop {
             let attempt = self
@@ -1027,6 +1147,8 @@ impl Coordinator {
                     scope,
                     &excluded,
                     estimated_input_bytes,
+                    estimated_peak_bytes,
+                    capacity_floor,
                 )
                 .await;
             match attempt {
@@ -1045,6 +1167,12 @@ impl Coordinator {
                 }
                 Ok(AttemptResult::NoCandidates) => {
                     self.progress.clear(job_id);
+                    // A consensus of nodes already OOMed and we then exhausted the
+                    // higher-capacity candidates → the job exceeds every available
+                    // node's capacity (clear, actionable error).
+                    if saw_resource_exceeded {
+                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                    }
                     if retries == 0 {
                         return Err(CoordinatorError::NoCandidates);
                     }
@@ -1055,6 +1183,9 @@ impl Coordinator {
                 }
                 Ok(AttemptResult::InsufficientWorkers { have, quorum }) => {
                     self.progress.clear(job_id);
+                    if saw_resource_exceeded {
+                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                    }
                     if retries == 0 {
                         return Err(CoordinatorError::InsufficientWorkers { have, quorum });
                     }
@@ -1104,6 +1235,53 @@ impl Coordinator {
                         });
                     }
                     // Bounded exponential backoff + jitter before the next attempt.
+                    let delay = backoff.next_delay();
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
+                    retries += 1;
+                }
+                Ok(AttemptResult::ResourceExceeded {
+                    oomed,
+                    max_tried_capacity,
+                    reason,
+                }) => {
+                    // Consensus OOM ("too big") → NOT terminal. Exclude the OOMed
+                    // nodes, raise the capacity floor so the next attempt only
+                    // considers STRICTLY higher-capacity nodes, and re-route. Only
+                    // when no higher-capacity candidate remains does the loop fall
+                    // through to `NoCandidates`/`InsufficientWorkers`, which (because
+                    // `saw_resource_exceeded` is set) surface as `ExceedsCapacity`.
+                    last_reason = format!("attempt {} resource-exceeded: {reason}", retries + 1);
+                    debug!("{last_reason}; excluding OOMed nodes and re-routing to higher-capacity nodes");
+                    saw_resource_exceeded = true;
+                    capacity_floor = capacity_floor.max(max_tried_capacity);
+                    for n in oomed {
+                        excluded.insert(n);
+                    }
+                    // Same stop conditions as the Inconclusive path.
+                    if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                    }
+                    if cfg.scheduler.max_total_duration_ms != 0
+                        && started.elapsed()
+                            >= Duration::from_millis(cfg.scheduler.max_total_duration_ms)
+                    {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::ExceedsCapacity {
+                            reason: format!("{last_reason}; max_total_duration reached"),
+                        });
+                    }
+                    let now = Instant::now();
+                    budget.refill(now.duration_since(last_refill));
+                    last_refill = now;
+                    if !budget.try_take() {
+                        self.progress.clear(job_id);
+                        return Err(CoordinatorError::RetryBudgetExhausted {
+                            attempts: retries + 1,
+                        });
+                    }
                     let delay = backoff.next_delay();
                     if !delay.is_zero() {
                         tokio::time::sleep(delay).await;
@@ -1175,6 +1353,8 @@ impl Coordinator {
         scope: &RequestScope,
         excluded: &HashSet<NodeId>,
         estimated_input_bytes: Option<u64>,
+        estimated_peak_bytes: Option<u64>,
+        capacity_floor: u64,
     ) -> Result<AttemptResult, CoordinatorError> {
         // 0. Deterministic-input verification: pin a version-identified snapshot
         //    of this job's external inputs RIGHT NOW (re-resolved per attempt, so
@@ -1247,6 +1427,19 @@ impl Coordinator {
                 }
                 // Already tried (responded / hard-failed) this job → route elsewhere.
                 if excluded.contains(id) {
+                    return false;
+                }
+                // Size-based capability gate (Part B): drop a candidate whose
+                // gossiped PROVEN capacity clearly cannot handle this job's scanned
+                // bytes. Cold-start safe — a node with no (or thin) proven history
+                // is NEVER excluded here (see `proven_capacity_admits`). The free-mem
+                // gate (which needs the bid) is applied after bidding below. Only
+                // consult the (locked) capability cache when there is an estimate —
+                // the no-estimate path stays byte-for-byte unchanged.
+                let scanned = estimated_input_bytes.unwrap_or(0);
+                if scanned > 0
+                    && !proven_capacity_admits(self.discovery.proven_capacity(id).as_ref(), scanned)
+                {
                     return false;
                 }
                 // Liveness: drop a phi-convicted peer SWIM did not rescue.
@@ -1389,6 +1582,29 @@ impl Coordinator {
                 }
                 self.region_proof_ok(worker, bid, &scope.regions, &cfg.membership.region_issuers)
             })
+            // Size-based capability gate (Part B), free-memory half: drop a bidder
+            // whose advertised free memory (extended by any PROVEN sustained peak)
+            // cannot hold this job's estimated peak working set. Cold-start safe —
+            // a bidder advertising unknown (`0`) free memory is never excluded here.
+            // The no-estimate path skips the (locked) capability lookup entirely.
+            .filter(|(worker, bid)| {
+                let peak = estimated_peak_bytes.unwrap_or(0);
+                peak == 0
+                    || advertised_capacity_admits(
+                        bid.free_mem_bytes,
+                        self.discovery.proven_capacity(worker).as_ref(),
+                        peak,
+                        cfg.planner.spill_tolerance_bytes,
+                    )
+            })
+            // Capacity-aware RE-ROUTE floor (Part A.1): after a consensus OOM, only
+            // route to STRICTLY higher-capacity nodes than the largest that already
+            // failed. `capacity_floor == 0` (the steady state) ⇒ no-op; a bidder
+            // advertising unknown (`0`) free memory is not excluded (don't gate on
+            // what we don't know).
+            .filter(|(_, bid)| {
+                capacity_floor == 0 || bid.free_mem_bytes == 0 || bid.free_mem_bytes > capacity_floor
+            })
             .filter_map(|(worker, bid)| {
                 let trust = self.effective_trust(&worker, cfg, now, paid);
                 if auto_block && trust < ab.blocklist.auto_block_trust_floor {
@@ -1436,9 +1652,12 @@ impl Coordinator {
         let cap_weight = cfg.economics.ranking.capability_weight;
         let cap_hint = |id: &NodeId| -> u64 {
             if cap_weight > 0.0 {
+                // Size-appropriate capability tie-break (Part B): bias toward the
+                // peer with the larger PROVEN input size it has handled, not the
+                // result-row count — input bytes are what a size gate cares about.
                 self.discovery
                     .proven_capacity(id)
-                    .map(|p| p.max_result_rows)
+                    .map(|p| p.max_input_bytes)
                     .unwrap_or(0)
             } else {
                 0
@@ -1510,25 +1729,55 @@ impl Coordinator {
             VerifyModeCfg::Fast => VerifyMode::Fast,
             VerifyModeCfg::Quorum => VerifyMode::Quorum,
         };
-        // Per-job scoped storage credential (architecture §9.2): when a provider
-        // is wired, mint a short-lived, read-only credential and attach it so the
-        // worker can build a `CREATE SECRET`. Unwired (default) ⇒ `None`, the
-        // unchanged local-data path. NOTE: scoped to the provider root because the
-        // job's exact data prefix isn't extracted from the SQL here, and delivered
-        // UNSEALED (sealing needs the winner's attestation-bound sealing key, which
-        // L0 hosts don't ship) — see the report's sealing/prefix gap.
-        // Scope the credential to the resolved input prefix (deterministic-input
-        // verification): instead of the provider root (`issue("", …)`), derive a
-        // read-only prefix covering exactly the pinned objects, so a leaked
-        // credential reads only this job's inputs. Falls back to the root only
-        // when there is no pinned snapshot (the unchanged unpinned path).
-        let credential = self.credential_provider.as_ref().map(|p| {
-            let prefix = input_snapshot
-                .as_ref()
-                .map(credential_prefix)
-                .unwrap_or_default();
-            p.issue(&prefix, cfg.storage.credential_ttl_secs)
-        });
+        // Per-job storage access (architecture §9.2). Two mutually-exclusive ways
+        // to grant a worker read access to the job's pinned objects, chosen by
+        // `credential_mode`:
+        //
+        //  * PRESIGNED (default, open commodity grid): the REQUESTER signs a
+        //    short-TTL read URL per pinned object and ships them in `signed_inputs`.
+        //    The worker rewrites the SQL's object refs and reads via plain HTTPS
+        //    with NO `CREATE SECRET` — zero reusable secret reaches the host. Only
+        //    possible when the inputs are pinned (we need the concrete object URIs).
+        //
+        //  * SCOPED_SECRET / SEALED: mint a short-lived, read-only credential
+        //    scoped to the resolved input prefix and attach it so the worker builds
+        //    a `CREATE SECRET`. Scoped to exactly the pinned objects' common prefix
+        //    (falls back to the provider root only when unpinned). Delivered
+        //    UNSEALED here (sealing needs the winner's attestation-bound key, which
+        //    L0 hosts don't ship — see the sealing gap).
+        //
+        // Unwired providers (default, no remote access) ⇒ neither is attached: the
+        // unchanged local-data path.
+        let mut credential = None;
+        let mut signed_inputs: Vec<p2p_proto::SignedInput> = Vec::new();
+        match self.credential_mode {
+            p2p_config::CredentialMode::Presigned => {
+                if let (Some(p), Some(snap)) =
+                    (self.presign_provider.as_ref(), input_snapshot.as_ref())
+                {
+                    for obj in &snap.objects {
+                        match p.presign(&obj.uri, cfg.storage.credential_ttl_secs) {
+                            Ok(url) => signed_inputs.push(p2p_proto::SignedInput {
+                                uri: obj.uri.clone(),
+                                url,
+                            }),
+                            Err(e) => {
+                                tracing::warn!(uri = %obj.uri, "presign failed: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+            p2p_config::CredentialMode::ScopedSecret | p2p_config::CredentialMode::Sealed => {
+                credential = self.credential_provider.as_ref().map(|p| {
+                    let prefix = input_snapshot
+                        .as_ref()
+                        .map(credential_prefix)
+                        .unwrap_or_default();
+                    p.issue(&prefix, cfg.storage.credential_ttl_secs)
+                });
+            }
+        }
         let dispatch = Dispatch {
             job_id: job_id.clone(),
             sql: sql.to_string(),
@@ -1544,6 +1793,8 @@ impl Coordinator {
             )),
             // The pinned manifest the workers must read (None ⇒ unpinned).
             input_snapshot: input_snapshot.clone(),
+            // Presigned per-object read URLs (empty ⇒ the secret-based path).
+            signed_inputs,
             // Per-worker hard cap deadline is stamped in the collect loop below.
             cap_deadline_ms: None,
         };
@@ -1679,11 +1930,36 @@ impl Coordinator {
         }
         let frac = cfg.antiabuse.fault_attribution.job_consensus_fraction;
 
+        // Providers to ROUTE AROUND on a re-dispatch: only those that failed or
+        // went silent. A provider that COMMITTED a (correct) result but merely
+        // lost the hedged race is healthy and stays eligible for retries — never
+        // excluded (do NOT pass the whole `selected` set). (Part A.2.)
+        let failed_or_silent: Vec<NodeId> = failed
+            .iter()
+            .map(|(n, _, _)| n.clone())
+            .chain(silent.iter().cloned())
+            .collect();
+        // The OOMed providers (consensus resource-exceeded re-route) and the
+        // largest free-memory capacity that already failed — so the loop only
+        // keeps re-routing while a STRICTLY higher-capacity node could exist.
+        let oomed: Vec<NodeId> = failed
+            .iter()
+            .filter(|(_, v, _)| matches!(v, Verdict::ResourceExceeded))
+            .map(|(n, _, _)| n.clone())
+            .collect();
+        let max_tried_capacity = oomed
+            .iter()
+            .map(|n| bid_by_node.get(n).map(|b| b.free_mem_bytes).unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+
         let (agreed_hash, verified) = match (&canary_expected, verify_mode) {
             (Some(expected), _) => (Some(expected.clone()), true),
             _ if non_verifiable => {
                 if inflight.is_empty() {
-                    return Ok(AttemptResult::Inconclusive { tried: selected });
+                    return Ok(AttemptResult::Inconclusive {
+                        tried: failed_or_silent.clone(),
+                    });
                 }
                 let fastest = inflight
                     .iter()
@@ -1716,11 +1992,11 @@ impl Coordinator {
                 } else if cfg.antiabuse.fault_attribution_active()
                     && tally.is_consensus_infeasible(frac)
                 {
-                    // Consensus-infeasible query → job fault. Neutral receipts, no
-                    // penalty, refund, and STOP re-dispatching. Surface the REAL
-                    // underlying error (e.g. the DuckDB "Binder Error: …" text) the
-                    // providers reported, not just the generic classification — so
-                    // the requester can see WHAT was wrong with the query.
+                    // Consensus-INFEASIBLE query (bad SQL: syntax/binder/catalog) →
+                    // a TERMINAL job fault. Neutral receipts, no penalty, refund,
+                    // and STOP re-dispatching — retrying cannot help. Surface the
+                    // REAL underlying error (e.g. the DuckDB "Binder Error: …" text)
+                    // the providers reported, not just the generic classification.
                     let mut reason = tally
                         .consensus_reason(frac)
                         .unwrap_or_else(|| "consensus-infeasible query".to_string());
@@ -1729,6 +2005,26 @@ impl Coordinator {
                     }
                     self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
                     return Ok(AttemptResult::Infeasible { reason });
+                } else if cfg.antiabuse.fault_attribution_active()
+                    && tally.is_consensus_resource_exceeded(frac)
+                {
+                    // Consensus RESOURCE-EXCEEDED (OOM / too big) → NOT terminal.
+                    // Exclude the OOMed nodes and re-route to higher-capacity nodes
+                    // (the loop only continues while a strictly bigger node could
+                    // exist; otherwise it surfaces `ExceedsCapacity`). No provider
+                    // penalty (job fault, not a provider fault).
+                    let mut reason = tally
+                        .resource_exceeded_reason(frac)
+                        .unwrap_or_else(|| "consensus resource-exceeded query".to_string());
+                    if let Some(detail) = consensus_failure_detail(&failed) {
+                        reason = format!("{reason}: {detail}");
+                    }
+                    self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
+                    return Ok(AttemptResult::ResourceExceeded {
+                        oomed,
+                        max_tried_capacity,
+                        reason,
+                    });
                 } else if inflight.len() >= cfg.scheduler.quorum {
                     // Enough providers committed but their hashes disagree — a
                     // genuine verification disagreement (terminal).
@@ -1738,13 +2034,18 @@ impl Coordinator {
                         quorum: outcome.quorum,
                     });
                 } else {
-                    // Shortfall from silence / transient failures → re-dispatch.
-                    return Ok(AttemptResult::Inconclusive { tried: selected });
+                    // Shortfall from silence / transient failures → re-dispatch
+                    // (route only around the non-delivering providers).
+                    return Ok(AttemptResult::Inconclusive {
+                        tried: failed_or_silent.clone(),
+                    });
                 }
             }
             (None, VerifyMode::Fast) => {
                 if inflight.is_empty() {
-                    return Ok(AttemptResult::Inconclusive { tried: selected });
+                    return Ok(AttemptResult::Inconclusive {
+                        tried: failed_or_silent.clone(),
+                    });
                 }
                 let fastest = inflight
                     .iter()
@@ -1757,7 +2058,9 @@ impl Coordinator {
         let agreed = match agreed_hash {
             Some(h) => h,
             None => {
-                return Ok(AttemptResult::Inconclusive { tried: selected });
+                return Ok(AttemptResult::Inconclusive {
+                    tried: failed_or_silent.clone(),
+                });
             }
         };
 
@@ -1775,7 +2078,9 @@ impl Coordinator {
                 // The authoritative answer matched no responding worker (e.g. all
                 // failed a canary) — re-dispatch to fresh nodes.
                 self.emit_failure_receipts(&inflight, job_id, query_hash, cfg);
-                return Ok(AttemptResult::Inconclusive { tried: selected });
+                return Ok(AttemptResult::Inconclusive {
+                    tried: failed_or_silent.clone(),
+                });
             }
         };
 
@@ -2062,7 +2367,9 @@ impl Coordinator {
                 // requester observation is booked only on a terminal outcome (as
                 // in every other inconclusive re-dispatch path), never for an
                 // attempt that produced no usable result.
-                return Ok(AttemptResult::Inconclusive { tried: selected });
+                return Ok(AttemptResult::Inconclusive {
+                    tried: failed_or_silent.clone(),
+                });
             }
         };
 
@@ -2162,16 +2469,30 @@ impl Coordinator {
         estimate: Option<WorkingSetEstimate>,
     ) -> Result<QueryOutcome, CoordinatorError> {
         let cfg = overrides.apply(&self.base_config)?;
-        // Carry the estimator's scanned-bytes estimate into the per-job observed
-        // input size (an estimate where exact scanned bytes aren't available).
+        // Carry the estimator's scanned-bytes + peak working-set estimates into
+        // the per-job observed input size and the size-based capability gate.
         let estimated_input_bytes = estimate.as_ref().map(|e| e.scanned_uncompressed_bytes);
-        if let Some(outcome) = self.try_local_execution(sql, &cfg, estimate).await? {
+        let estimated_peak_bytes = estimate.as_ref().map(|e| e.peak_working_set_bytes);
+        // The free local path runs the node's own LOCKED-DOWN engine
+        // (`enable_external_access=false`, `disabled_filesystems`), which cannot
+        // read external data. A data-source query therefore can never run locally
+        // in `auto` — it must go to the grid (exactly today's behavior). So only
+        // hand the planner an estimate for pure in-memory queries; the size
+        // estimate still drives the REMOTE capability gate + bid sizing below. An
+        // explicit `prefer => 'local'` is still honored (the local-decision path is
+        // unchanged for forced modes — `try_local_execution` consults the planner).
+        let local_estimate = if crate::estimator::has_data_source(sql) {
+            None
+        } else {
+            estimate
+        };
+        if let Some(outcome) = self.try_local_execution(sql, &cfg, local_estimate).await? {
             return Ok(outcome);
         }
         // Planner chose remote (or failed over): dispatch to the grid, threading
-        // the estimate through so the winner's receipt records the estimated
-        // scanned input bytes.
-        self.dispatch_to_grid(sql, cfg, &overrides, estimated_input_bytes)
+        // the estimate through for the receipt's observed input size and the
+        // size-based capability gate.
+        self.dispatch_to_grid(sql, cfg, &overrides, estimated_input_bytes, estimated_peak_bytes)
             .await
     }
 
@@ -2203,7 +2524,11 @@ impl Coordinator {
         }
 
         // Reserve a local slot + headroom (the estimate's peak, if known). A
-        // failed reservation means we lost the slot race → grid.
+        // failed reservation means the local budget / shared governor is full (or
+        // we lost the slot race) → grid. The governed executor floors a
+        // no-/tiny-estimate job to a representative per-job footprint so own
+        // queries are accounted against the process-wide capacity cap (see
+        // `LocalExecutor::governed`).
         let reserve_bytes = estimate
             .as_ref()
             .map(|e| e.peak_working_set_bytes)
@@ -2925,6 +3250,69 @@ async fn collect_one(
     match tokio::time::timeout(attempt_deadline, inner).await {
         Ok(c) => c,
         Err(_) => Collected::Silent(worker),
+    }
+}
+
+#[cfg(test)]
+mod capacity_gate_tests {
+    use super::*;
+
+    fn profile(max_input: u64, max_temp: u64, max_peak: u64, successes: u64) -> CapabilityProfile {
+        CapabilityProfile {
+            schema_version: 1,
+            node_id: NodeId("b3:w".into()),
+            pubkey: "00".repeat(32),
+            max_input_bytes: max_input,
+            max_result_rows: 0,
+            max_result_bytes: 0,
+            max_peak_memory_bytes: max_peak,
+            max_temp_dir_bytes: max_temp,
+            successes,
+            seq: 1,
+            ts: 0,
+            sig: String::new(),
+        }
+    }
+
+    #[test]
+    fn proven_gate_is_cold_start_safe() {
+        // No estimate ⇒ always admit (route as today).
+        assert!(proven_capacity_admits(None, 0));
+        assert!(proven_capacity_admits(Some(&profile(10, 0, 0, 100)), 0));
+        // Newcomer (no proven profile) is NEVER excluded, even by a huge job.
+        assert!(proven_capacity_admits(None, u64::MAX));
+        // Thin proven history (< PROVEN_GATE_MIN_SUCCESSES) is not trusted as a
+        // hard ceiling ⇒ not excluded, even when the job exceeds its tiny max.
+        assert!(proven_capacity_admits(
+            Some(&profile(1_000, 0, 0, PROVEN_GATE_MIN_SUCCESSES - 1)),
+            1_000_000_000
+        ));
+    }
+
+    #[test]
+    fn proven_gate_excludes_only_a_confident_over_ceiling_node() {
+        // Confident node (enough successes): a job within proven max + spill is
+        // admitted; one clearly beyond it is excluded.
+        let p = profile(1_000_000, 500_000, 0, PROVEN_GATE_MIN_SUCCESSES);
+        assert!(proven_capacity_admits(Some(&p), 1_400_000)); // within max+temp
+        assert!(!proven_capacity_admits(Some(&p), 5_000_000)); // clearly beyond
+    }
+
+    #[test]
+    fn advertised_gate_is_cold_start_safe_and_spill_aware() {
+        let spill = 512 * 1024 * 1024;
+        // No estimate ⇒ admit; unknown (0) free_mem ⇒ admit (don't gate on the
+        // unknown), even with a huge peak.
+        assert!(advertised_capacity_admits(0, None, 0, spill));
+        assert!(advertised_capacity_admits(0, None, u64::MAX, spill));
+        // Fits within free_mem + spill ⇒ admit; clearly beyond ⇒ exclude.
+        let free = 1024 * 1024; // 1 MiB advertised
+        assert!(advertised_capacity_admits(free, None, free + spill, spill));
+        assert!(!advertised_capacity_admits(free, None, free + spill + 1, spill));
+        // A PROVEN sustained peak (+ proven spill) extends the effective capacity,
+        // so a node that has really run this big before is admitted.
+        let p = profile(0, 256 * 1024 * 1024, 4 * 1024 * 1024 * 1024, 10);
+        assert!(advertised_capacity_admits(free, Some(&p), 4 * 1024 * 1024 * 1024, spill));
     }
 }
 

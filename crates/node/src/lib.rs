@@ -24,6 +24,7 @@ pub mod discovery;
 pub mod duckdb_engine;
 pub mod engine;
 pub mod estimator;
+pub mod governor;
 pub mod input_resolver;
 #[cfg(feature = "discovery-libp2p")]
 pub mod libp2p_discovery;
@@ -49,11 +50,12 @@ pub use system_collect::collect_system_profile;
 pub use system_store::SystemStore;
 pub use coordinator::{Coordinator, CoordinatorError, QueryOutcome};
 pub use datasource::{
-    default_provider, AzureProvider, CloudCredential, DataFormat, DataSourceError, GcsProvider,
-    HttpsProvider, LocalFileProvider, ProviderOptions, ProviderRegistry, S3Provider,
-    StorageProvider, StorageSetup, SEALED_TOKEN_PREFIX,
+    aws_uri_encode, default_provider, rewrite_signed_urls, AzureProvider, CloudCredential,
+    DataFormat, DataSourceError, GcsProvider, HttpsProvider, LocalFileProvider, ProviderOptions,
+    ProviderRegistry, S3Provider, StorageProvider, StorageSetup, SEALED_TOKEN_PREFIX,
 };
 pub use discovery::{Candidate, CandidateFilter, Discovery, StaticDiscovery};
+pub use governor::{CapacityGovernor, GovernorLease, Role};
 #[cfg(feature = "duckdb-engine")]
 pub use duckdb_engine::DuckDbEngine;
 pub use engine::{
@@ -93,7 +95,8 @@ pub use sandbox::{
 pub use signer::IdentitySigner;
 pub use subprocess::{serve_job, JobFrame, JobProgress, JobRequest, JobResponse, SubprocessEngine};
 pub use storage::{
-    sealed_credential, Enclave, EncryptedObjectStore, FakeAzureSasProvider, FakeGcsProvider,
-    FakeStsS3Provider, KeyRelease, LocalFakeStorage, StorageCredentialProvider, StorageError,
+    default_presign_provider, sealed_credential, Enclave, EncryptedObjectStore,
+    FakeAzureSasProvider, FakeGcsProvider, FakePresignProvider, FakeStsS3Provider, KeyRelease,
+    LocalFakeStorage, PresignProvider, S3PresignProvider, StorageCredentialProvider, StorageError,
 };
 pub use worker::{EchoInputReader, InputObservation, InputReader, Worker, WorkerParams};

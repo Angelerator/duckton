@@ -274,13 +274,46 @@ function WorkerSheet({ w }: { w: Worker }) {
 
         {/* Capacity */}
         <div>
-          <SectionTitle>Capacity</SectionTitle>
+          <SectionTitle hint="donated budget ≠ physical RAM">Capacity</SectionTitle>
           <dl className="divide-y">
             <KV label="donated RAM">{bytes(w.donatedMemBytes, 0)}</KV>
             <KV label="threads">{w.totalThreads}</KV>
             <KV label="max concurrent jobs">{w.maxJobs}</KV>
           </dl>
         </div>
+
+        {/* Machine profile — non-GDPR SystemProfile (analytics / routing hint) */}
+        {w.systemProfile ? (
+          <div>
+            <SectionTitle hint="non-GDPR · self-reported hint">Machine profile</SectionTitle>
+            <dl className="divide-y">
+              <KV label="CPU">
+                <span className="font-mono text-xs">
+                  {w.systemProfile.cpuModel} · {w.systemProfile.cpuArch}
+                </span>
+              </KV>
+              <KV label="cores (phys / logical)">
+                {w.systemProfile.cpuPhysicalCores} / {w.systemProfile.cpuLogicalCores}
+              </KV>
+              <KV label="physical RAM">{bytes(w.systemProfile.physicalRamBytes, 0)}</KV>
+              <KV label="disk">
+                <span className="font-mono text-xs">
+                  {w.systemProfile.diskKind} · {bytes(w.systemProfile.diskTotalBytes, 0)}
+                </span>
+              </KV>
+              <KV label="OS">
+                <span className="font-mono text-xs">
+                  {w.systemProfile.osName} {w.systemProfile.osVersion}
+                </span>
+              </KV>
+            </dl>
+            <p className="text-muted-foreground mt-2 text-xs leading-relaxed">
+              Machine-class metadata the host self-reports for analytics + size-based routing — a
+              HINT only, distinct from the donated compute budget above, and carrying no personal
+              data.
+            </p>
+          </div>
+        ) : null}
 
         {/* Economics */}
         <div>

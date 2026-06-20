@@ -41,7 +41,8 @@ import {
 import { KV, PageHeader, SectionTitle, Stat } from "@/components/common/atoms";
 import { Explainer } from "@/components/common/explain";
 import { CopyId } from "@/components/common/copy";
-import { ton } from "@/lib/data";
+import { Package } from "lucide-react";
+import { meta, ton } from "@/lib/data";
 import { TonNetworkPanel } from "./network-panel";
 import { GasPlot } from "./plots";
 import { short } from "@/lib/format";
@@ -108,6 +109,36 @@ export default function TonPage() {
         what="The settlement rules written as sharded smart contracts on the TON blockchain, so escrow, payouts and penalties are enforced by code instead of a trusted operator. These contracts are deployed and verified on testnet."
         impact="Escrow only releases when the agreed result is presented (HTLC), and stake is slashed automatically — no company can withhold pay or seize funds."
       />
+
+      {/* Community registry — the published DuckDB extension */}
+      <Card className="border-[var(--ok)]/30 bg-[var(--ok)]/5">
+        <CardHeader>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Package className="size-4 text-[var(--ok)]" /> Published to the DuckDB community registry
+              </CardTitle>
+              <CardDescription>
+                The <span className="font-mono">duckton</span> extension is officially published — install
+                it straight from the community registry, no build required.
+              </CardDescription>
+            </div>
+            <Badge variant="ok" className="gap-1.5 font-mono">
+              <CheckCircle2 className="size-3" /> v{meta.workspaceVersion}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <pre className="bg-muted/40 overflow-x-auto rounded-md border p-3 font-mono text-xs leading-relaxed">
+            INSTALL duckton FROM community;{"\n"}LOAD duckton;
+          </pre>
+          <p className="text-muted-foreground mt-2 text-xs">
+            The on-chain 15% platform fee / 5% verifier commission split shown below is enforced by the
+            deployed contracts; this client extension version is{" "}
+            <span className="font-mono">{meta.workspaceVersion}</span>.
+          </p>
+        </CardContent>
+      </Card>
 
       {/* Active network (testnet / mainnet) */}
       <TonNetworkPanel />
