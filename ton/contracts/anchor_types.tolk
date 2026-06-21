@@ -25,8 +25,15 @@ import "common"
 const OP_ANCHOR_SUBMIT = 0x414e_4301
 const OP_ANCHOR_DISPUTE = 0x414e_4302
 const OP_ANCHOR_VERDICT = 0x414e_4303
-const OP_ANCHOR_UPGRADE_CODE = 0x414e_4304 // "ANC" 04 — authority-gated in-place SETCODE upgrade
-const OP_ANCHOR_BOND_REFUND = 0x414e_4305  // "ANC" 05 — bounce-safe bond refund (carries disputeId)
+const OP_ANCHOR_UPGRADE_CODE = 0x414e_4304 // "ANC" 04 — authority-gated in-place SETCODE upgrade (APPLY step)
+const OP_ANCHOR_BOND_REFUND = 0x414e_4305 // "ANC" 05 — bounce-safe bond refund (carries disputeId)
+// D2 hardening — TIMELOCKED, hash-committed code upgrade (mirrors GlobalParams /
+// StakeVault): announce the successor code's hash + start a clock, then APPLY
+// (OP_ANCHOR_UPGRADE_CODE above) only after `pendingCodeAt + upgradeDelay` and
+// only with code whose hash matches the announcement. So a single compromised
+// upgrade-authority key can no longer instantly swap the anchor/dispute logic.
+const OP_ANCHOR_ANNOUNCE_UPGRADE = 0x414e_4306 // "ANC" 06 — announce (step 1/2)
+const OP_ANCHOR_CANCEL_UPGRADE = 0x414e_4307 // "ANC" 07 — abort a pending announcement
 
 // One sibling on a Merkle inclusion path. `dir = 0`: sibling is the RIGHT node
 // (current is the left child); `dir = 1`: sibling is the LEFT node.
@@ -39,7 +46,7 @@ struct MerkleStep {
 // Anchor authority addresses, grouped in a child cell so the root config cell
 // stays within the 1023-bit budget (four addresses inline would overflow it).
 struct AnchorAuthorities {
-    treasury: address         // forfeited bonds / fees
+    treasury: address // forfeited bonds / fees
     // A3: authorized anchor keeper. Root submission is gated to this address
     // (a configured keeper/authority — meant to be a keeper allowlist front or a
     // governance/oracle contract), NOT permissionless. `stakeWeight` in the
@@ -55,9 +62,9 @@ struct AnchorAuthorities {
 }
 
 struct AnchorConfig {
-    minStakeWeight: coins     // stake-weighted threshold a submitted root must clear (§7.2)
-    disputeBondMin: coins     // anti-griefing challenger bond (§13)
-    verdictAuthority: address // committee/oracle that resolves disputes (§11)
+    minStakeWeight: coins         // stake-weighted threshold a submitted root must clear (§7.2)
+    disputeBondMin: coins         // anti-griefing challenger bond (§13)
+    verdictAuthority: address     // committee/oracle that resolves disputes (§11)
     auth: Cell<AnchorAuthorities> // treasury + keeper + upgrade authority (child cell)
 }
 
@@ -90,6 +97,17 @@ struct AnchorStorage {
     // Appended last (additive); 0 = original deployed code. Storage migrations
     // stay additive (append new fields LAST; older fields read unchanged).
     codeVersion: uint32
+    // D2 hardening: TIMELOCKED code-upgrade state (mirrors GlobalParams /
+    // StakeVault). `pendingCodeHash`/`pendingCodeAt` are 0 when nothing is
+    // announced; on announce the upgrade authority records the successor code's
+    // cell hash + the announce time, and APPLY is gated until
+    // `pendingCodeAt + upgradeDelay` AND must present exactly that code — so the
+    // ecosystem sees which code will land and has >= `upgradeDelay` to react.
+    // Appended last → additive (this changes the deploy address vs the pre-D2
+    // layout; intended — a fresh deploy sets `upgradeDelay`).
+    pendingCodeHash: uint256
+    pendingCodeAt: uint32
+    upgradeDelay: uint32
 }
 
 fun AnchorStorage.load(): AnchorStorage {
@@ -150,10 +168,35 @@ struct (0x414e_4304) AnchorUpgradeCode {
     newCode: cell
 }
 
+// D2 step 1/2 — ANNOUNCE the successor code (by cell hash) and start the
+// timelock. Upgrade-authority-gated. Re-announcing overwrites and RESETS the
+// clock.
+struct (0x414e_4306) AnchorAnnounceUpgrade {
+    queryId: uint64
+    newCodeHash: uint256
+}
+
+// D2 — abort a pending announcement before it is applied (authority-gated safety
+// valve). Clears the pending state.
+struct (0x414e_4307) AnchorCancelUpgrade {
+    queryId: uint64
+}
+
 struct AnchorState {
     currentEpoch: uint32
     lastRoot: uint256
     nextDisputeId: uint32
+}
+
+// Getter shape for `get_pending_upgrade` (D2). `pendingCodeHash`/`pendingAt` are
+// 0 when nothing is announced; `readyAt` is the unix ts the announced upgrade
+// becomes applyable (`pendingAt + upgradeDelay`, 0 when none) — so anyone can see
+// whether an anchor code change is pending and how long they have to react.
+struct AnchorUpgradeView {
+    codeVersion: uint32
+    pendingCodeHash: uint256
+    pendingAt: uint32
+    readyAt: uint32
 }
 
 // ---------------------------------------------------------------------------

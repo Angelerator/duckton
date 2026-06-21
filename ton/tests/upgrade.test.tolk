@@ -29,6 +29,7 @@ import "@wrappers/StakeVault.gen"
 const T0: uint32 = 1_700_000_000
 const VAULT_UNBONDING: uint32 = 1000
 const VAULT_CHALLENGE: uint32 = 500
+const ANCHOR_UPGRADE_DELAY: uint32 = 86400
 
 // ---------------------------------------------------------------------------
 // GlobalParams (admin-gated in-place upgrade) — the primary win.
@@ -225,13 +226,17 @@ fun deployAnchor(authority: address): RecordAnchor {
         roots: createEmptyMap(),
         config: cfg.toCell(),
         codeVersion: 0,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
+        upgradeDelay: ANCHOR_UPGRADE_DELAY,
     };
     val anchor = RecordAnchor.fromStorage(storage);
     expect(anchor.deploy(authority, { value: ton("1") })).toHaveSuccessfulDeploy({ to: anchor.address });
     return anchor;
 }
 
-get fun `test record anchor upgrade_code (authority-gated) swaps code in place, epoch chain preserved`() {
+get fun `test record anchor timelocked upgrade: announce, apply-before-delay rejected, apply-after-delay succeeds, epoch chain preserved`() {
+    testing.setNow(T0);
     val authority = testing.treasury("authority");
     val anchor = deployAnchor(authority.address);
     val addrBefore = anchor.address;
@@ -242,13 +247,27 @@ get fun `test record anchor upgrade_code (authority-gated) swaps code in place, 
     val st = anchor.getAnchorState();
     expect(anchor.getCodeVersion()).toEqual(0);
 
-    // Authority upgrades the CODE in place to RecordAnchorV2.
-    val res = anchor.sendAnchorUpgradeCode(authority.address, 2, build("RecordAnchorV2"), { value: ton("0.5") });
+    val newCode = build("RecordAnchorV2");
+    // D2 step 1 — ANNOUNCE the successor code hash + start the timelock clock.
+    val ann = anchor.sendAnchorAnnounceUpgrade(authority.address, 2, newCode.hash(), { value: ton("0.1") });
+    expect(ann).toHaveSuccessfulTx<AnchorAnnounceUpgrade>({ from: authority.address, to: anchor.address });
+    expect(anchor.getPendingUpgrade().pendingCodeHash).toEqual(newCode.hash());
+    expect(anchor.getPendingUpgrade().readyAt).toEqual(T0 + ANCHOR_UPGRADE_DELAY);
+
+    // D2: apply BEFORE the delay is rejected (timelock active).
+    val early = anchor.sendAnchorUpgradeCode(authority.address, 3, newCode, { value: ton("0.5") });
+    expect(early).toHaveFailedTx({ from: authority.address, to: anchor.address, exitCode: ErrCode.UPGRADE_TIMELOCK_ACTIVE });
+    expect(anchor.getCodeVersion()).toEqual(0);
+
+    // Warp past the timelock, then APPLY (step 2) the in-place upgrade.
+    testing.setNow(T0 + ANCHOR_UPGRADE_DELAY);
+    val res = anchor.sendAnchorUpgradeCode(authority.address, 4, newCode, { value: ton("0.5") });
     expect(res).toHaveSuccessfulTx<AnchorUpgradeCode>({ from: authority.address, to: anchor.address });
 
-    // SAME address, anchored epoch chain preserved, codeVersion bumped.
+    // SAME address, anchored epoch chain preserved, codeVersion bumped, pending cleared.
     expect(anchor.address).toEqual(addrBefore);
     expect(anchor.getCodeVersion()).toEqual(1);
+    expect(anchor.getPendingUpgrade().pendingCodeHash).toEqual(0);
     val st2 = anchor.getAnchorState();
     expect(st2.currentEpoch).toEqual(st.currentEpoch);
     expect(st2.lastRoot).toEqual(st.lastRoot);
@@ -283,6 +302,31 @@ get fun `test record anchor upgrade_code from a non-authority is rejected (UPGRA
     val res = anchor.sendAnchorUpgradeCode(attacker.address, 9, build("RecordAnchorV2"), { value: ton("0.5") });
     expect(res).toHaveFailedTx({ from: attacker.address, to: anchor.address, exitCode: ErrCode.UPGRADE_NOT_AUTHORITY });
     expect(anchor.getCodeVersion()).toEqual(0);
+}
+
+get fun `test record anchor upgrade apply guards: nothing-pending, code-mismatch rejected; cancel clears`() {
+    testing.setNow(T0);
+    val authority = testing.treasury("authority");
+    val anchor = deployAnchor(authority.address);
+
+    // Apply with nothing announced -> NO_PENDING_UPGRADE.
+    val noPend = anchor.sendAnchorUpgradeCode(authority.address, 1, build("RecordAnchorV2"), { value: ton("0.5") });
+    expect(noPend).toHaveFailedTx({ from: authority.address, to: anchor.address, exitCode: ErrCode.NO_PENDING_UPGRADE });
+
+    // Announce the v2 hash, warp, then apply the WRONG code (v1 hashes differently).
+    expect(anchor.sendAnchorAnnounceUpgrade(authority.address, 2, build("RecordAnchorV2").hash(), { value: ton("0.1") }))
+        .toHaveSuccessfulTx<AnchorAnnounceUpgrade>({ from: authority.address, to: anchor.address });
+    testing.setNow(T0 + ANCHOR_UPGRADE_DELAY);
+    val mism = anchor.sendAnchorUpgradeCode(authority.address, 3, build("RecordAnchor"), { value: ton("0.5") });
+    expect(mism).toHaveFailedTx({ from: authority.address, to: anchor.address, exitCode: ErrCode.UPGRADE_CODE_MISMATCH });
+    expect(anchor.getCodeVersion()).toEqual(0);
+
+    // Cancel clears the announcement; a second cancel is a no-pending error.
+    expect(anchor.sendAnchorCancelUpgrade(authority.address, 4, { value: ton("0.05") }))
+        .toHaveSuccessfulTx<AnchorCancelUpgrade>({ from: authority.address, to: anchor.address });
+    expect(anchor.getPendingUpgrade().pendingCodeHash).toEqual(0);
+    expect(anchor.sendAnchorCancelUpgrade(authority.address, 5, { value: ton("0.05") }))
+        .toHaveFailedTx({ from: authority.address, to: anchor.address, exitCode: ErrCode.NO_PENDING_UPGRADE });
 }
 
 // ---------------------------------------------------------------------------

@@ -109,6 +109,9 @@ fun deployAnchor(authority: address, keeper: address, treasury: address): Record
         roots: createEmptyMap(),
         config: cfg.toCell(),
         codeVersion: 0,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
+        upgradeDelay: 0,
     };
     val deployer = testing.treasury("deployer");
     val anchor = RecordAnchor.fromStorage(storage);
@@ -524,6 +527,7 @@ get fun `test anchor config with a sub-floor dispute bond is rejected (BOND_FLOO
     val storage: AnchorStorage = {
         currentEpoch: 0, lastRoot: 0, nextDisputeId: 0,
         disputes: createEmptyMap(), roots: createEmptyMap(), config: cfg.toCell(), codeVersion: 0,
+        pendingCodeHash: 0, pendingCodeAt: 0, upgradeDelay: 0,
     };
     val anchor = RecordAnchor.fromStorage(storage);
     expect(anchor.deploy(keeper.address, { value: ton("1") })).toHaveSuccessfulDeploy({ to: anchor.address });

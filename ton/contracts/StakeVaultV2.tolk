@@ -42,11 +42,17 @@ fun onBouncedMessage(in: InMessageBounced) {
     var storage = lazy VaultStorage.load();
 
     if (op == OP_JETTON_TRANSFER_INTERNAL) {
+        // C2: mint bounced — claw `amount` back out of staked then the cooldown
+        // bucket and shrink totalSupply by exactly what was reclaimed, keeping
+        // `totalSupply == staked + unbondingAmount` exact even if an unbond raced
+        // the bounce (mirrors the v1 fix).
         body.skipBits(64);
         val amount = body.loadCoins();
-        val backOut = min(amount, storage.staked);
-        storage.staked -= backOut;
-        storage.totalSupply -= amount;
+        val fromStaked = min(amount, storage.staked);
+        storage.staked -= fromStaked;
+        val fromUnbonding = min(amount - fromStaked, storage.unbondingAmount);
+        storage.unbondingAmount -= fromUnbonding;
+        storage.totalSupply -= fromStaked + fromUnbonding;
         storage.save();
     } else if (op == OP_STAKE_PAYOUT) {
         val prev = storage.pending.get(in.senderAddress);
@@ -63,7 +69,9 @@ fun onInternalMessage(in: InMessage) {
         StakeDeposit => {
             var storage = lazy VaultStorage.load();
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
-            assert (in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE) throw ErrCode.NOT_ENOUGH_GAS;
+            assert (
+                in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE
+            ) throw ErrCode.NOT_ENOUGH_GAS;
 
             val cfg = storage.config.load();
             validateVaultConfig(cfg);
@@ -138,7 +146,10 @@ fun onInternalMessage(in: InMessage) {
                 amount,
                 msg.queryId,
             );
-            reserveToncoinsOnBalance(storage.staked + MIN_TONS_FOR_STORAGE, RESERVE_MODE_EXACT_AMOUNT);
+            reserveToncoinsOnBalance(
+                storage.staked + MIN_TONS_FOR_STORAGE,
+                RESERVE_MODE_EXACT_AMOUNT,
+            );
             if (bounty > 0) {
                 payout(in.senderAddress, bounty, msg.queryId);
             }

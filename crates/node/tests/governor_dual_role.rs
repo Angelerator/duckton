@@ -51,14 +51,7 @@ fn local_executor(
     let engine = Arc::new(MockEngine::deterministic()) as Arc<dyn QueryEngine>;
     // Pass a 0 floor so test reservations are exact; the production path passes
     // `per_job_memory_bytes` (covered separately).
-    LocalExecutor::governed(
-        engine,
-        b.memory_bytes,
-        pc,
-        b.per_job_threads,
-        0,
-        governor,
-    )
+    LocalExecutor::governed(engine, b.memory_bytes, pc, b.per_job_threads, 0, governor)
 }
 
 #[test]
@@ -120,7 +113,9 @@ fn served_jobs_cannot_starve_local() {
         "served must not breach its ceiling"
     );
     // …because that 200 is reserved for the node's OWN work, which can still run.
-    let _own = local.reserve(200).expect("reserved local headroom is claimable");
+    let _own = local
+        .reserve(200)
+        .expect("reserved local headroom is claimable");
     assert_eq!(governor.free_memory(), 0);
 }
 
@@ -138,9 +133,14 @@ fn local_work_cannot_starve_serving() {
     let _o1 = local.reserve(300).expect("own 300");
     let _o2 = local.reserve(300).expect("own 600 total");
     // The local CAS now refuses more own work (budget exhausted)…
-    assert!(local.reserve(1).is_none(), "own work bounded by ram_fraction budget");
+    assert!(
+        local.reserve(1).is_none(),
+        "own work bounded by ram_fraction budget"
+    );
     // …so serving still has its >= 400-byte share available.
-    let _served = admission.try_admit(400, 1).expect("serving keeps its share");
+    let _served = admission
+        .try_admit(400, 1)
+        .expect("serving keeps its share");
     assert_eq!(governor.free_memory(), 0);
 }
 
@@ -161,7 +161,10 @@ fn worker_pool_size_caps_total_concurrent_jobs() {
     assert_eq!(governor.available_slots(), 0);
 
     // Both roles are blocked purely by the global slot cap (plenty of mem/threads).
-    assert!(local.reserve(1).is_none(), "own blocked by worker_pool_size");
+    assert!(
+        local.reserve(1).is_none(),
+        "own blocked by worker_pool_size"
+    );
     assert!(
         admission.try_admit(1, 1).is_none(),
         "served blocked by worker_pool_size"

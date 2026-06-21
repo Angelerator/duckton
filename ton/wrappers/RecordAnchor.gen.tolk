@@ -99,6 +99,22 @@ fun RecordAnchor.sendAnchorResolveDispute(
     return net.send(from, genericMsg);
 }
 
+fun RecordAnchor.sendAnchorAnnounceUpgrade(
+    self,
+    from: address,
+    queryId: uint64,
+    newCodeHash: uint256,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: AnchorAnnounceUpgrade { queryId, newCodeHash },
+    });
+    return net.send(from, genericMsg);
+}
+
 fun RecordAnchor.sendAnchorUpgradeCode(
     self,
     from: address,
@@ -111,6 +127,21 @@ fun RecordAnchor.sendAnchorUpgradeCode(
         value: config.value,
         dest: self.address,
         body: AnchorUpgradeCode { queryId, newCode },
+    });
+    return net.send(from, genericMsg);
+}
+
+fun RecordAnchor.sendAnchorCancelUpgrade(
+    self,
+    from: address,
+    queryId: uint64,
+    config: SendParams = {},
+): SendResultList {
+    val genericMsg = createMessage({
+        bounce: config.bounce,
+        value: config.value,
+        dest: self.address,
+        body: AnchorCancelUpgrade { queryId },
     });
     return net.send(from, genericMsg);
 }
@@ -132,6 +163,10 @@ fun RecordAnchor.getAnchorState(self): AnchorState {
 
 fun RecordAnchor.getCodeVersion(self): int {
     return net.runGetMethod(self.address, "get_code_version");
+}
+
+fun RecordAnchor.getPendingUpgrade(self): AnchorUpgradeView {
+    return net.runGetMethod(self.address, "get_pending_upgrade");
 }
 
 fun RecordAnchor.getDispute(self, disputeId: int): DisputeInfo? {

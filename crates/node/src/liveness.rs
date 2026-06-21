@@ -401,6 +401,7 @@ mod tests {
                     groups: vec![],
                     regions: vec![],
                     fail_closed_labels: false,
+                    nodes: vec![],
                 },
             )
             .await;

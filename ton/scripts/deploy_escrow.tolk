@@ -52,6 +52,13 @@ fun main() {
     // Bind it to `GlobalParams.get_platform_fee_bps` for `paramsVersion`. Default
     // = the canonical φ = 15% (1500 bps). `0` = no fee enforced (legacy/free).
     val platformFeeBps = (env<int>("ESCROW_PLATFORM_FEE_BPS") ?? 1500) as uint16;
+    // COMMISSION ENFORCEMENT (κ): the admin's participation-commission rate (bps)
+    // bound at open. When > 0, settle enforces each participation leg ==
+    // `base * κ / BPS_DENOM`. Bind it to `GlobalParams.get_participation_commission_bps`.
+    // Default `0` keeps this manual/demo deploy flexible (the paired settle script
+    // sets an arbitrary ESCROW_PARTICIPANT_AMOUNT); set it to the live κ (e.g. 500)
+    // to exercise on-chain commission enforcement.
+    val participationCommissionBps = (env<int>("ESCROW_PARTICIPATION_COMMISSION_BPS") ?? 0) as uint16;
 
     // B1: the requester pre-commits to the payout-eligible candidate set; settle
     // can only pay members of it. Two ways to bind it:
@@ -83,6 +90,7 @@ fun main() {
         candidatesHash: candidatesHash,
         paramsVersion: paramsVersion,
         platformFeeBps: platformFeeBps,
+        participationCommissionBps: participationCommissionBps,
     };
     val storage: EscrowStorage = {
         requester: requester,

@@ -22,62 +22,62 @@
 
 enum ErrCode: int32 {
     // Jetton / receipt wallet
-    NOT_OWNER = 132            // sender is not the contract owner
-    NOT_FROM_MASTER = 133      // sender is not the jetton master (vault)
-    NOT_VALID_WALLET = 134     // sender is not a legitimate sibling receipt wallet
-    UNAUTHORIZED_BURN = 135    // burn notification not from the owner's wallet
-    BALANCE_NEGATIVE = 136     // resulting balance would be negative
-    NOT_ENOUGH_GAS = 137       // attached value too small to cover the operation
-    RECEIPT_LOCKED = 138       // stake-receipt jetton is non-transferable (anti-exit)
-    INVALID_OP = 0xffff        // unknown opcode
+    NOT_OWNER = 132         // sender is not the contract owner
+    NOT_FROM_MASTER = 133   // sender is not the jetton master (vault)
+    NOT_VALID_WALLET = 134  // sender is not a legitimate sibling receipt wallet
+    UNAUTHORIZED_BURN = 135 // burn notification not from the owner's wallet
+    BALANCE_NEGATIVE = 136  // resulting balance would be negative
+    NOT_ENOUGH_GAS = 137    // attached value too small to cover the operation
+    RECEIPT_LOCKED = 138    // stake-receipt jetton is non-transferable (anti-exit)
+    INVALID_OP = 0xffff     // unknown opcode
 
     // Stake vault
-    NOT_SLASHER = 200          // sender is not the authorized slasher (dispute contract)
-    NOTHING_TO_UNBOND = 201    // unbond requested but no eligible stake
-    UNBOND_IN_PROGRESS = 202   // a prior unbond is still cooling down
-    COOLDOWN_NOT_ELAPSED = 203 // withdraw before the unbonding cooldown finished
-    NO_UNBONDING = 204         // withdraw with nothing in the unbonding bucket
-    KEEPER_TOO_EARLY = 205     // keeper withdraw before the owner-grace window
-    SLASH_EXCEEDS_STAKE = 206  // slash amount larger than slashable stake
-    INVALID_SPLIT = 207        // slash split bps do not sum to 10000
+    NOT_SLASHER = 200             // sender is not the authorized slasher (dispute contract)
+    NOTHING_TO_UNBOND = 201       // unbond requested but no eligible stake
+    UNBOND_IN_PROGRESS = 202      // a prior unbond is still cooling down
+    COOLDOWN_NOT_ELAPSED = 203    // withdraw before the unbonding cooldown finished
+    NO_UNBONDING = 204            // withdraw with nothing in the unbonding bucket
+    KEEPER_TOO_EARLY = 205        // keeper withdraw before the owner-grace window
+    SLASH_EXCEEDS_STAKE = 206     // slash amount larger than slashable stake
+    INVALID_SPLIT = 207           // slash split bps do not sum to 10000
     // Timelocked governance code upgrade (§8.6) — preserves the non-custodial
     // guarantee: an announced code swap can only be APPLIED after a delay >= the
     // unbonding window, so stakers can exit before any new code takes effect.
-    NO_PENDING_UPGRADE = 208   // apply/cancel with nothing announced
+    NO_PENDING_UPGRADE = 208      // apply/cancel with nothing announced
     UPGRADE_TIMELOCK_ACTIVE = 209 // apply before the timelock delay elapsed
-    UPGRADE_CODE_MISMATCH = 210 // applied code != the announced (hash-committed) code
+    UPGRADE_CODE_MISMATCH = 210   // applied code != the announced (hash-committed) code
 
     // Escrow
-    ESCROW_NOT_FUNDED = 220    // escrow opened without the requester's max-bid B
-    NOT_REQUESTER = 221        // settle/refund by someone other than the requester
-    NOT_ARBITER = 222          // settle by someone other than the bound arbiter
-    HASH_MISMATCH = 223        // provided result hash != the committed quorum hash
-    ALREADY_SETTLED = 224      // escrow already released
-    TIMEOUT_NOT_REACHED = 225  // refund-on-timeout before the deadline
+    ESCROW_NOT_FUNDED = 220     // escrow opened without the requester's max-bid B
+    NOT_REQUESTER = 221         // settle/refund by someone other than the requester
+    NOT_ARBITER = 222           // settle by someone other than the bound arbiter
+    HASH_MISMATCH = 223         // provided result hash != the committed quorum hash
+    ALREADY_SETTLED = 224       // escrow already released
+    TIMEOUT_NOT_REACHED = 225   // refund-on-timeout before the deadline
     PAYOUT_EXCEEDS_ESCROW = 226 // requested payout exceeds the locked escrow B
 
     // Record anchor / dispute
-    BAD_PREV_ROOT = 240        // submitted root does not chain to the stored prev_root
-    EPOCH_REGRESSION = 241     // epoch did not advance monotonically
+    BAD_PREV_ROOT = 240             // submitted root does not chain to the stored prev_root
+    EPOCH_REGRESSION = 241          // epoch did not advance monotonically
     INSUFFICIENT_ANCHOR_STAKE = 242 // keeper stake-weight below the acceptance threshold
-    BAD_INCLUSION_PROOF = 243  // Merkle inclusion proof does not reproduce the root
-    DISPUTE_BOND_TOO_LOW = 244 // challenger bond below the configured minimum
-    NO_SUCH_DISPUTE = 245      // verdict for an unknown dispute id
-    NOT_VERDICT_AUTHORITY = 246 // verdict from a non-authoritative source
+    BAD_INCLUSION_PROOF = 243       // Merkle inclusion proof does not reproduce the root
+    DISPUTE_BOND_TOO_LOW = 244      // challenger bond below the configured minimum
+    NO_SUCH_DISPUTE = 245           // verdict for an unknown dispute id
+    NOT_VERDICT_AUTHORITY = 246     // verdict from a non-authoritative source
     // --- Appended (security hardening; never renumber the frozen codes above) ---
-    DISPUTE_NOT_OPEN = 247     // resolve a dispute that is not in the open (0) state (double-resolve)
-    UNKNOWN_EPOCH = 248        // dispute references an epoch that was never anchored
-    PROOF_TOO_DEEP = 249       // Merkle proof exceeds the max depth bound (gas-griefing guard)
-    NOT_ANCHOR_KEEPER = 250    // root submitted by an address that is not the authorized keeper
-    ZERO_ROOT = 251            // refuse anchoring an empty / all-zero root
-    BOND_FLOOR_TOO_LOW = 252   // configured disputeBondMin is below the on-chain floor (> 0)
+    DISPUTE_NOT_OPEN = 247          // resolve a dispute that is not in the open (0) state (double-resolve)
+    UNKNOWN_EPOCH = 248             // dispute references an epoch that was never anchored
+    PROOF_TOO_DEEP = 249            // Merkle proof exceeds the max depth bound (gas-griefing guard)
+    NOT_ANCHOR_KEEPER = 250         // root submitted by an address that is not the authorized keeper
+    ZERO_ROOT = 251                 // refuse anchoring an empty / all-zero root
+    BOND_FLOOR_TOO_LOW = 252        // configured disputeBondMin is below the on-chain floor (> 0)
 
     // Global params (platform-wide config)
     NOT_ADMIN = 260            // sender is not the configured admin (or multisig)
     PARAMS_OUT_OF_BOUNDS = 261 // proposed params violate a §12 invariant
 
     // --- Appended: escrow / vault payout-authorization + bounce hardening ------
-    NOT_OWNER_SIG = 280        // settle split not authorized by the fund-owner (requester) commitment
+    NOT_OWNER_SIG = 280          // settle split not authorized by the fund-owner (requester) commitment
     SETTLE_POLICY_MISMATCH = 281 // settle payload does not match the requester's pre-committed policy hash
     TOO_MANY_PARTICIPANTS = 282  // participants map exceeds the on-chain payout bound (action/gas safety)
     UPGRADE_NOT_AUTHORITY = 283  // upgrade announced/applied by a non-upgrade-authority (separated from slasher)
@@ -86,6 +86,12 @@ enum ErrCode: int32 {
     // EXACTLY `winnerAmount * terms.platformFeeBps / BPS_DENOM` (the admin's φ-cut
     // of the winner's settled price), so the platform would be under/over-paid.
     FEE_MISMATCH = 285
+    // Escrow STRICT participation-commission enforcement (κ): when the admin's κ
+    // rate is bound (terms.participationCommissionBps > 0), every participation
+    // leg must equal EXACTLY `base * κ / BPS_DENOM`, so a compromised arbiter
+    // cannot shave the agreeing verifiers' promised commission (shifting it to the
+    // requester's refund). Inert when κ = 0 (no commission expected).
+    COMMISSION_MISMATCH = 286
 }
 
 // ---------------------------------------------------------------------------

@@ -44,12 +44,37 @@ fun deployEscrowC(
     candidates: map<address, uint1>,
     feeBps: int,
 ): JobEscrow {
+    // κ = 0 ⇒ the on-chain commission check is inert (these tests set arbitrary
+    // participant amounts). The κ-enforcement tests use `deployEscrowCK` below.
+    return deployEscrowCK(
+        requester,
+        arbiter,
+        treasury,
+        amount,
+        candidates,
+        feeBps,
+        0,
+    );
+}
+
+// Like `deployEscrowC` but also binds the participation-commission rate κ, so
+// settle enforces each participation leg == `base * κ / BPS_DENOM`.
+fun deployEscrowCK(
+    requester: address,
+    arbiter: address,
+    treasury: address,
+    amount: coins,
+    candidates: map<address, uint1>,
+    feeBps: int,
+    kappaBps: int,
+): JobEscrow {
     val terms: EscrowTerms = {
         treasury: treasury,
         expectedHash: RESULT_HASH,
         candidatesHash: candidatesCommitment(candidates),
         paramsVersion: 1,
         platformFeeBps: feeBps as uint16,
+        participationCommissionBps: kappaBps as uint16,
     };
     val storage: EscrowStorage = {
         requester: requester,
@@ -78,7 +103,14 @@ get fun `test settle on correct quorum hash pays winner, commissions, fee and re
     val p1 = testing.treasury("p1");
     val p2 = testing.treasury("p2");
     val cands = candidatesOf3(winner.address, p1.address, p2.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     participants.set(p1.address, ton("1"));
@@ -123,6 +155,101 @@ get fun `test settle on correct quorum hash pays winner, commissions, fee and re
     expect(p2d).toBeLessOrEqual(ton("1"));
 }
 
+// COMMISSION ENFORCEMENT (κ): when the admin κ rate is bound, settle pays each
+// agreeing verifier EXACTLY κ·base — and a settle that under/over-pays a
+// participation leg is rejected on-chain (a compromised arbiter cannot shave the
+// verifiers' commission into the requester's refund).
+get fun `test settle enforces kappa commission: each verifier paid exactly base*kappa`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val treasury = testing.treasury("treasury");
+    val winner = testing.treasury("winner");
+    val p1 = testing.treasury("p1");
+    val p2 = testing.treasury("p2");
+    val cands = candidatesOf3(winner.address, p1.address, p2.address);
+    // Bind both φ = 15% and κ = 5% into the terms.
+    val escrow = deployEscrowCK(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+        KAPPA_BPS,
+    );
+
+    val base = ton("60");
+    val fee = (base * FEE_BPS) / 10000;          // 9 TON
+    val commission = (base * KAPPA_BPS) / 10000; // 3 TON each
+    var participants: map<address, coins> = createEmptyMap();
+    participants.set(p1.address, commission);
+    participants.set(p2.address, commission);
+
+    val tBefore = testing.getAccountBalance(treasury.address);
+    val p1Before = testing.getAccountBalance(p1.address);
+    val res = escrow.sendEscrowSettle(
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
+    );
+    expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
+    expect(escrow.getEscrowState().settled).toBeTrue();
+    // Each verifier received exactly κ·base (= 3 TON), treasury got φ·base (= 9 TON).
+    val p1d = testing.getAccountBalance(p1.address) - p1Before;
+    expect(p1d).toBeGreaterOrEqual(ton("2.99"));
+    expect(p1d).toBeLessOrEqual(ton("3"));
+    expect(testing.getAccountBalance(treasury.address) - tBefore).toBeGreaterOrEqual(ton("8.99"));
+}
+
+get fun `test settle rejects a shaved kappa commission (COMMISSION_MISMATCH)`() {
+    testing.setNow(T0);
+    val requester = testing.treasury("requester");
+    val arbiter = testing.treasury("arbiter");
+    val treasury = testing.treasury("treasury");
+    val winner = testing.treasury("winner");
+    val p1 = testing.treasury("p1");
+    val cands = candidatesOf2(winner.address, p1.address);
+    val escrow = deployEscrowCK(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+        KAPPA_BPS,
+    );
+
+    val base = ton("60");
+    val fee = (base * FEE_BPS) / 10000;
+    // Arbiter tries to pay the verifier LESS than the bound κ·base (1 < 3).
+    var participants: map<address, coins> = createEmptyMap();
+    participants.set(p1.address, ton("1"));
+    val res = escrow.sendEscrowSettle(
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
+    );
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.COMMISSION_MISMATCH });
+    expect(escrow.getEscrowState().settled).toBeFalse();
+}
+
 // FREE-NODE POLICY [HIGH]: a FREE (walletless) node WINS a paid job. The winner is
 // paid 0, the quoted `base` is REFUNDED to the requester, the platform STILL
 // collects 15% of base to the treasury, and the wallet-holding verifier earns 5%.
@@ -136,7 +263,14 @@ get fun `test free node wins: base refunds to requester, platform still gets 15%
     val freeWinner = testing.treasury("free_winner");
     val verifier = testing.treasury("verifier"); // a wallet-holding agreeing runner
     val cands = candidatesOf2(freeWinner.address, verifier.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     val base = ton("60");
     val fee = (base * FEE_BPS) / 10000;    // 9 TON to treasury
@@ -192,21 +326,50 @@ get fun `test settle with wrong platform fee amount is rejected (FEE_MISMATCH)`(
     val treasury = testing.treasury("treasury");
     val winner = testing.treasury("winner");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     // Correct fee would be 9 (= 60*15%); the arbiter tries to shave it to 8.
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, ton("60"), ton("60"), ton("8"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        ton("60"),
+        ton("60"),
+        ton("8"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.FEE_MISMATCH });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.FEE_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 
     // An OVER-payment of the fee is rejected too (must be EXACT, not just >=).
     val over = escrow.sendEscrowSettle(
-        arbiter.address, 2, RESULT_HASH, winner.address, ton("60"), ton("60"), ton("10"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        2,
+        RESULT_HASH,
+        winner.address,
+        ton("60"),
+        ton("60"),
+        ton("10"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(over).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.FEE_MISMATCH });
+    expect(
+        over,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.FEE_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -221,7 +384,14 @@ get fun `test platform fee is routed to the bound fee recipient, never the arbit
     val feeRecipient = testing.treasury("admin_treasury");
     val winner = testing.treasury("winner");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, feeRecipient.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        feeRecipient.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     expect(escrow.getFeeRecipient()).toEqual(feeRecipient.address);
     expect(escrow.getPlatformFeeBps()).toEqual(FEE_BPS);
@@ -231,7 +401,16 @@ get fun `test platform fee is routed to the bound fee recipient, never the arbit
     val fee = (base * FEE_BPS) / 10000; // 6 TON
     val frBefore = testing.getAccountBalance(feeRecipient.address);
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, base, fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
     val frDelta = testing.getAccountBalance(feeRecipient.address) - frBefore;
@@ -250,11 +429,18 @@ get fun `test multi-party settle at admin rates pays exact shares and is accepte
     val p1 = testing.treasury("p1");
     val p2 = testing.treasury("p2");
     val cands = candidatesOf3(winner.address, p1.address, p2.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     val base = ton("80");
-    val fee = (base * FEE_BPS) / 10000;     // 12 TON
-    val comm = (base * KAPPA_BPS) / 10000;  // 4 TON each
+    val fee = (base * FEE_BPS) / 10000;    // 12 TON
+    val comm = (base * KAPPA_BPS) / 10000; // 4 TON each
     var participants: map<address, coins> = createEmptyMap();
     participants.set(p1.address, comm);
     participants.set(p2.address, comm);
@@ -262,7 +448,16 @@ get fun `test multi-party settle at admin rates pays exact shares and is accepte
     val tBefore = testing.getAccountBalance(treasury.address);
     val p1Before = testing.getAccountBalance(p1.address);
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, base, fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
     expect(escrow.getEscrowState().settled).toBeTrue();
@@ -286,19 +481,37 @@ get fun `test settle exceeding escrow across all legs is rejected on-chain`() {
     val p1 = testing.treasury("p1");
     val p2 = testing.treasury("p2");
     val cands = candidatesOf3(winner.address, p1.address, p2.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     val base = ton("90");
-    val fee = (base * FEE_BPS) / 10000;     // 13.5 -> 13 TON (floor)
-    val comm = (base * KAPPA_BPS) / 10000;  // 4.5 -> 4 TON each
+    val fee = (base * FEE_BPS) / 10000;    // 13.5 -> 13 TON (floor)
+    val comm = (base * KAPPA_BPS) / 10000; // 4.5 -> 4 TON each
     var participants: map<address, coins> = createEmptyMap();
     participants.set(p1.address, comm);
     participants.set(p2.address, comm);
     // winner 90 + fee 13 + 8 = 111 > 100.
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, base, fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -311,16 +524,34 @@ get fun `test winner paid above the quoted base is rejected`() {
     val treasury = testing.treasury("treasury");
     val winner = testing.treasury("winner");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     val base = ton("40");
     val fee = (base * FEE_BPS) / 10000; // 6 TON
     // winnerAmount 50 > base 40 → rejected (PAYOUT_EXCEEDS_ESCROW guards it).
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, ton("50"), fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        ton("50"),
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -330,7 +561,14 @@ get fun `test settle with wrong result hash is rejected (HTLC lock)`() {
     val arbiter = testing.treasury("arbiter");
     val winner = testing.treasury("w");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     val res = escrow.sendEscrowSettle(
@@ -357,7 +595,14 @@ get fun `test settle from non-arbiter is rejected`() {
     val arbiter = testing.treasury("arbiter");
     val winner = testing.treasury("w");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     val res = escrow.sendEscrowSettle(
@@ -386,21 +631,50 @@ get fun `test arbiter cannot redirect payout to itself or a non-candidate (B1)`(
     val winner = testing.treasury("w");
     val outsider = testing.treasury("outsider");
     val cands = candidatesOf2(winner.address, randomAddress("x2"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
     var participants: map<address, coins> = createEmptyMap();
 
     // (1) arbiter names ITSELF as the winner -> rejected (winner != arbiter).
     val toSelf = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, arbiter.address, ton("90"), ton("90"), ton("0"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        arbiter.address,
+        ton("90"),
+        ton("90"),
+        ton("0"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(toSelf).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.NOT_OWNER_SIG });
+    expect(
+        toSelf,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.NOT_OWNER_SIG });
     expect(escrow.getEscrowState().settled).toBeFalse();
 
     // (2) arbiter names an OUTSIDER not in the committed candidate set -> rejected.
     val toOutsider = escrow.sendEscrowSettle(
-        arbiter.address, 2, RESULT_HASH, outsider.address, ton("90"), ton("90"), ton("0"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        2,
+        RESULT_HASH,
+        outsider.address,
+        ton("90"),
+        ton("90"),
+        ton("0"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(toOutsider).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
+    expect(
+        toOutsider,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 
     // (3) arbiter forges a DIFFERENT candidate set (one that includes itself) ->
@@ -408,9 +682,20 @@ get fun `test arbiter cannot redirect payout to itself or a non-candidate (B1)`(
     // it first: SETTLE_POLICY_MISMATCH. Either way the arbiter cannot self-pay.
     val forged = candidatesOf2(arbiter.address, winner.address);
     val toForged = escrow.sendEscrowSettle(
-        arbiter.address, 3, RESULT_HASH, arbiter.address, ton("90"), ton("90"), ton("0"), participants, forged, { value: ton("1") },
+        arbiter.address,
+        3,
+        RESULT_HASH,
+        arbiter.address,
+        ton("90"),
+        ton("90"),
+        ton("0"),
+        participants,
+        forged,
+        { value: ton("1") },
     );
-    expect(toForged).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
+    expect(
+        toForged,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -421,14 +706,32 @@ get fun `test settle with a non-candidate participant is rejected (B1)`() {
     val arbiter = testing.treasury("arbiter");
     val winner = testing.treasury("w");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     participants.set(randomAddress("intruder"), ton("1")); // not in cands
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, ton("60"), ton("60"), ton("0"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        ton("60"),
+        ton("60"),
+        ton("0"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.SETTLE_POLICY_MISMATCH });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -438,7 +741,14 @@ get fun `test payout exceeding escrow is rejected`() {
     val arbiter = testing.treasury("arbiter");
     val winner = testing.treasury("w");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     val res = escrow.sendEscrowSettle(
@@ -465,7 +775,14 @@ get fun `test refund before deadline is rejected, after deadline succeeds`() {
     val winner = testing.treasury("w");
     val keeper = randomAddress("keeper");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     // Before the deadline, refund-on-timeout is not allowed.
     val early = escrow.sendEscrowRefund(keeper, 1, { value: ton("1") });
@@ -510,12 +827,28 @@ get fun `test refund after a successful settle is rejected (already settled)`() 
     val winner = testing.treasury("w");
     val keeper = randomAddress("keeper");
     val cands = candidatesOf2(winner.address, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     // Settle first.
     var participants: map<address, coins> = createEmptyMap();
     val settle = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, ton("10"), ton("10"), ton("0"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        ton("10"),
+        ton("10"),
+        ton("0"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(settle).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
 
@@ -523,7 +856,9 @@ get fun `test refund after a successful settle is rejected (already settled)`() 
     // checked before the deadline gate), pinning EscrowRefund's `!settled`.
     testing.setNow(DEADLINE);
     val refund = escrow.sendEscrowRefund(keeper, 2, { value: ton("1") });
-    expect(refund).toHaveFailedTx({ from: keeper, to: escrow.address, exitCode: ErrCode.ALREADY_SETTLED });
+    expect(
+        refund,
+    ).toHaveFailedTx({ from: keeper, to: escrow.address, exitCode: ErrCode.ALREADY_SETTLED });
 }
 
 get fun `test payout total over escrow (winner+fee+participants) is rejected`() {
@@ -533,7 +868,14 @@ get fun `test payout total over escrow (winner+fee+participants) is rejected`() 
     val winner = testing.treasury("w");
     val p1 = testing.treasury("p1");
     val cands = candidatesOf2(winner.address, p1.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     // winner 80 + fee 10 + participant 20 = 110 > 100. The total bound is checked
     // before the fee-equality, so this pins PAYOUT_EXCEEDS_ESCROW (each summand
@@ -541,9 +883,20 @@ get fun `test payout total over escrow (winner+fee+participants) is rejected`() 
     var participants: map<address, coins> = createEmptyMap();
     participants.set(p1.address, ton("20"));
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, ton("80"), ton("80"), ton("10"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        ton("80"),
+        ton("80"),
+        ton("10"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.PAYOUT_EXCEEDS_ESCROW });
     expect(escrow.getEscrowState().settled).toBeFalse();
 }
 
@@ -554,7 +907,14 @@ get fun `test payout total exactly equal to escrow is accepted (boundary)`() {
     val winner = testing.treasury("w");
     val p1 = testing.treasury("p1");
     val cands = candidatesOf2(winner.address, p1.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     // base 80 + fee 12 (15%) + participant 8 = 100 == escrow: must succeed (pins
     // the `<=` boundary in `total <= escrowAmount`; a strict `<` would reject this).
@@ -563,7 +923,16 @@ get fun `test payout total exactly equal to escrow is accepted (boundary)`() {
     val base = ton("80");
     val fee = (base * FEE_BPS) / 10000; // 12 TON
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, base, fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
     expect(escrow.getEscrowState().settled).toBeTrue();
@@ -579,7 +948,14 @@ get fun `test settle refunds the unspent slack to the requester`() {
     val p1 = testing.treasury("p1");
     val p2 = testing.treasury("p2");
     val cands = candidatesOf3(winner.address, p1.address, p2.address);
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        FEE_BPS,
+    );
 
     // winner 60 + fee 9 (15%) + commissions 2 = 71; the remaining ~29 must refund
     // to the requester (pins the carry-remaining refund — without it the requester
@@ -591,7 +967,16 @@ get fun `test settle refunds the unspent slack to the requester`() {
     val fee = (base * FEE_BPS) / 10000; // 9 TON
     val before = testing.getAccountBalance(requester.address);
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner.address, base, base, fee, participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner.address,
+        base,
+        base,
+        fee,
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
     // The requester recovers the TRUE remainder via carry-all: the 29 unspent
@@ -610,11 +995,27 @@ get fun `test bounced payout is recoverable via the pull-ledger (B2)`() {
     // An UNINITIALIZED winner: a bounceable payout to it bounces back.
     val winner = randomAddress("uninit_winner");
     val cands = candidatesOf2(winner, randomAddress("x"));
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), cands, 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        cands,
+        0,
+    );
 
     var participants: map<address, coins> = createEmptyMap();
     val res = escrow.sendEscrowSettle(
-        arbiter.address, 1, RESULT_HASH, winner, ton("60"), ton("60"), ton("0"), participants, cands, { value: ton("1") },
+        arbiter.address,
+        1,
+        RESULT_HASH,
+        winner,
+        ton("60"),
+        ton("60"),
+        ton("0"),
+        participants,
+        cands,
+        { value: ton("1") },
     );
     expect(res).toHaveSuccessfulTx<EscrowSettle>({ from: arbiter.address, to: escrow.address });
     // The ~60 TON was NOT lost: it is queued in the pull-ledger for the winner
@@ -636,11 +1037,20 @@ get fun `test escrow rejects an unknown opcode (non-empty body) with INVALID_OP`
     testing.setNow(T0);
     val requester = testing.treasury("requester");
     val arbiter = testing.treasury("arbiter");
-    val escrow = deployEscrowC(requester.address, arbiter.address, randomAddress("t"), ton("100"), candidatesOf2(randomAddress("w"), randomAddress("x")), 0);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        randomAddress("t"),
+        ton("100"),
+        candidatesOf2(randomAddress("w"), randomAddress("x")),
+        0,
+    );
 
     val body = beginCell().storeUint(0xDEADBEEF, 32).endCell();
     val res = escrow.sendAny(arbiter.address, body, { value: ton("1") });
-    expect(res).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.INVALID_OP });
+    expect(
+        res,
+    ).toHaveFailedTx({ from: arbiter.address, to: escrow.address, exitCode: ErrCode.INVALID_OP });
 }
 
 get fun `test escrow getters and top-up cover read paths`() {
@@ -648,7 +1058,14 @@ get fun `test escrow getters and top-up cover read paths`() {
     val requester = testing.treasury("requester");
     val arbiter = testing.treasury("arbiter");
     val treasury = testing.treasury("treasury");
-    val escrow = deployEscrowC(requester.address, arbiter.address, treasury.address, ton("100"), candidatesOf2(randomAddress("w"), randomAddress("x")), FEE_BPS);
+    val escrow = deployEscrowC(
+        requester.address,
+        arbiter.address,
+        treasury.address,
+        ton("100"),
+        candidatesOf2(randomAddress("w"), randomAddress("x")),
+        FEE_BPS,
+    );
 
     expect(escrow.getRequester()).toEqual(requester.address);
     expect(escrow.getExpectedHash()).toEqual(RESULT_HASH);

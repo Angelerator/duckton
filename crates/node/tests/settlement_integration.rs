@@ -834,6 +834,7 @@ impl Settlement for TermsRecordingSettlement {
             max_bid,
         })
     }
+    #[allow(clippy::too_many_arguments)]
     fn open_escrow_with_terms(
         &self,
         job: &JobId,
@@ -842,12 +843,19 @@ impl Settlement for TermsRecordingSettlement {
         params_version: u32,
         candidates: &[WalletAddress],
         fee_recipient: Option<WalletAddress>,
+        _platform_fee_bps: Option<u16>,
+        _participation_commission_bps: Option<u16>,
     ) -> Result<EscrowHandle, SettleError> {
-        self.opened
+        self.opened.lock().unwrap().push((
+            max_bid,
+            *expected_hash,
+            params_version,
+            candidates.to_vec(),
+        ));
+        self.opened_fee_recipients
             .lock()
             .unwrap()
-            .push((max_bid, *expected_hash, params_version, candidates.to_vec()));
-        self.opened_fee_recipients.lock().unwrap().push(fee_recipient);
+            .push(fee_recipient);
         Ok(EscrowHandle {
             job: job.clone(),
             address: wallet(0xEE),
@@ -1062,7 +1070,11 @@ async fn paid_job_rejects_when_local_fee_recipient_disagrees_with_chain() {
         settlement.settled.lock().unwrap().is_empty(),
         "nothing settled on a fee-recipient mismatch"
     );
-    assert_eq!(anchor.len(), 0, "no record anchored when settlement is refused");
+    assert_eq!(
+        anchor.len(),
+        0,
+        "no record anchored when settlement is refused"
+    );
 }
 
 /// FREE-NODE POLICY: a paid job whose WINNER is a free (walletless) node settles
@@ -1101,7 +1113,10 @@ async fn paid_job_free_winner_refunds_base_but_platform_still_collects_fee() {
     // The free winner is paid NOTHING (its base will refund to the requester).
     assert_eq!(split.winner.amount, 0, "free winner earns nothing");
     // The fee base (quoted price) is non-zero...
-    assert!(split.base > 0, "the quoted base is still set for a free winner");
+    assert!(
+        split.base > 0,
+        "the quoted base is still set for a free winner"
+    );
     // ...and the platform STILL collects exactly φ·base (15% of the base), proving
     // the fee is decoupled from the (zero) winner payout.
     assert_eq!(
@@ -1433,7 +1448,9 @@ async fn attestation_gate_admits_internal_and_sensitive_with_verifier() {
         (AttestationLevel::L2, "img-l2"),
     ] {
         let attestor = Arc::new(MockAttestor::new(authority.clone(), meas, level));
-        hosts.push(spawn_worker_attestor(Arc::new(MockEngine::deterministic()), attestor, bound).await);
+        hosts.push(
+            spawn_worker_attestor(Arc::new(MockEngine::deterministic()), attestor, bound).await,
+        );
     }
     let refs: Vec<&WorkerHandle> = hosts.iter().collect();
     let st = store();
@@ -1565,8 +1582,12 @@ async fn wallet_binding_aggregates_reputation_across_rotated_keys() {
 
     // Build the veteran key's reputation via many verified jobs (shared store).
     {
-        let coord = coordinator(&[&veteran], base_cfg(1, 1), st.clone() as Arc<dyn TrustStore>)
-            .await;
+        let coord = coordinator(
+            &[&veteran],
+            base_cfg(1, 1),
+            st.clone() as Arc<dyn TrustStore>,
+        )
+        .await;
         for _ in 0..15 {
             coord
                 .run_query("SELECT 1", QueryOverrides::default())
@@ -1749,7 +1770,13 @@ async fn spawn_worker_metered(
     let params = WorkerParams::from_config(&cfg);
     let node_id = transport.local_node_id().clone();
     let addr = transport.local_addr().unwrap();
-    let worker = Worker::new(transport.clone(), engine, admission, Attestation::stub_l0(), params);
+    let worker = Worker::new(
+        transport.clone(),
+        engine,
+        admission,
+        Attestation::stub_l0(),
+        params,
+    );
     let task = worker.spawn();
     WorkerHandle {
         node_id,
@@ -1857,7 +1884,11 @@ async fn metered_job_bills_actual_seconds_and_refunds_unused_escrow() {
     let expected_b = p2p_settlement::required_escrow_total(cap_base, 1, 1500, 500);
 
     let opened = settlement.opened.lock().unwrap().clone();
-    assert_eq!(opened, vec![expected_b], "escrow sized to the worst-case cap_base");
+    assert_eq!(
+        opened,
+        vec![expected_b],
+        "escrow sized to the worst-case cap_base"
+    );
 
     let settled = settlement.settled.lock().unwrap().clone();
     assert_eq!(settled.len(), 1);
@@ -1866,9 +1897,15 @@ async fn metered_job_bills_actual_seconds_and_refunds_unused_escrow() {
 
     // base = rate × actual ≤ cap_base; a ~600ms job bills 1–2 whole seconds.
     let base = split.base;
-    assert!(base > 0 && base % rate as Amount == 0, "base is a whole-second multiple of the rate: {base}");
+    assert!(
+        base > 0 && base % rate as Amount == 0,
+        "base is a whole-second multiple of the rate: {base}"
+    );
     assert!(base <= cap_base, "base must not exceed the cap base");
-    assert!(base <= 2 * rate as Amount, "≈1s job bills ~1 second, not the cap");
+    assert!(
+        base <= 2 * rate as Amount,
+        "≈1s job bills ~1 second, not the cap"
+    );
     // The winner has a wallet ⇒ paid exactly the metered base.
     assert_eq!(split.winner.amount, base);
     // Correct 15% / 5% split.
@@ -1878,8 +1915,14 @@ async fn metered_job_bills_actual_seconds_and_refunds_unused_escrow() {
     // The full split fits B AND leaves a large refund (cap over-reservation − actual).
     let total = split.total();
     assert!(total <= *b);
-    assert!(*b - total > 0, "unused escrow (cap − actual) refunds to the requester");
-    assert!(total < cap_base, "actual spend is far below the worst-case cap");
+    assert!(
+        *b - total > 0,
+        "unused escrow (cap − actual) refunds to the requester"
+    );
+    assert!(
+        total < cap_base,
+        "actual spend is far below the worst-case cap"
+    );
 }
 
 /// HARD cap deadline: a metered job whose execution exceeds `cap_seconds` is
@@ -1913,7 +1956,11 @@ async fn metered_overrun_past_cap_aborts_with_no_settle_and_no_slash() {
         .with_settlement(settlement.clone());
 
     let err = coord
-        .run_query_planned("SELECT 1", QueryOverrides::default(), Some(estimate_bytes(1_000)))
+        .run_query_planned(
+            "SELECT 1",
+            QueryOverrides::default(),
+            Some(estimate_bytes(1_000)),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -1923,11 +1970,25 @@ async fn metered_overrun_past_cap_aborts_with_no_settle_and_no_slash() {
     );
 
     // NO escrow opened/settled (the job never reached a verified quorum).
-    assert!(settlement.opened.lock().unwrap().is_empty(), "no escrow on an aborted job");
-    assert!(settlement.settled.lock().unwrap().is_empty(), "nothing settled on an aborted job");
+    assert!(
+        settlement.opened.lock().unwrap().is_empty(),
+        "no escrow on an aborted job"
+    );
+    assert!(
+        settlement.settled.lock().unwrap().is_empty(),
+        "nothing settled on an aborted job"
+    );
     // NO slash: the cap overrun is a resource/job fault, never a provider penalty.
-    assert_eq!(reg.stake_of(&w1.node_id), 1_000 * TON, "overrun must not slash w1");
-    assert_eq!(reg.stake_of(&w2.node_id), 1_000 * TON, "overrun must not slash w2");
+    assert_eq!(
+        reg.stake_of(&w1.node_id),
+        1_000 * TON,
+        "overrun must not slash w1"
+    );
+    assert_eq!(
+        reg.stake_of(&w2.node_id),
+        1_000 * TON,
+        "overrun must not slash w2"
+    );
     // The overrunning nodes accrue no fault observation either.
     assert_eq!(st.observation_count(&w1.node_id), 0);
     assert_eq!(st.observation_count(&w2.node_id), 0);
@@ -1987,7 +2048,12 @@ async fn perf_prioritization_picks_measured_fast_over_slow() {
     seed_perf(&st, &slow.node_id, 10, 4900, gib);
 
     for _ in 0..5 {
-        let coord = coordinator(&[&fast, &slow], base_cfg(1, 1), st.clone() as Arc<dyn TrustStore>).await;
+        let coord = coordinator(
+            &[&fast, &slow],
+            base_cfg(1, 1),
+            st.clone() as Arc<dyn TrustStore>,
+        )
+        .await;
         let outcome = coord
             .run_query("SELECT 1", QueryOverrides::default())
             .await

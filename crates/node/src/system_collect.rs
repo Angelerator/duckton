@@ -32,8 +32,7 @@ pub fn collect_system_profile(
     engine_version: &str,
     extension_version: &str,
 ) -> SystemProfile {
-    let mut profile =
-        SystemProfile::empty(signer.node_id(), hex::encode(signer.public_key()));
+    let mut profile = SystemProfile::empty(signer.node_id(), hex::encode(signer.public_key()));
     profile.collected_at = now_ts();
 
     let sys = System::new_with_specifics(
@@ -388,11 +387,21 @@ mod tests {
         let p = collect_system_profile(&signer, &BudgetConfig::default(), "mock-1", "0.3.0");
         let json = serde_json::to_string(&p).unwrap();
         for forbidden in [
-            "hostname", "fqdn", "username", "ip_addr", "mac_addr", "machine_id",
-            "serial", "home/", "/Users/", "geolocation",
+            "hostname",
+            "fqdn",
+            "username",
+            "ip_addr",
+            "mac_addr",
+            "machine_id",
+            "serial",
+            "home/",
+            "/Users/",
+            "geolocation",
         ] {
             assert!(
-                !json.to_ascii_lowercase().contains(&forbidden.to_ascii_lowercase()),
+                !json
+                    .to_ascii_lowercase()
+                    .contains(&forbidden.to_ascii_lowercase()),
                 "collected SystemProfile must not contain `{forbidden}`"
             );
         }

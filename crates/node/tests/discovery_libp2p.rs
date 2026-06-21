@@ -98,6 +98,7 @@ fn filter() -> CandidateFilter {
         groups: vec![],
         regions: vec![],
         fail_closed_labels: false,
+        nodes: vec![],
     }
 }
 

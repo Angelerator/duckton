@@ -70,15 +70,29 @@ pub fn decompress(
             }
             lz4_flex::decompress(&data[4..], prepended).map_err(|e| format!("lz4 decompress: {e}"))
         }
-        Compression::Zstd => zstd::decode_all(data)
-            .map(|mut v| {
-                // Defensive: trust the manifest's length as the source of truth.
-                if v.len() != uncompressed_len {
-                    v.truncate(uncompressed_len);
-                }
-                v
-            })
-            .map_err(|e| format!("zstd decompress: {e}")),
+        Compression::Zstd => {
+            // `zstd::decode_all` inflates the WHOLE frame before we could
+            // truncate, so a zstd bomb (tiny compressed, huge decompressed) OOMs
+            // the receiver. Stream-decode with a hard read limit of
+            // `uncompressed_len + 1` instead: allocation is bounded by the
+            // manifest's declared length, and a frame that decompresses larger is
+            // rejected rather than fully materialized.
+            use std::io::Read;
+            let decoder =
+                zstd::stream::read::Decoder::new(data).map_err(|e| format!("zstd decoder: {e}"))?;
+            let limit = uncompressed_len.saturating_add(1);
+            let mut out = Vec::new();
+            decoder
+                .take(limit as u64)
+                .read_to_end(&mut out)
+                .map_err(|e| format!("zstd decompress: {e}"))?;
+            if out.len() > uncompressed_len {
+                return Err(format!(
+                    "zstd output exceeds declared uncompressed_len {uncompressed_len}"
+                ));
+            }
+            Ok(out)
+        }
     }
 }
 
@@ -129,5 +143,24 @@ mod tests {
     fn lz4_truncated_prefix_is_rejected() {
         let err = decompress(Compression::Lz4, 1024, &[0u8; 2]).unwrap_err();
         assert!(err.contains("truncated size prefix"), "got: {err}");
+    }
+
+    #[test]
+    fn zstd_bomb_rejected_against_declared_len() {
+        // A highly compressible payload zips tiny but inflates large. If the
+        // manifest under-declares `uncompressed_len`, decode must stop at the
+        // bound and reject instead of allocating the full (bomb) output.
+        let big = vec![0u8; 4 * 1024 * 1024]; // 4 MiB of zeros → tiny zstd frame
+        let (codec, out) = maybe_compress(Compression::Zstd, 3, 0, &big);
+        assert_eq!(codec, Compression::Zstd);
+        assert!(out.len() < big.len(), "zstd should shrink a zero buffer");
+        // Honest length still round-trips.
+        assert_eq!(decompress(codec, big.len(), &out).unwrap(), big);
+        // A forged small declared length must be rejected, not inflated.
+        let err = decompress(codec, 1024, &out).unwrap_err();
+        assert!(
+            err.contains("exceeds declared uncompressed_len"),
+            "got: {err}"
+        );
     }
 }

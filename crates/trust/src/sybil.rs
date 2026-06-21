@@ -14,7 +14,10 @@ use p2p_proto::NodeId;
 use serde::{Deserialize, Serialize};
 
 const POW_DOMAIN: &[u8] = b"duckdb-p2p-identity-pow-v2";
-const VOUCH_DOMAIN: &[u8] = b"duckdb-p2p-vouch-v1";
+// v2 binds an `expiry` into the signed vouch (v1 vouches never expired, so a
+// captured vouch was replayable forever). The domain bump prevents a v1
+// signature from being reinterpreted as a v2 one.
+const VOUCH_DOMAIN: &[u8] = b"duckdb-p2p-vouch-v2";
 
 /// Length of a PoW epoch in seconds (1 day). The PoW preimage binds the epoch a
 /// capability ad's `ts` falls in, so a solved nonce expires after ~one day and
@@ -93,41 +96,59 @@ pub struct Vouch {
     pub subject: NodeId,
     /// Trust weight in `[0,1]` the voucher assigns.
     pub weight_milli: u32, // weight * 1000, to stay serde-stable
+    /// Unix-seconds expiry: a vouch is only valid up to this time. Part of the
+    /// signed payload so it cannot be extended; `0` is treated as already-expired
+    /// so an issuer cannot mint a never-expiring (forever-replayable) vouch.
+    pub expiry: u64,
     pub sig: String, // hex ed25519
 }
 
-fn vouch_signing_bytes(voucher_pubkey: &[u8; 32], subject: &NodeId, weight_milli: u32) -> Vec<u8> {
+fn vouch_signing_bytes(
+    voucher_pubkey: &[u8; 32],
+    subject: &NodeId,
+    weight_milli: u32,
+    expiry: u64,
+) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(VOUCH_DOMAIN);
     buf.extend_from_slice(voucher_pubkey);
     buf.extend_from_slice(subject.0.as_bytes());
     buf.extend_from_slice(&weight_milli.to_le_bytes());
+    buf.extend_from_slice(&expiry.to_le_bytes());
     buf
 }
 
-/// Create a signed vouch (`weight` clamped to `[0,1]`).
-pub fn make_vouch(signing_key: &SigningKey, subject: &NodeId, weight: f64) -> Vouch {
+/// Create a signed vouch (`weight` clamped to `[0,1]`) valid until `expiry`
+/// (unix seconds). The expiry is signed, bounding how long the vouch is usable.
+pub fn make_vouch(signing_key: &SigningKey, subject: &NodeId, weight: f64, expiry: u64) -> Vouch {
     let pubkey = signing_key.verifying_key().to_bytes();
     let weight_milli = (weight.clamp(0.0, 1.0) * 1000.0).round() as u32;
-    let msg = vouch_signing_bytes(&pubkey, subject, weight_milli);
+    let msg = vouch_signing_bytes(&pubkey, subject, weight_milli, expiry);
     let sig = signing_key.sign(&msg);
     Vouch {
         voucher_pubkey: hex::encode(pubkey),
         subject: subject.clone(),
         weight_milli,
+        expiry,
         sig: hex::encode(sig.to_bytes()),
     }
 }
 
-/// Verify a vouch's signature. Returns the weight in `[0,1]` if valid.
-pub fn verify_vouch(vouch: &Vouch) -> Option<f64> {
+/// Verify a vouch's signature and freshness at `now` (unix seconds). Returns the
+/// weight in `[0,1]` if the signature is valid AND the vouch has not expired. A
+/// `0` (or past) expiry is rejected, so a captured vouch cannot be replayed
+/// forever — the caller passes the current time.
+pub fn verify_vouch(vouch: &Vouch, now: u64) -> Option<f64> {
+    if vouch.expiry == 0 || now > vouch.expiry {
+        return None;
+    }
     let pk_bytes = hex::decode(&vouch.voucher_pubkey).ok()?;
     let pk: [u8; 32] = pk_bytes.try_into().ok()?;
     let vk = VerifyingKey::from_bytes(&pk).ok()?;
     let sig_bytes = hex::decode(&vouch.sig).ok()?;
     let sig_arr: [u8; 64] = sig_bytes.try_into().ok()?;
     let sig = Signature::from_bytes(&sig_arr);
-    let msg = vouch_signing_bytes(&pk, &vouch.subject, vouch.weight_milli);
+    let msg = vouch_signing_bytes(&pk, &vouch.subject, vouch.weight_milli, vouch.expiry);
     vk.verify_strict(&msg, &sig).ok()?;
     Some(vouch.weight_milli as f64 / 1000.0)
 }
@@ -184,15 +205,35 @@ mod tests {
     fn vouch_sign_and_verify() {
         let key = SigningKey::generate(&mut OsRng);
         let subject = NodeId("b3:newbie".into());
-        let v = make_vouch(&key, &subject, 0.25);
-        assert_eq!(verify_vouch(&v), Some(0.25));
+        let v = make_vouch(&key, &subject, 0.25, 2_000_000_000);
+        assert_eq!(verify_vouch(&v, 1_700_000_000), Some(0.25));
     }
 
     #[test]
     fn tampered_vouch_rejected() {
         let key = SigningKey::generate(&mut OsRng);
-        let mut v = make_vouch(&key, &NodeId("b3:x".into()), 0.5);
+        let mut v = make_vouch(&key, &NodeId("b3:x".into()), 0.5, 2_000_000_000);
         v.weight_milli = 1000; // tamper to claim full trust
-        assert_eq!(verify_vouch(&v), None);
+        assert_eq!(verify_vouch(&v, 1_700_000_000), None);
+    }
+
+    #[test]
+    fn expired_vouch_rejected() {
+        let key = SigningKey::generate(&mut OsRng);
+        let v = make_vouch(&key, &NodeId("b3:x".into()), 0.5, 1000);
+        // Valid before expiry, rejected after, and a 0-expiry never verifies.
+        assert_eq!(verify_vouch(&v, 999), Some(0.5));
+        assert_eq!(verify_vouch(&v, 2000), None);
+        let forever = make_vouch(&key, &NodeId("b3:y".into()), 0.5, 0);
+        assert_eq!(verify_vouch(&forever, 1), None);
+    }
+
+    #[test]
+    fn extended_expiry_breaks_signature() {
+        // The expiry is signed: bumping it to extend validity invalidates the sig.
+        let key = SigningKey::generate(&mut OsRng);
+        let mut v = make_vouch(&key, &NodeId("b3:x".into()), 0.5, 1000);
+        v.expiry = u64::MAX;
+        assert_eq!(verify_vouch(&v, 2000), None);
     }
 }

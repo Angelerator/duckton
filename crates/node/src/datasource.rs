@@ -690,6 +690,14 @@ pub struct StorageSetup {
     /// that only ever receive plaintext (test/fake) credentials; sealed tokens
     /// then fail loudly with [`DataSourceError::SealingKeyUnavailable`].
     pub sealing: Option<Arc<SealingKeypair>>,
+    /// Hard cap on the bytes a single query result may materialize in memory
+    /// (DoS backstop). DuckDB's `memory_limit` bounds working memory and spill,
+    /// but the engine still pulls the full result set into a `Vec<Value>` to hash
+    /// and stream it; without a ceiling a `SELECT * FROM range(1e12)` (or a wide
+    /// cartesian product) grows that buffer unboundedly. Defaults to the protocol
+    /// ceiling [`p2p_proto::MAX_RESULT_BYTES`] — a result above it could never be
+    /// transferred anyway — and a host may set it tighter.
+    pub max_result_bytes: u64,
 }
 
 impl StorageSetup {
@@ -704,7 +712,15 @@ impl StorageSetup {
             temp_file_encryption: true,
             providers: Arc::new(ProviderRegistry::new()),
             sealing: None,
+            max_result_bytes: p2p_proto::MAX_RESULT_BYTES,
         }
+    }
+
+    /// Override the in-memory result materialization cap (DoS backstop). `0`
+    /// disables the cap (unbounded); any other value is the byte ceiling.
+    pub fn with_max_result_bytes(mut self, max: u64) -> Self {
+        self.max_result_bytes = max;
+        self
     }
 
     /// Attach the worker's sealing keypair so sealed credential tokens can be
@@ -791,6 +807,7 @@ impl StorageSetup {
             temp_file_encryption: cfg.temp_file_encryption,
             providers: Arc::new(registry),
             sealing: None,
+            max_result_bytes: p2p_proto::MAX_RESULT_BYTES,
         }
     }
 }

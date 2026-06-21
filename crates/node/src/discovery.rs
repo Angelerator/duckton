@@ -115,6 +115,12 @@ pub struct CandidateFilter {
     /// host re-checks at admission. `false` (default / public) ⇒ today's soft
     /// behavior (unknown labels kept), byte-for-byte.
     pub fail_closed_labels: bool,
+    /// Per-call **target node(s)** (`nodes => ['b3:...']`): when non-empty, ONLY
+    /// candidates whose KNOWN `node_id` is in this set are admitted — applied
+    /// inside discovery (so a targeted node is never randomly sampled out) AND in
+    /// the coordinator retain. FAIL-CLOSED: a candidate with no known id (TOFU)
+    /// can never be a target. Empty ⇒ no node constraint (unchanged routing).
+    pub nodes: Vec<NodeId>,
 }
 
 impl CandidateFilter {
@@ -128,6 +134,16 @@ impl CandidateFilter {
     /// `true`. Shared by the discovery prune (early optimization) and the
     /// coordinator retain (enforcement), so they can't disagree.
     pub fn admits_labels(&self, c: &Candidate) -> bool {
+        // Target-node selector (per-call `nodes => [...]`): when set, only the
+        // exact requested ids are admitted. Fail-closed — a candidate with no
+        // known id cannot be the target. Checked FIRST so a targeted query never
+        // routes anywhere else, regardless of the other (label) constraints.
+        if !self.nodes.is_empty() {
+            match &c.node_id {
+                Some(id) if self.nodes.contains(id) => {}
+                _ => return false,
+            }
+        }
         if let Some(net) = &self.network {
             if c.advertised_networks.is_empty() {
                 // Unknown network: kept (soft) in public; dropped (fail-closed) in
@@ -245,6 +261,7 @@ mod tests {
             groups: vec![],
             regions: vec![],
             fail_closed_labels: false,
+            nodes: vec![],
         }
     }
 
@@ -266,6 +283,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn node_targeting_restricts_to_exact_ids_fail_closed() {
+        // Three identified peers + one TOFU (no-id) peer. A query targeting only
+        // peer "b" must return EXACTLY peer "b" — never the others, and never the
+        // id-less TOFU peer (fail-closed). This holds inside discovery, so the
+        // target is reliably returned (not randomly sampled out) even with a small
+        // sample cap and many peers.
+        let with_id = |port: u16, id: &str| {
+            Candidate::new(
+                Some(NodeId(id.into())),
+                format!("127.0.0.1:{port}").parse().unwrap(),
+            )
+        };
+        let peers = vec![
+            with_id(41_000, "b3:aaaa"),
+            with_id(41_001, "b3:bbbb"),
+            with_id(41_002, "b3:cccc"),
+            peer(41_003), // TOFU, no id
+        ];
+        let disc = StaticDiscovery::new(peers, 16);
+
+        let mut f = filter();
+        f.nodes = vec![NodeId("b3:bbbb".into())];
+        let got = disc.find_candidates(16, f).await;
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].node_id, Some(NodeId("b3:bbbb".into())));
+
+        // Targeting an id no candidate has ⇒ no candidates (no silent fallback).
+        let mut f2 = filter();
+        f2.nodes = vec![NodeId("b3:zzzz".into())];
+        assert!(disc.find_candidates(16, f2).await.is_empty());
+
+        // Targeting multiple ids returns exactly those that exist.
+        let mut f3 = filter();
+        f3.nodes = vec![NodeId("b3:aaaa".into()), NodeId("b3:cccc".into())];
+        let got3 = disc.find_candidates(16, f3).await;
+        assert_eq!(got3.len(), 2);
+        assert!(got3
+            .iter()
+            .all(|c| matches!(&c.node_id, Some(id) if id.0 == "b3:aaaa" || id.0 == "b3:cccc")));
+    }
+
+    #[tokio::test]
     async fn filters_by_advertised_attestation() {
         let mut p = peer(30_000);
         p.advertised_level = Some(AttestationLevel::L0);
@@ -277,6 +336,7 @@ mod tests {
             groups: vec![],
             regions: vec![],
             fail_closed_labels: false,
+            nodes: vec![],
         };
         assert!(disc.find_candidates(10, f).await.is_empty());
     }
@@ -329,6 +389,7 @@ mod tests {
             groups: groups.into_iter().map(String::from).collect(),
             regions: regions.into_iter().map(String::from).collect(),
             fail_closed_labels: false,
+            nodes: vec![],
         };
 
         // No constraint ⇒ unlabeled / network-only / region-only candidates kept.
@@ -370,6 +431,7 @@ mod tests {
             groups: groups.into_iter().map(String::from).collect(),
             regions: vec![],
             fail_closed_labels: true,
+            nodes: vec![],
         };
         let public = |network: Option<&str>, groups: Vec<&str>| CandidateFilter {
             data_class: DataClass::Public,
@@ -378,6 +440,7 @@ mod tests {
             groups: groups.into_iter().map(String::from).collect(),
             regions: vec![],
             fail_closed_labels: false,
+            nodes: vec![],
         };
 
         // Unknown network: kept in public, dropped in private (when constrained).

@@ -154,7 +154,11 @@ impl SystemProfile {
         let row = |g: &str, k: &str, v: String| [g.to_string(), k.to_string(), v];
         vec![
             row("identity", "node_id", self.node_id.0.clone()),
-            row("identity", "schema_version", self.schema_version.to_string()),
+            row(
+                "identity",
+                "schema_version",
+                self.schema_version.to_string(),
+            ),
             row("identity", "collected_at", self.collected_at.to_string()),
             row("identity", "refresh_seq", self.refresh_seq.to_string()),
             row("cpu", "arch", self.cpu_arch.clone()),
@@ -164,12 +168,32 @@ impl SystemProfile {
             row("cpu", "base_freq_mhz", opt_u(self.cpu_base_freq_mhz)),
             row("cpu", "max_freq_mhz", opt_u(self.cpu_max_freq_mhz)),
             row("cpu", "features", self.cpu_features.join(",")),
-            row("memory", "ram_total_bytes", self.ram_total_bytes.to_string()),
-            row("memory", "ram_available_bytes", self.ram_available_bytes.to_string()),
-            row("memory", "swap_total_bytes", self.swap_total_bytes.to_string()),
-            row("memory", "swap_used_bytes", self.swap_used_bytes.to_string()),
+            row(
+                "memory",
+                "ram_total_bytes",
+                self.ram_total_bytes.to_string(),
+            ),
+            row(
+                "memory",
+                "ram_available_bytes",
+                self.ram_available_bytes.to_string(),
+            ),
+            row(
+                "memory",
+                "swap_total_bytes",
+                self.swap_total_bytes.to_string(),
+            ),
+            row(
+                "memory",
+                "swap_used_bytes",
+                self.swap_used_bytes.to_string(),
+            ),
             row("disk", "total_bytes", self.disk_total_bytes.to_string()),
-            row("disk", "available_bytes", self.disk_available_bytes.to_string()),
+            row(
+                "disk",
+                "available_bytes",
+                self.disk_available_bytes.to_string(),
+            ),
             row("disk", "kind", self.disk_kind.clone()),
             row("os", "name", self.os_name.clone()),
             row("os", "version", self.os_version.clone()),
@@ -178,11 +202,27 @@ impl SystemProfile {
             row("os", "numa_nodes", self.numa_nodes.to_string()),
             row("build", "engine_version", self.engine_version.clone()),
             row("build", "extension_version", self.extension_version.clone()),
-            row("limits", "process_rlimit_as_bytes", opt_u(self.process_rlimit_as_bytes)),
-            row("limits", "cgroup_memory_max_bytes", opt_u(self.cgroup_memory_max_bytes)),
+            row(
+                "limits",
+                "process_rlimit_as_bytes",
+                opt_u(self.process_rlimit_as_bytes),
+            ),
+            row(
+                "limits",
+                "cgroup_memory_max_bytes",
+                opt_u(self.cgroup_memory_max_bytes),
+            ),
             row("limits", "cgroup_cpu_quota", opt_f(self.cgroup_cpu_quota)),
-            row("budget", "donated_mem_bytes", self.donated_budget_mem_bytes.to_string()),
-            row("budget", "donated_threads", self.donated_budget_threads.to_string()),
+            row(
+                "budget",
+                "donated_mem_bytes",
+                self.donated_budget_mem_bytes.to_string(),
+            ),
+            row(
+                "budget",
+                "donated_threads",
+                self.donated_budget_threads.to_string(),
+            ),
         ]
     }
 }
@@ -229,10 +269,27 @@ mod tests {
 
         // No PII *field keys* may exist (the struct simply has no such fields).
         for forbidden_key in [
-            "hostname", "fqdn", "host_name", "username", "user_name", "uid",
-            "ip_addr", "ip_address", "mac_addr", "mac_address", "machine_id",
-            "serial", "dmi", "hardware_uuid", "geolocation", "latitude",
-            "longitude", "env", "home_dir", "wallet", "private_key",
+            "hostname",
+            "fqdn",
+            "host_name",
+            "username",
+            "user_name",
+            "uid",
+            "ip_addr",
+            "ip_address",
+            "mac_addr",
+            "mac_address",
+            "machine_id",
+            "serial",
+            "dmi",
+            "hardware_uuid",
+            "geolocation",
+            "latitude",
+            "longitude",
+            "env",
+            "home_dir",
+            "wallet",
+            "private_key",
         ] {
             assert!(
                 !json.contains(forbidden_key),
@@ -245,15 +302,27 @@ mod tests {
         // `5.15.0-91` is dotted but NOT a 4-octet IPv4, so it passes.
         let looks_like_ipv4 = json.split(['"', ',', ' ', ':']).any(|tok| {
             let parts: Vec<&str> = tok.split('.').collect();
-            parts.len() == 4 && parts.iter().all(|s| !s.is_empty() && s.parse::<u8>().is_ok())
+            parts.len() == 4
+                && parts
+                    .iter()
+                    .all(|s| !s.is_empty() && s.parse::<u8>().is_ok())
         });
-        assert!(!looks_like_ipv4, "serialized profile looks like it carries an IPv4: {json}");
+        assert!(
+            !looks_like_ipv4,
+            "serialized profile looks like it carries an IPv4: {json}"
+        );
         // A MAC address shape `xx:xx:xx:xx:xx:xx`.
         let looks_like_mac = json.split('"').any(|tok| {
             let parts: Vec<&str> = tok.split(':').collect();
-            parts.len() == 6 && parts.iter().all(|s| s.len() == 2 && u8::from_str_radix(s, 16).is_ok())
+            parts.len() == 6
+                && parts
+                    .iter()
+                    .all(|s| s.len() == 2 && u8::from_str_radix(s, 16).is_ok())
         });
-        assert!(!looks_like_mac, "serialized profile looks like it carries a MAC: {json}");
+        assert!(
+            !looks_like_mac,
+            "serialized profile looks like it carries a MAC: {json}"
+        );
     }
 
     #[test]
@@ -261,7 +330,9 @@ mod tests {
         let p = sample();
         let rows = p.metadata_rows();
         let groups: std::collections::BTreeSet<&str> = rows.iter().map(|r| r[0].as_str()).collect();
-        for g in ["cpu", "memory", "disk", "os", "build", "limits", "budget", "identity"] {
+        for g in [
+            "cpu", "memory", "disk", "os", "build", "limits", "budget", "identity",
+        ] {
             assert!(groups.contains(g), "missing metadata group {g}");
         }
         // The signature/pubkey are crypto plumbing, never surfaced as metadata.

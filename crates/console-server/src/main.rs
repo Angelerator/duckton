@@ -24,6 +24,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::CorsLayer;
 
+use ed25519_dalek::SigningKey;
 use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, PreferMode, QueryOverrides, VerifyModeCfg,
 };
@@ -36,7 +37,6 @@ use p2p_proto::{Attestation, AttestationLevel, NodeId, Value};
 use p2p_settlement::types::Amount;
 use p2p_settlement::{InMemoryRecordAnchor, InMemoryStakeRegistry, MockSettlement, StakeRegistry};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
-use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 
 use p2p_trust::{
@@ -999,24 +999,24 @@ struct QueryBody {
 /// Unrecognized enum strings are ignored (treated as "not provided") so a bad
 /// value degrades to current behavior rather than 400-ing.
 fn parse_extras(body: &QueryBody) -> QueryExtras {
-    let prefer = body
-        .prefer
-        .as_deref()
-        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
-            "local" => Some(PreferMode::Local),
-            "remote" => Some(PreferMode::Remote),
-            "auto" => Some(PreferMode::Auto),
-            _ => None,
-        });
-    let payment = body
-        .payment
-        .as_deref()
-        .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
-            "free" => Some(PaymentPref::Free),
-            "paid" => Some(PaymentPref::Paid),
-            "auto" => Some(PaymentPref::Auto),
-            _ => None,
-        });
+    let prefer =
+        body.prefer
+            .as_deref()
+            .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+                "local" => Some(PreferMode::Local),
+                "remote" => Some(PreferMode::Remote),
+                "auto" => Some(PreferMode::Auto),
+                _ => None,
+            });
+    let payment =
+        body.payment
+            .as_deref()
+            .and_then(|s| match s.trim().to_ascii_lowercase().as_str() {
+                "free" => Some(PaymentPref::Free),
+                "paid" => Some(PaymentPref::Paid),
+                "auto" => Some(PaymentPref::Auto),
+                _ => None,
+            });
     let min_attestation = body.min_attestation.as_deref().and_then(|s| {
         match s.trim().to_ascii_uppercase().as_str() {
             "L0" | "L1" | "L2" => Some(s.trim().to_ascii_uppercase()),
@@ -1403,7 +1403,7 @@ async fn main() {
         .route("/api/stream", get(stream_handler))
         .route("/api/query", post(query_handler))
         .route("/api/health", get(|| async { "ok" }))
-        .layer(CorsLayer::very_permissive())
+        .layer(build_cors())
         .with_state(AppState {
             q_tx,
             bcast,
@@ -1416,4 +1416,37 @@ async fn main() {
     );
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// CORS for the demo server. `/api/query` runs arbitrary SQL on real demo workers
+/// and is unauthenticated, so `CorsLayer::very_permissive()` let ANY website the
+/// operator happened to visit issue cross-origin requests AND read the responses
+/// — i.e. run grid SQL and exfiltrate results from the browser. Restrict the
+/// allowed origins to the local Next.js console (overridable via
+/// `CONSOLE_ALLOWED_ORIGINS`, comma-separated) so a foreign page's
+/// `application/json` POST fails its CORS preflight. The server still binds
+/// loopback only; this closes the cross-origin (DNS-rebind / CSRF-read) vector.
+fn build_cors() -> CorsLayer {
+    use axum::http::{header, HeaderValue, Method};
+    let origins: Vec<HeaderValue> = std::env::var("CONSOLE_ALLOWED_ORIGINS")
+        .ok()
+        .map(|s| {
+            s.split(',')
+                .map(|o| o.trim().to_string())
+                .filter(|o| !o.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "http://localhost:3000".to_string(),
+                "http://127.0.0.1:3000".to_string(),
+            ]
+        })
+        .into_iter()
+        .filter_map(|o| HeaderValue::from_str(&o).ok())
+        .collect();
+    CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::CONTENT_TYPE])
 }

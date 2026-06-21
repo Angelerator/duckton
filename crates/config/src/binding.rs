@@ -188,7 +188,10 @@ mod tests {
 
     fn store() -> (BindingStore, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
-        (BindingStore::with_path(dir.path().join("bindings.toml")), dir)
+        (
+            BindingStore::with_path(dir.path().join("bindings.toml")),
+            dir,
+        )
     }
 
     #[test]

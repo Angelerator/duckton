@@ -220,7 +220,10 @@ async fn tpch_smoke_sf01() {
         return;
     };
     let eng = engine_for(&root);
-    println!("\n==== TPC-H SMOKE (real DuckDbEngine, {}) @ sf0.1 ====", eng.version());
+    println!(
+        "\n==== TPC-H SMOKE (real DuckDbEngine, {}) @ sf0.1 ====",
+        eng.version()
+    );
     let l = lease(1024 * 1024 * 1024, 4);
     for name in ["Q1", "Q6", "Q3", "Q5", "Q18"] {
         let sql = tpch_sql(&dir, name);
@@ -238,7 +241,11 @@ async fn tpch_smoke_sf01() {
             p2p_trust::canonical_hash(&rs2),
             "{name} not stable across runs"
         );
-        println!("  {name:<4} rows={:<4} {:>9.1} ms  (stable hash ok)", rs.row_count(), ms);
+        println!(
+            "  {name:<4} rows={:<4} {:>9.1} ms  (stable hash ok)",
+            rs.row_count(),
+            ms
+        );
     }
     println!("==== smoke OK ====");
 }
@@ -259,8 +266,14 @@ async fn tpch_engine_serial() {
     // Generous memory so the baseline is not spill-bound (spill is scenario d).
     let l = lease(8u64 * 1024 * 1024 * 1024, threads);
 
-    println!("\n==== TPC-H SERIAL BASELINE (real DuckDbEngine, {}) threads={threads} ====", eng.version());
-    println!("{:<6} {:<5} {:>6} {:>12} {:>12}", "SF", "Q", "rows", "run1_ms", "run2_ms");
+    println!(
+        "\n==== TPC-H SERIAL BASELINE (real DuckDbEngine, {}) threads={threads} ====",
+        eng.version()
+    );
+    println!(
+        "{:<6} {:<5} {:>6} {:>12} {:>12}",
+        "SF", "Q", "rows", "run1_ms", "run2_ms"
+    );
     for sf in selected_sfs() {
         let Some(dir) = sf_dir(&root, &sf) else {
             eprintln!("SKIP {sf}: not found under {root}");
@@ -366,9 +379,7 @@ async fn tpch_concurrency() {
                     return (name, None, true); // rejected at capacity
                 };
                 let t = Instant::now();
-                let res = eng
-                    .execute(&sql, lease(per_job_mem, 2))
-                    .await;
+                let res = eng.execute(&sql, lease(per_job_mem, 2)).await;
                 let ms = t.elapsed().as_secs_f64() * 1000.0;
                 // _guard drops here, releasing the lease back to the budget.
                 match res {
@@ -414,7 +425,10 @@ async fn tpch_concurrency() {
             thr
         );
         assert_eq!(errors, 0, "no execution errors expected at {offered}-wide");
-        assert!(ok + rejected == offered, "every offered query accounted for");
+        assert!(
+            ok + rejected == offered,
+            "every offered query accounted for"
+        );
     }
     println!("==== concurrency done ====");
 }
@@ -436,7 +450,10 @@ async fn tpch_spill() {
     let eng = engine_for(&root);
 
     println!("\n==== TPC-H LARGER-THAN-MEMORY SPILL (real DuckDbEngine) @ {sf} ====");
-    println!("{:<5} {:>10} {:>4} {:>8} {:>12} {:<10}", "Q", "mem", "thr", "rows", "ms", "status");
+    println!(
+        "{:<5} {:>10} {:>4} {:>8} {:>12} {:<10}",
+        "Q", "mem", "thr", "rows", "ms", "status"
+    );
 
     // 512MB then a tighter 256MB; both well below SF10 working sets. The engine
     // gives each job a private 0700 temp_directory, so DuckDB spills there.
@@ -610,7 +627,9 @@ mod grid {
         }
         let coord = make_coordinator(cfg.clone(), &workers).await;
 
-        println!("\n==== TPC-H GRID LOOPBACK (real DuckDbEngine x3, replicas=3 quorum=2) @ {sf} ====");
+        println!(
+            "\n==== TPC-H GRID LOOPBACK (real DuckDbEngine x3, replicas=3 quorum=2) @ {sf} ===="
+        );
 
         // prefer=>'remote'. No local executor is wired on this coordinator, so
         // every query is dispatched to the grid regardless; we still stamp the
@@ -638,7 +657,10 @@ mod grid {
                 outcome.winner.as_ref().map(|w| w.as_str().get(..8).unwrap_or("").to_string()),
                 outcome.participants.len(),
             );
-            assert!(!outcome.executed_locally, "must run on the grid, not locally");
+            assert!(
+                !outcome.executed_locally,
+                "must run on the grid, not locally"
+            );
             assert!(outcome.verified, "quorum should verify identical results");
             assert!(
                 outcome.agreement >= outcome.quorum,

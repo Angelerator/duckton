@@ -63,14 +63,25 @@ fun onInternalMessage(in: InMessage) {
             // to at open. This is what stops a compromised arbiter from naming an
             // arbitrary payee (e.g. itself) — every payee is checked for membership
             // below, and the set itself is requester-authorized.
-            assert (candidatesCommitment(msg.candidates) == terms.candidatesHash) throw ErrCode.SETTLE_POLICY_MISMATCH;
+            assert (
+                candidatesCommitment(msg.candidates) == terms.candidatesHash
+            ) throw ErrCode.SETTLE_POLICY_MISMATCH;
             // B1 defense-in-depth: the arbiter can never be the winner.
             assert (msg.winner != storage.arbiter) throw ErrCode.NOT_OWNER_SIG;
             // B1: the winner must be a requester-authorized candidate.
             assert (msg.candidates.exists(msg.winner)) throw ErrCode.SETTLE_POLICY_MISMATCH;
 
-            // Sum participation commissions, bound the count (B4), and verify each
-            // participant is also a requester-authorized candidate (B1).
+            // STRICT participation-commission enforcement (κ): when the admin's κ
+            // rate is bound, every agreeing verifier must be paid EXACTLY
+            // `base * κ / BPS_DENOM` (integer floor division — byte-for-byte the
+            // off-chain coordinator's `commission_each`), so a compromised arbiter
+            // cannot shave a verifier's promised commission into the requester's
+            // refund. Inert when κ = 0 (no commission expected). Computed once.
+            val expectedCommission = (msg.base * terms.participationCommissionBps) / BPS_DENOM;
+
+            // Sum participation commissions, bound the count (B4), verify each
+            // participant is also a requester-authorized candidate (B1), and (κ>0)
+            // that each leg equals the admin's exact κ·base commission.
             var participantsTotal: coins = 0;
             var count = 0;
             var entry = msg.participants.findFirst();
@@ -79,7 +90,11 @@ fun onInternalMessage(in: InMessage) {
                 assert (count <= MAX_SETTLE_PARTICIPANTS) throw ErrCode.TOO_MANY_PARTICIPANTS;
                 val who = entry.getKey();
                 assert (msg.candidates.exists(who)) throw ErrCode.SETTLE_POLICY_MISMATCH;
-                participantsTotal += entry.loadValue();
+                val amt = entry.loadValue();
+                if (terms.participationCommissionBps > 0) {
+                    assert (amt == expectedCommission) throw ErrCode.COMMISSION_MISMATCH;
+                }
+                participantsTotal += amt;
                 entry = msg.participants.iterateNext(entry);
             }
 
@@ -157,12 +172,15 @@ fun onInternalMessage(in: InMessage) {
             storage.settled = true;
             storage.save();
 
-            val refundMsg = createMessage({
-                bounce: BounceMode.NoBounce,
-                dest: storage.requester,
-                value: 0,
-            });
-            refundMsg.send(SEND_MODE_CARRY_ALL_BALANCE | SEND_MODE_IGNORE_ERRORS);
+            // B2/B3: refund the requester BOUNCEABLY with the same reserve +
+            // carry-all discipline as settle. The old NoBounce|IGNORE_ERRORS send
+            // silently stranded the whole escrow if the requester address could
+            // not accept it; now a failed refund bounces back and is credited to
+            // the pull-ledger (`onBouncedMessage`) for recovery via `EscrowClaim`.
+            // Keep the storage buffer so the contract survives to receive that
+            // bounce.
+            reserveToncoinsOnBalance(MIN_TONS_FOR_STORAGE, RESERVE_MODE_EXACT_AMOUNT);
+            refundRemaining(storage.requester, msg.queryId);
         }
 
         // B2 pull path: deliver a queued/bounced payout to the recipient it is

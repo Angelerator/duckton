@@ -866,7 +866,8 @@ fn broadcast_admin_params(
     // GlobalParams is skipped (cskip_no_gas) and never runs update_params. The
     // contract edits storage in place, so this small value only funds its compute
     // phase (it is not a payout). 0.05 TON is ample for the update.
-    rpc.send_internal(&gp_addr, 50_000_000, &body).map_err(boxed)
+    rpc.send_internal(&gp_addr, 50_000_000, &body)
+        .map_err(boxed)
 }
 
 /// `CALL p2p_admin_params()` — push the current `[economics]` params to the
@@ -1502,6 +1503,12 @@ fn query_overrides(bind: &BindInfo) -> QueryOverrides {
     if let Some(r) = list_param(bind, "regions") {
         ov.regions = r;
     }
+    // `nodes` pins the job to EXACT target node id(s) — the coordinator offers to
+    // and dispatches to only these. Combine with `replicas => 1, quorum => 1` to
+    // route the whole job to a single specific node.
+    if let Some(n) = list_param(bind, "nodes") {
+        ov.nodes = n;
+    }
     ov
 }
 
@@ -1607,7 +1614,10 @@ fn query_named_params() -> Vec<(String, LogicalTypeHandle)> {
         ("prefer".to_string(), v(LogicalTypeId::Varchar)),
         ("payment".to_string(), v(LogicalTypeId::Varchar)),
         ("data_class".to_string(), v(LogicalTypeId::Varchar)),
-        ("require_staked_hosts".to_string(), v(LogicalTypeId::Boolean)),
+        (
+            "require_staked_hosts".to_string(),
+            v(LogicalTypeId::Boolean),
+        ),
         ("network".to_string(), v(LogicalTypeId::Varchar)),
         (
             "groups".to_string(),
@@ -1615,6 +1625,10 @@ fn query_named_params() -> Vec<(String, LogicalTypeHandle)> {
         ),
         (
             "regions".to_string(),
+            LogicalTypeHandle::list(&v(LogicalTypeId::Varchar)),
+        ),
+        (
+            "nodes".to_string(),
             LogicalTypeHandle::list(&v(LogicalTypeId::Varchar)),
         ),
     ]
@@ -1674,7 +1688,11 @@ fn query_meta_rows(outcome: &p2p_node::QueryOutcome) -> Vec<[String; 3]> {
             "participants".into(),
             outcome.participants.len().to_string(),
         ],
-        [g.into(), "receipts".into(), outcome.receipts.len().to_string()],
+        [
+            g.into(),
+            "receipts".into(),
+            outcome.receipts.len().to_string(),
+        ],
         [
             g.into(),
             "agreed_hash".into(),

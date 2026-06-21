@@ -260,7 +260,12 @@ mod tests {
     #[test]
     fn same_fingerprint_split_is_genuine_equivocation() {
         // Same pinned snapshot, two distinct hashes each reach quorum ⇒ split.
-        let commits = [ck("F0", "h1"), ck("F0", "h1"), ck("F0", "h2"), ck("F0", "h2")];
+        let commits = [
+            ck("F0", "h1"),
+            ck("F0", "h1"),
+            ck("F0", "h2"),
+            ck("F0", "h2"),
+        ];
         let out = evaluate_quorum_on_commits(&commits, Some("F0"), 2);
         assert_eq!(out.drifted, 0);
         assert!(out.pinned.split);

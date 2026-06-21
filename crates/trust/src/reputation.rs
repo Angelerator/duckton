@@ -861,7 +861,10 @@ mod tests {
         s.observe_capability(&r);
         s.observe_capability(&r); // replay of the SAME receipt is deduped
         let cap = s.proven_capability(&w).unwrap();
-        assert_eq!(cap.successes, 1, "replay must not inflate the success count");
+        assert_eq!(
+            cap.successes, 1,
+            "replay must not inflate the success count"
+        );
         assert_eq!(cap.max_input_bytes, 1_000);
         assert_eq!(cap.max_result_rows, 50);
         assert_eq!(cap.max_result_bytes, 2_000);

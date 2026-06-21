@@ -78,6 +78,9 @@ fun main() {
         candidatesHash: candidatesHash,
         paramsVersion: 0,
         platformFeeBps: platformFeeBps,
+        // κ check inert: this cost demo uses an arbitrary PARTICIPANT_AMOUNT, not a
+        // κ-derived commission. Production binds the live κ (see fee_proof_testnet).
+        participationCommissionBps: 0,
     };
     val storage: EscrowStorage = {
         requester: requester,

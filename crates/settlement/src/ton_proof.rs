@@ -125,8 +125,12 @@ pub fn node_bind_message(addr: &WalletAddress, nonce: &[u8], expiry: u64) -> Vec
 
 /// Verify the full two-way [`NodeWalletBinding`] (both directions), at `now`.
 pub fn verify_binding(b: &NodeWalletBinding, now: u64) -> Result<(), BindingError> {
-    // Time-box (direction 1 carries the expiry).
-    if b.expiry != 0 && now > b.expiry {
+    // Time-box (direction 1 carries the expiry). A binding MUST carry a real
+    // future expiry: treat `expiry == 0` as invalid rather than "never expires",
+    // so an issuer cannot mint a node↔wallet binding that is valid forever (the
+    // expiry is part of the signed direction-1 message, so this is enforced on
+    // the authenticated value).
+    if b.expiry == 0 || now > b.expiry {
         return Err(BindingError::Expired);
     }
 

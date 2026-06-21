@@ -58,9 +58,21 @@ fun tree8Root(): int {
 // Proof for interior leaf M5: the verifier seeds acc = hashLeaf(M5); the level-0
 // sibling is therefore hashLeaf(M4) (a leaf-domain hash), the rest are node hashes.
 fun proofForM5(): Cell<MerkleStep>? {
-    val top: MerkleStep = { dir: 1, sibling: tree8Left(), next: null };
-    val mid: MerkleStep = { dir: 0, sibling: hashPair(hashLeaf(M6), hashLeaf(M7)), next: top.toCell() };
-    val bottom: MerkleStep = { dir: 1, sibling: hashLeaf(M4), next: mid.toCell() };
+    val top: MerkleStep = {
+        dir: 1,
+        sibling: tree8Left(),
+        next: null,
+    };
+    val mid: MerkleStep = {
+        dir: 0,
+        sibling: hashPair(hashLeaf(M6), hashLeaf(M7)),
+        next: top.toCell(),
+    };
+    val bottom: MerkleStep = {
+        dir: 1,
+        sibling: hashLeaf(M4),
+        next: mid.toCell(),
+    };
     return bottom.toCell();
 }
 
@@ -164,7 +176,8 @@ fun deployEscrow(requester: address, arbiter: address, winner: address): JobEscr
         expectedHash: RESULT_HASH,
         candidatesHash: candidatesCommitment(candidateSet(winner)),
         paramsVersion: 1,
-        platformFeeBps: 1500, // φ = 15% bound + enforced at settle
+        platformFeeBps: 1500,          // φ = 15% bound + enforced at settle
+        participationCommissionBps: 0, // κ check inert (winner-only flow, no commissions)
     };
     val storage: EscrowStorage = {
         requester: requester,
@@ -176,7 +189,9 @@ fun deployEscrow(requester: address, arbiter: address, winner: address): JobEscr
         pending: createEmptyMap(),
     };
     val escrow = JobEscrow.fromStorage(storage);
-    expect(escrow.deploy(requester, { value: ton("102") })).toHaveSuccessfulDeploy({ to: escrow.address });
+    expect(
+        escrow.deploy(requester, { value: ton("102") }),
+    ).toHaveSuccessfulDeploy({ to: escrow.address });
     return escrow;
 }
 
@@ -200,9 +215,14 @@ fun deployAnchor(authority: address, keeper: address): RecordAnchor {
         roots: createEmptyMap(),
         config: cfg.toCell(),
         codeVersion: 0,
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
+        upgradeDelay: 0,
     };
     val anchor = RecordAnchor.fromStorage(storage);
-    expect(anchor.deploy(authority, { value: ton("1") })).toHaveSuccessfulDeploy({ to: anchor.address });
+    expect(
+        anchor.deploy(authority, { value: ton("1") }),
+    ).toHaveSuccessfulDeploy({ to: anchor.address });
     return anchor;
 }
 
@@ -219,7 +239,13 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
     var updated = validParams();
     updated.platformFeeBps = 350;
     expect(
-        gp.sendUpdateParams(deployer.address, 100, deployer.address, updated, { value: ton("0.5") }),
+        gp.sendUpdateParams(
+            deployer.address,
+            100,
+            deployer.address,
+            updated,
+            { value: ton("0.5") },
+        ),
     ).toHaveSuccessfulTx<UpdateParams>({ from: deployer.address, to: gpAddr });
     val same = GlobalParams.fromAddress(gpAddr);
     expect(same.getParams().params.load().platformFeeBps).toEqual(350);
@@ -290,7 +316,7 @@ get fun `test turnkey e2e flow across all four contracts (emulation mirror)`() {
             winner,
             ton("60"), // quoted base (fee base)
             ton("60"), // wallet winner paid the full base
-            ton("9"), // φ=15% of the 60 base, enforced on-chain
+            ton("9"),  // φ=15% of the 60 base, enforced on-chain
             participants,
             candidateSet(winner),
             { value: ton("1") },

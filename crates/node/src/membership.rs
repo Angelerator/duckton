@@ -244,6 +244,7 @@ mod tests {
             groups: vec![],
             regions: vec![],
             fail_closed_labels: false,
+            nodes: vec![],
         }
     }
 
@@ -252,9 +253,23 @@ mod tests {
         let table = MembershipTable::new(50, 8, 3600);
         let now = now_ts();
         // A serving, ungrouped EU host.
-        assert!(table.ingest(labeled_ad(41_000, now, true, vec!["eu"], vec![], Some("eu"))));
+        assert!(table.ingest(labeled_ad(
+            41_000,
+            now,
+            true,
+            vec!["eu"],
+            vec![],
+            Some("eu")
+        )));
         // A standby host (advertises enabled=false) — must never be a candidate.
-        assert!(table.ingest(labeled_ad(41_001, now, false, vec!["eu"], vec![], Some("eu"))));
+        assert!(table.ingest(labeled_ad(
+            41_001,
+            now,
+            false,
+            vec!["eu"],
+            vec![],
+            Some("eu")
+        )));
 
         // Standby is pruned even with no constraint; the serving host remains.
         assert_eq!(
@@ -282,7 +297,14 @@ mod tests {
         let table = MembershipTable::new(50, 8, 3600);
         let now = now_ts();
         // A grouped (finance) host + an ungrouped public host.
-        assert!(table.ingest(labeled_ad(42_000, now, true, vec!["default"], vec!["finance"], None)));
+        assert!(table.ingest(labeled_ad(
+            42_000,
+            now,
+            true,
+            vec!["default"],
+            vec!["finance"],
+            None
+        )));
         assert!(table.ingest(labeled_ad(42_001, now, true, vec!["default"], vec![], None)));
 
         // An ungrouped requester reaches only the public host (groups are private).

@@ -24,7 +24,7 @@ import "common"
 const OP_ESCROW_SETTLE = 0x4553_4302
 const OP_ESCROW_REFUND = 0x4553_4303
 const OP_ESCROW_TOPUP = 0x4553_4300
-const OP_ESCROW_CLAIM = 0x4553_4304  // pull a bounced/queued payout (B2 bounce-safety)
+const OP_ESCROW_CLAIM = 0x4553_4304 // pull a bounced/queued payout (B2 bounce-safety)
 const OP_ESCROW_PAYOUT = 0x4553_4305 // outgoing payout op tag (carried so bounces are identifiable)
 
 struct EscrowTerms {
@@ -69,6 +69,17 @@ struct EscrowTerms {
     // (or carry a GlobalParams-signed (version→feeRecipient,φ) proof) so the
     // escrow could verify the bound values on-chain.
     platformFeeBps: uint16
+    // COMMISSION ENFORCEMENT (κ): the admin's authoritative participation-commission
+    // rate (basis points) for `paramsVersion`, bound at open from
+    // `GlobalParams.get_participation_commission_bps`. When > 0, settle REQUIRES
+    // every participation leg to equal EXACTLY `base * participationCommissionBps /
+    // BPS_DENOM` — so a compromised arbiter cannot pay the agreeing verifiers less
+    // than their promised κ·base (silently shifting it to the requester refund).
+    // 0 ⇒ no commission expected (the check is inert). Appended last → additive
+    // (changes the escrow's deterministic address, exactly like `platformFeeBps`,
+    // and bound the same way: every honest party recomputes the expected address
+    // from the authoritative GlobalParams κ for the pinned version).
+    participationCommissionBps: uint16
 }
 
 struct EscrowStorage {
@@ -106,7 +117,7 @@ fun EscrowStorage.save(self) {
 // MAX_SETTLE_PARTICIPANTS so all payouts fit one action phase.
 struct (0x4553_4302) EscrowSettle {
     queryId: uint64
-    resultHash: uint256 // the agreed quorum hash — must equal terms.expectedHash
+    resultHash: uint256             // the agreed quorum hash — must equal terms.expectedHash
     winner: address
     // FREE-NODE POLICY: `base` is the QUOTED winning price and is the fee base —
     // the platform fee MUST equal `base * terms.platformFeeBps / BPS_DENOM`,

@@ -532,7 +532,11 @@ mod record_tests {
         // field (empty here ⇒ a 4-byte length of 0), so it occupies the 4 bytes
         // just before that 4-byte length suffix.
         let bytes = record(0x0102_0304).canonical_bytes();
-        assert_eq!(&bytes[bytes.len() - 4..], &0u32.to_le_bytes(), "empty fingerprint length");
+        assert_eq!(
+            &bytes[bytes.len() - 4..],
+            &0u32.to_le_bytes(),
+            "empty fingerprint length"
+        );
         let ver = &bytes[bytes.len() - 8..bytes.len() - 4];
         assert_eq!(ver, &0x0102_0304u32.to_le_bytes());
     }

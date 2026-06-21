@@ -22,7 +22,9 @@ type AllowedMessageToAnchorV2 =
     | AnchorSubmitRoot
     | AnchorOpenDispute
     | AnchorResolveDispute
+    | AnchorAnnounceUpgrade
     | AnchorUpgradeCode
+    | AnchorCancelUpgrade
 
 // A1 bounce-safety (mirrors v1): a bounced bond refund re-opens its dispute.
 fun onBouncedMessage(in: InMessageBounced) {
@@ -117,12 +119,46 @@ fun onInternalMessage(in: InMessage) {
             }
         }
 
+        // D2 timelocked upgrade (mirrors v1): announce -> wait -> apply, plus cancel.
+        AnchorAnnounceUpgrade => {
+            var storage = lazy AnchorStorage.load();
+            val cfg = storage.config.load();
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            storage.pendingCodeHash = msg.newCodeHash;
+            storage.pendingCodeAt = blockchain.now() as uint32;
+            storage.save();
+        }
+
         AnchorUpgradeCode => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.auth.load().upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            assert (
+                msg.newCode.hash() == storage.pendingCodeHash
+            ) throw ErrCode.UPGRADE_CODE_MISMATCH;
+            val readyAt = storage.pendingCodeAt + storage.upgradeDelay;
+            assert (blockchain.now() >= readyAt) throw ErrCode.UPGRADE_TIMELOCK_ACTIVE;
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
+            storage.save();
+        }
+
+        AnchorCancelUpgrade => {
+            var storage = lazy AnchorStorage.load();
+            val cfg = storage.config.load();
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
             storage.save();
         }
 
@@ -159,6 +195,17 @@ get fun get_anchor_state(): AnchorState {
 get fun get_code_version(): int {
     val storage = lazy AnchorStorage.load();
     return storage.codeVersion;
+}
+
+get fun get_pending_upgrade(): AnchorUpgradeView {
+    val storage = lazy AnchorStorage.load();
+    val readyAt = storage.pendingCodeAt == 0 ? 0 : storage.pendingCodeAt + storage.upgradeDelay;
+    return {
+        codeVersion: storage.codeVersion,
+        pendingCodeHash: storage.pendingCodeHash,
+        pendingAt: storage.pendingCodeAt,
+        readyAt: readyAt as uint32,
+    };
 }
 
 // NEW in v2: expose the configured dispute verdict authority (governance), which

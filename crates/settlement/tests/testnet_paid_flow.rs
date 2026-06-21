@@ -356,12 +356,13 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
         // Placeholder shared terms (rebuilt per-job in open_escrow_with_terms):
         // unbound expected-hash + candidates-hash (the new B1 field), version 0,
         // φ = 1500 bps (15%) bound for the on-chain fee enforcement.
-        build_escrow_terms(&wallet, &[0u8; 32], &[0u8; 32], 0, 1500),
+        build_escrow_terms(&wallet, &[0u8; 32], &[0u8; 32], 0, 1500, 500),
         wallet,
     )
     .with_requester(wallet)
     .with_treasury(wallet)
     .with_platform_fee_bps(1500)
+    .with_participation_commission_bps(500)
     .with_escrow_window(3600)
     // B1: bind the payout-eligible candidate set (here just our wallet, the
     // winner) so the escrow's terms commit to it at open AND settle presents the
@@ -395,6 +396,8 @@ fn rust_driven_paid_flow_open_settle_is_accepted_on_chain() {
             synced_version,
             &[wallet],
             Some(wallet),
+            None,
+            None,
         )
         .expect("open_escrow_with_terms broadcasts the funded deploy");
     let escrow_raw = handle.address.to_raw_string();

@@ -236,6 +236,68 @@ async fn scenario_result_parallelism_overridable_per_call() {
 }
 
 #[tokio::test]
+async fn scenario_node_targeting_routes_to_the_exact_node() {
+    // Two workers return DIFFERENT results for the SAME SQL, so the winner is
+    // identifiable from the result. A per-call `nodes => [id]` must route the
+    // whole job to EXACTLY that node — single-node targeting, end to end.
+    let rs_a = ResultSet::new(vec!["who".into()], vec![vec![Value::Text("A".into())]]);
+    let rs_b = ResultSet::new(vec!["who".into()], vec![vec![Value::Text("B".into())]]);
+    let mut fa = HashMap::new();
+    fa.insert("SELECT pick".to_string(), rs_a.clone());
+    let mut fb = HashMap::new();
+    fb.insert("SELECT pick".to_string(), rs_b.clone());
+    let a = spawn_worker(Arc::new(MockEngine::with_fixtures(fa))).await;
+    let b = spawn_worker(Arc::new(MockEngine::with_fixtures(fb))).await;
+    // replicas=1, quorum=1: the targeted node alone runs the job.
+    let coord = coordinator(&[&a, &b], cfg(1, 1), store()).await;
+
+    // Target A → A wins, A's result returned.
+    let out_a = coord
+        .run_query(
+            "SELECT pick",
+            QueryOverrides {
+                nodes: vec![a.node_id.to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(out_a.winner.as_ref(), Some(&a.node_id));
+    assert_eq!(out_a.result, rs_a);
+
+    // Target B → B wins, B's result returned (proves it really routed, not luck).
+    let out_b = coord
+        .run_query(
+            "SELECT pick",
+            QueryOverrides {
+                nodes: vec![b.node_id.to_string()],
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(out_b.winner.as_ref(), Some(&b.node_id));
+    assert_eq!(out_b.result, rs_b);
+
+    // Targeting an id no node has ⇒ error (no silent fallback to A or B).
+    let err = coord
+        .run_query(
+            "SELECT pick",
+            QueryOverrides {
+                nodes: vec![
+                    "b3:0000000000000000000000000000000000000000000000000000000000000000".into(),
+                ],
+                ..Default::default()
+            },
+        )
+        .await;
+    assert!(
+        err.is_err(),
+        "targeting an unknown node id must not fall back to another node"
+    );
+}
+
+#[tokio::test]
 async fn scenario_many_concurrent_jobs_across_workers() {
     let big_budget = BudgetConfig {
         memory_bytes: 64 * 1024 * 1024 * 1024,
@@ -629,6 +691,7 @@ async fn scenario_churn_discovery_returns_bounded_healthy_set() {
         groups: vec![],
         regions: vec![],
         fail_closed_labels: false,
+        nodes: vec![],
     };
     let candidates = table.find_candidates(16, filter).await;
     // bounded

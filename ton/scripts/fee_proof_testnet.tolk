@@ -36,8 +36,13 @@ fun main() {
     // with PLATFORM_FEE to force the FEE_MISMATCH negative.
     val defaultFee: coins = (base * platformFeeBps) / 10000;
     val platformFee: coins = env<coins>("PLATFORM_FEE") ?? defaultFee;
-    // Verifier commission. Default = base*κ/BPS with κ=5% (500 bps).
-    val defaultCommission: coins = (base * 500) / 10000;
+    // COMMISSION ENFORCEMENT (κ): the admin participation-commission rate (bps)
+    // bound into the terms; when > 0 the settle enforces each participation leg ==
+    // base*κ/BPS. Default κ = 5% (500 bps). Verifier commission defaults to exactly
+    // base*κ/BPS so the default scenario passes the on-chain check; override
+    // COMMISSION to force a COMMISSION_MISMATCH negative.
+    val participationCommissionBps = (env<int>("PARTICIPATION_COMMISSION_BPS") ?? 500) as uint16;
+    val defaultCommission: coins = (base * participationCommissionBps) / 10000;
     val commission: coins = env<coins>("COMMISSION") ?? defaultCommission;
 
     val escrowAmount = env<coins>("ESCROW_AMOUNT")!; // locked B (cap)
@@ -63,6 +68,7 @@ fun main() {
         candidatesHash: candidatesHash,
         paramsVersion: paramsVersion,
         platformFeeBps: platformFeeBps,
+        participationCommissionBps: participationCommissionBps,
     };
     val storage: EscrowStorage = {
         requester: requester,

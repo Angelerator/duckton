@@ -43,9 +43,9 @@ pub use binding::{BindingEntry, BindingStore};
 pub use blocklist::{BlockEntry, BlockKind, BlocklistStore};
 pub use economics::{
     ContractsConfig, EconomicsConfig, FeesEconomics, NetworkSettings, PaymentMode, PaymentPref,
-    PricingEconomics, PricingModel, QualityEconomics, RankingEconomics, RecordsEconomics, ReputationEconomics,
-    SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics, TonNetwork,
-    WalletConfig,
+    PricingEconomics, PricingModel, QualityEconomics, RankingEconomics, RecordsEconomics,
+    ReputationEconomics, SelectionEconomics, SettlementRail, SlashingEconomics, StakeEconomics,
+    TonNetwork, WalletConfig,
 };
 pub use overrides::{JoinOverrides, QueryOverrides, ShareOverrides};
 pub use store::{
@@ -2369,7 +2369,8 @@ impl GridConfig {
         if self.budget.max_jobs == 0 {
             return inv("budget.max_jobs must be >= 1".into());
         }
-        if !(self.budget.local_reserved_fraction >= 0.0 && self.budget.local_reserved_fraction < 1.0)
+        if !(self.budget.local_reserved_fraction >= 0.0
+            && self.budget.local_reserved_fraction < 1.0)
         {
             return inv(format!(
                 "budget.local_reserved_fraction must be in [0,1), got {}",
@@ -2969,7 +2970,10 @@ mod tests {
         assert!(cfg.worker.enabled);
 
         let mut env = BTreeMap::new();
-        env.insert("P2P_MEMBERSHIP_NETWORKS".to_string(), "eu,default".to_string());
+        env.insert(
+            "P2P_MEMBERSHIP_NETWORKS".to_string(),
+            "eu,default".to_string(),
+        );
         env.insert(
             "P2P_MEMBERSHIP_GROUPS".to_string(),
             "finance,ops".to_string(),

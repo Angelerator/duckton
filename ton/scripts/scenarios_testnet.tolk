@@ -233,6 +233,9 @@ fun runAnchor(deployer: ActonWallet) {
             roots: createEmptyMap(),
             config: cfg.toCell(),
             codeVersion: 0,
+            pendingCodeHash: 0,
+            pendingCodeAt: 0,
+            upgradeDelay: 0,
         };
         anchor = RecordAnchor.fromStorage(storage);
         anchor.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();
@@ -422,6 +425,8 @@ fun runEscrow(deployer: ActonWallet) {
         candidatesHash: candHash,
         paramsVersion: 7,
         platformFeeBps: platformFeeBps,
+        // κ check inert here; the κ-enforcement proof lives in fee_proof_testnet.
+        participationCommissionBps: 0,
     };
     val storage: EscrowStorage = {
         requester: deployer.address,

@@ -20,7 +20,9 @@ type AllowedMessageToAnchor =
     | AnchorSubmitRoot
     | AnchorOpenDispute
     | AnchorResolveDispute
-    | AnchorUpgradeCode
+    | AnchorAnnounceUpgrade // D2 step 1/2: announce (start timelock)
+    | AnchorUpgradeCode // D2 step 2/2: apply (after timelock, hash-committed)
+    | AnchorCancelUpgrade // D2: abort a pending announcement
 
 // A1 bounce-safety: a bond refund that the recipient could not accept bounces
 // back here. Recover the `disputeId` (first 32 bits after the 0xFFFFFFFF prefix
@@ -29,7 +31,7 @@ type AllowedMessageToAnchor =
 // bond is never lost and accounting is restored.
 fun onBouncedMessage(in: InMessageBounced) {
     var body = in.bouncedBody;
-    body.skipBouncedPrefix();          // drop 0xFFFFFFFF
+    body.skipBouncedPrefix(); // drop 0xFFFFFFFF
     val op = body.loadUint(32);
     if (op == OP_ANCHOR_BOND_REFUND) {
         val disputeId = body.loadUint(32) as uint32;
@@ -37,7 +39,7 @@ fun onBouncedMessage(in: InMessageBounced) {
         val found = storage.disputes.get(disputeId);
         if (found.isFound) {
             var dispute = found.loadValue();
-            dispute.status = 0;        // re-open: the verdict can be re-applied
+            dispute.status = 0; // re-open: the verdict can be re-applied
             storage.disputes.set(disputeId, dispute);
             storage.save();
         }
@@ -148,20 +150,60 @@ fun onInternalMessage(in: InMessage) {
             }
         }
 
-        // Authority-gated IN-PLACE code upgrade (§12.1). Replaces the CODE via
-        // TVM `SETCODE` (postponed to after this run) at a STABLE address,
-        // preserving the anchored epoch chain + open disputes, so the
-        // anchor/dispute logic can evolve without orphaning history at a new
-        // address. D2: gated to `upgradeAuthority`, a DISTINCT authority from the
-        // dispute `verdictAuthority`, so a compromised dispute-resolver key cannot
-        // also swap the contract code (separation of duties; meant to be a
-        // multisig). `codeVersion` is bumped by the contract.
+        // D2 step 1/2 — ANNOUNCE: commit to the successor code's hash and start the
+        // timelock clock. Upgrade-authority-gated (DISTINCT from the dispute
+        // `verdictAuthority`). Re-announcing overwrites and RESETS the clock.
+        AnchorAnnounceUpgrade => {
+            var storage = lazy AnchorStorage.load();
+            val cfg = storage.config.load();
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            storage.pendingCodeHash = msg.newCodeHash;
+            storage.pendingCodeAt = blockchain.now() as uint32;
+            storage.save();
+        }
+
+        // D2 step 2/2 — APPLY the announced IN-PLACE code upgrade (§12.1). Replaces
+        // the CODE via TVM `SETCODE` (postponed to after this run) at a STABLE
+        // address, preserving the anchored epoch chain + open disputes, so the
+        // anchor/dispute logic can evolve without orphaning history. Gated to
+        // `upgradeAuthority` (a DISTINCT authority from the dispute
+        // `verdictAuthority`, so a compromised dispute-resolver key cannot swap
+        // code) AND — D2 hardening — now TIMELOCKED: rejected before
+        // `pendingCodeAt + upgradeDelay`, and only the exact announced code
+        // (hash-committed) may be applied, so a single key can no longer INSTANTLY
+        // swap the anchor logic out from under open disputes / the epoch chain.
+        // `codeVersion` is bumped by the contract.
         AnchorUpgradeCode => {
             var storage = lazy AnchorStorage.load();
             val cfg = storage.config.load();
-            assert (in.senderAddress == cfg.auth.load().upgradeAuthority) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            assert (
+                msg.newCode.hash() == storage.pendingCodeHash
+            ) throw ErrCode.UPGRADE_CODE_MISMATCH;
+            val readyAt = storage.pendingCodeAt + storage.upgradeDelay;
+            assert (blockchain.now() >= readyAt) throw ErrCode.UPGRADE_TIMELOCK_ACTIVE;
             contract.setCodePostponed(msg.newCode);
             storage.codeVersion += 1;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
+            storage.save();
+        }
+
+        // D2 — abort a pending announcement (authority-gated safety valve).
+        AnchorCancelUpgrade => {
+            var storage = lazy AnchorStorage.load();
+            val cfg = storage.config.load();
+            assert (
+                in.senderAddress == cfg.auth.load().upgradeAuthority
+            ) throw ErrCode.UPGRADE_NOT_AUTHORITY;
+            assert (storage.pendingCodeHash != 0) throw ErrCode.NO_PENDING_UPGRADE;
+            storage.pendingCodeHash = 0;
+            storage.pendingCodeAt = 0;
             storage.save();
         }
 
@@ -206,6 +248,20 @@ get fun get_anchor_state(): AnchorState {
 get fun get_code_version(): int {
     val storage = lazy AnchorStorage.load();
     return storage.codeVersion;
+}
+
+// D2: the pending timelocked code upgrade (announced hash, when, and the earliest
+// applyable ts = announce + upgradeDelay). All 0 when none pending — so the
+// ecosystem can observe (and react to) a queued anchor code change.
+get fun get_pending_upgrade(): AnchorUpgradeView {
+    val storage = lazy AnchorStorage.load();
+    val readyAt = storage.pendingCodeAt == 0 ? 0 : storage.pendingCodeAt + storage.upgradeDelay;
+    return {
+        codeVersion: storage.codeVersion,
+        pendingCodeHash: storage.pendingCodeHash,
+        pendingAt: storage.pendingCodeAt,
+        readyAt: readyAt as uint32,
+    };
 }
 
 get fun get_dispute(disputeId: int): DisputeInfo? {

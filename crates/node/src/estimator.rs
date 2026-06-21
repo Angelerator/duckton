@@ -989,11 +989,32 @@ pub fn has_data_source(sql: &str) -> bool {
     // ADDS conservatism (more → remote), so over-matching (e.g. a column named
     // `read_count`, or `.csv` inside a string literal) is safe by construction.
     const MARKERS: &[&str] = &[
-        " from ", "\tfrom ", "\nfrom ", "(from ", ")from ", "\rfrom ", "\nfrom\t",
-        " join ", "\njoin ", "\tjoin ", "(join ",
-        "read_", "scan_", "parquet_", "_scan(", "glob(", "query_table(",
-        "copy ", "attach ", "delta_", "iceberg_",
-        ".parquet", ".csv", ".json", ".ndjson", "://",
+        " from ",
+        "\tfrom ",
+        "\nfrom ",
+        "(from ",
+        ")from ",
+        "\rfrom ",
+        "\nfrom\t",
+        " join ",
+        "\njoin ",
+        "\tjoin ",
+        "(join ",
+        "read_",
+        "scan_",
+        "parquet_",
+        "_scan(",
+        "glob(",
+        "query_table(",
+        "copy ",
+        "attach ",
+        "delta_",
+        "iceberg_",
+        ".parquet",
+        ".csv",
+        ".json",
+        ".ndjson",
+        "://",
     ];
     MARKERS.iter().any(|m| lower.contains(m))
 }
@@ -1012,7 +1033,9 @@ mod tests {
         assert!(has_data_source("SELECT * FROM t"));
         assert!(has_data_source("select a\nfrom range(100)"));
         assert!(has_data_source("SELECT * FROM read_csv_auto('x.csv')"));
-        assert!(has_data_source("SELECT * FROM read_parquet('s3://b/k.parquet')"));
+        assert!(has_data_source(
+            "SELECT * FROM read_parquet('s3://b/k.parquet')"
+        ));
         assert!(has_data_source("SELECT a JOIN b ON a.x=b.x"));
         assert!(has_data_source("COPY t TO 'out.csv'"));
         assert!(has_data_source("ATTACH 'db.duckdb'"));

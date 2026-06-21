@@ -27,6 +27,9 @@ fun main() {
     val upgradeAuthority = env<address>("ANCHOR_UPGRADE_AUTHORITY") ?? authority;
     val minWeight = env<coins>("ANCHOR_MIN_WEIGHT") ?? ton("100");
     val bondMin = env<coins>("ANCHOR_BOND_MIN") ?? ton("1");
+    // D2: timelock for in-place code upgrades (announce -> wait -> apply). Default
+    // 7 days so the ecosystem can react to a queued anchor code change.
+    val upgradeDelay = env<int>("ANCHOR_UPGRADE_DELAY") ?? 604800;
 
     val auth: AnchorAuthorities = {
         treasury: treasury,
@@ -48,6 +51,10 @@ fun main() {
         config: cfg.toCell(),
         // Fresh deploy = original code; `upgrade_code` bumps it in place.
         codeVersion: 0,
+        // D2: no upgrade announced yet; timelock window for when one is.
+        pendingCodeHash: 0,
+        pendingCodeAt: 0,
+        upgradeDelay: upgradeDelay as uint32,
     };
 
     val anchor = RecordAnchor.fromStorage(storage);

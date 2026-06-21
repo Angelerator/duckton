@@ -165,19 +165,33 @@ fn resolve_onchain_stack(econ: &EconomicsConfig) -> Result<SettlementStack, Sett
     // escrow at open. Sourced from `[economics].fees` (the same single source the
     // deployed `GlobalParams` and the coordinator's split derive from), so the
     // bound φ, the coordinator's computed fee, and the on-chain GlobalParams agree.
-    let platform_fee_bps =
-        (econ.fees.platform_fee_pct * 10_000.0).round().clamp(0.0, 65_535.0) as u16;
+    let platform_fee_bps = (econ.fees.platform_fee_pct * 10_000.0)
+        .round()
+        .clamp(0.0, 65_535.0) as u16;
+    // COMMISSION ENFORCEMENT (κ): the admin verifier-commission rate bound into each
+    // per-job escrow at open, from the SAME `[economics].fees` source as φ.
+    let participation_commission_bps = (econ.fees.participation_commission_frac * 10_000.0)
+        .round()
+        .clamp(0.0, 65_535.0) as u16;
     let mut settlement = TonSettlement::with_escrow_code(
         mk_rpc()?,
         escrow_code,
         // Placeholder shared terms cell (a fresh per-job `EscrowTerms` is rebuilt
         // inside `open_escrow_with_terms`): unbound expected-hash + candidates-hash,
-        // params version 0, and the bound platform-fee rate φ.
-        build_escrow_terms(&placeholder_treasury, &[0u8; 32], &[0u8; 32], 0, platform_fee_bps),
+        // params version 0, and the bound platform-fee rate φ + commission rate κ.
+        build_escrow_terms(
+            &placeholder_treasury,
+            &[0u8; 32],
+            &[0u8; 32],
+            0,
+            platform_fee_bps,
+            participation_commission_bps,
+        ),
         wallet,
     )
     .with_requester(wallet)
     .with_platform_fee_bps(platform_fee_bps)
+    .with_participation_commission_bps(participation_commission_bps)
     // ~0.05 TON deploy headroom so the per-job escrow can pay its own settle-time
     // action (forward) fees (the locked B is unaffected). Mirrors the Acton
     // deploy script's `escrowAmount + buffer` funding.

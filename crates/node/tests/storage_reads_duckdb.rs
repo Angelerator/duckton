@@ -384,7 +384,11 @@ async fn presigned_inputs_rewrite_sql_and_install_no_secret() {
     };
     let sql = format!("SELECT count(*) AS c FROM read_parquet('{original_uri}')");
     let rs = eng.execute_job(&sql, lease(), &ctx).await.unwrap();
-    assert_eq!(rs.rows[0][0], Value::Int(7), "engine read via the signed URL");
+    assert_eq!(
+        rs.rows[0][0],
+        Value::Int(7),
+        "engine read via the signed URL"
+    );
 
     // The presigned path installs NO secret: duckdb_secrets() is empty.
     let secrets = eng

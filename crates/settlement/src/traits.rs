@@ -45,6 +45,24 @@ pub trait Settlement: Send + Sync {
     /// be silently replaced. `None` ⇒ the chain value is unknown (no params source
     /// wired); the rail falls back to its configured treasury (documented residual
     /// assumption). The default impl (mock/noop doubles) ignores it.
+    ///
+    /// `platform_fee_bps` is the AUTHORITATIVE platform-fee rate φ (basis points)
+    /// the coordinator computes the on-chain split with for `params_version` (the
+    /// synced `GlobalParams.platformFeeBps` overlaid onto the live economics). When
+    /// `Some`, the `ton` rail binds EXACTLY this into the escrow terms so the
+    /// on-chain `platformFee == base * φ / 10000` check matches the coordinator's
+    /// split byte-for-byte even after an admin fee change — a stale wired φ would
+    /// otherwise make every settle revert `FEE_MISMATCH`. `None` ⇒ fall back to the
+    /// rail's configured φ. The default impl (mock/noop doubles) ignores it.
+    ///
+    /// `participation_commission_bps` is the AUTHORITATIVE verifier-commission rate
+    /// κ (basis points) the coordinator computes each agreeing verifier's payout
+    /// with for `params_version` (synced `GlobalParams.participationCommissionBps`).
+    /// When `Some` and > 0, the `ton` rail binds it so the on-chain settle enforces
+    /// each participation leg `== base * κ / 10000` — a compromised arbiter can no
+    /// longer shave a verifier's promised commission. `None` ⇒ fall back to the
+    /// rail's configured κ. The default impl (mock/noop doubles) ignores it.
+    #[allow(clippy::too_many_arguments)]
     fn open_escrow_with_terms(
         &self,
         job: &JobId,
@@ -53,8 +71,17 @@ pub trait Settlement: Send + Sync {
         params_version: u32,
         candidates: &[WalletAddress],
         fee_recipient: Option<WalletAddress>,
+        platform_fee_bps: Option<u16>,
+        participation_commission_bps: Option<u16>,
     ) -> Result<EscrowHandle, SettleError> {
-        let _ = (expected_hash, params_version, candidates, fee_recipient);
+        let _ = (
+            expected_hash,
+            params_version,
+            candidates,
+            fee_recipient,
+            platform_fee_bps,
+            participation_commission_bps,
+        );
         self.open_escrow(job, max_bid)
     }
     /// Release escrow per the quorum verdict (HTLC-style, keyed on result hash).

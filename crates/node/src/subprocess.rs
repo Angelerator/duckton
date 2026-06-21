@@ -484,7 +484,10 @@ mod tests {
 
         // The stream carries a leading progress heartbeat, then the terminal Done.
         let f0: JobFrame = p2p_proto::from_bytes(&read_frame(&mut client).await.unwrap()).unwrap();
-        assert!(matches!(f0, JobFrame::Progress(_)), "leading heartbeat first");
+        assert!(
+            matches!(f0, JobFrame::Progress(_)),
+            "leading heartbeat first"
+        );
         let resp = loop {
             let frame: JobFrame =
                 p2p_proto::from_bytes(&read_frame(&mut client).await.unwrap()).unwrap();
@@ -496,11 +499,14 @@ mod tests {
         let rs = resp.result.expect("a result set");
         // Same engine + SQL must reproduce the in-process result exactly.
         let direct = engine
-            .execute("SELECT 1", ExecLease {
-                memory_bytes: 64 << 20,
-                threads: 1,
-                max_spill_bytes: 0,
-            })
+            .execute(
+                "SELECT 1",
+                ExecLease {
+                    memory_bytes: 64 << 20,
+                    threads: 1,
+                    max_spill_bytes: 0,
+                },
+            )
             .await
             .unwrap();
         assert_eq!(rs, direct);
@@ -573,7 +579,10 @@ mod tests {
         };
         serve.await.unwrap().unwrap();
         assert!(resp.error.is_none());
-        assert!(progress >= 2, "expected multiple heartbeats, got {progress}");
+        assert!(
+            progress >= 2,
+            "expected multiple heartbeats, got {progress}"
+        );
     }
 
     #[tokio::test]
@@ -597,13 +606,19 @@ mod tests {
             0,
         );
         let err = eng
-            .execute("SELECT 1", ExecLease {
-                memory_bytes: 1 << 20,
-                threads: 1,
-                max_spill_bytes: 0,
-            })
+            .execute(
+                "SELECT 1",
+                ExecLease {
+                    memory_bytes: 1 << 20,
+                    threads: 1,
+                    max_spill_bytes: 0,
+                },
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, EngineError::Exec(_) | EngineError::Rejected(_)));
+        assert!(matches!(
+            err,
+            EngineError::Exec(_) | EngineError::Rejected(_)
+        ));
     }
 }

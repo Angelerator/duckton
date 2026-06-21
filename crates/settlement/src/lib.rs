@@ -49,8 +49,8 @@ pub use ton::{
     build_stake_claim, build_stake_deposit, build_stake_slash, build_stake_unbond,
     build_update_admin, build_update_params, build_upgrade_code, build_vault_config,
     candidates_commitment, escrow_code_from_boc_base64, GlobalParams, GlobalParamsClient,
-    MessageBody, OnchainPolicy, ParamsSource, QueryIdGen, SlashSplitConfig, TonRecordAnchor, TonRpc,
-    TonSettlement, TonStakeRegistry, VaultConfigParams, VaultInit,
+    MessageBody, OnchainPolicy, ParamsSource, QueryIdGen, SlashSplitConfig, TonRecordAnchor,
+    TonRpc, TonSettlement, TonStakeRegistry, VaultConfigParams, VaultInit,
 };
 pub use traits::{RecordAnchor, Settlement, StakeRegistry, Wallet};
 pub use types::{

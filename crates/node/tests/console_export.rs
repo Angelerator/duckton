@@ -21,8 +21,8 @@ use p2p_config::{
     GridConfig, IdentityConfig, PaymentPref, PinningMode, QueryOverrides, SettlementRail,
 };
 use p2p_node::{
-    collect_system_profile, AdmissionController, Candidate, Coordinator, IdentitySigner, MockEngine,
-    QueryEngine, StaticDiscovery, Worker, WorkerParams,
+    collect_system_profile, AdmissionController, Candidate, Coordinator, IdentitySigner,
+    MockEngine, QueryEngine, StaticDiscovery, Worker, WorkerParams,
 };
 use p2p_proto::messages::{
     Bid, BidDecision, DataClass, Dispatch, Offer, ResultCommit, ScopedCredential, VerifyMode,
@@ -228,13 +228,22 @@ impl Settlement for CapturingSettlement {
 fn base_system_profile() -> p2p_proto::SystemProfile {
     let id = NodeIdentity::generate().unwrap();
     let signer = IdentitySigner(&id);
-    collect_system_profile(&signer, &GridConfig::default().budget, "mock-1", env!("CARGO_PKG_VERSION"))
+    collect_system_profile(
+        &signer,
+        &GridConfig::default().budget,
+        "mock-1",
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
 /// A per-worker `systemProfile` JSON block: the host's machine CLASS plus THIS
 /// worker's donated compute budget — making explicit that the donated budget is
 /// distinct from the machine's physical RAM.
-fn worker_system_profile(base: &p2p_proto::SystemProfile, donated_mem: u64, donated_threads: u32) -> J {
+fn worker_system_profile(
+    base: &p2p_proto::SystemProfile,
+    donated_mem: u64,
+    donated_threads: u32,
+) -> J {
     json!({
         "physicalRamBytes": base.ram_total_bytes,
         "ramAvailableBytes": base.ram_available_bytes,
@@ -1193,6 +1202,7 @@ async fn export_console_snapshot() {
                         &candidates_hash,
                         1,
                         gp.platform_fee_bps,
+                        gp.participation_commission_bps,
                     );
                     let terms_hash = hex::encode(terms.repr_hash());
                     let init = EscrowInit {

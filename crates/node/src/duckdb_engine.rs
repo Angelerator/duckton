@@ -31,10 +31,13 @@
 //! Execution runs on a blocking thread (DuckDB is synchronous) via
 //! `spawn_blocking`, so the async runtime is not stalled.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use duckdb::types::ValueRef;
-use duckdb::Connection;
+use duckdb::{Connection, InterruptHandle};
 use p2p_proto::{ResultSet, Value};
+use tokio::sync::{oneshot, Notify};
 
 use crate::datasource::StorageSetup;
 use crate::engine::{EngineError, ExecLease, JobContext, QueryEngine};
@@ -179,9 +182,19 @@ impl DuckDbEngine {
         lease: ExecLease,
         setup: &StorageSetup,
         ctx: &JobContext,
+        // When set, the per-job connection's interrupt handle is sent back here
+        // right after the connection opens (before the untrusted query runs) so
+        // an async canceller can abort a long/abandoned query (H7). `None` ⇒ no
+        // cancellation wiring (own-query / tests).
+        handle_tx: Option<oneshot::Sender<Arc<InterruptHandle>>>,
     ) -> Result<ResultSet, EngineError> {
         let conn =
             Connection::open_in_memory().map_err(|e| EngineError::Exec(format!("open: {e}")))?;
+        // Hand the interrupt handle to the canceller BEFORE running anything, so a
+        // timeout/cancel that arrives mid-query can interrupt the running statement.
+        if let Some(tx) = handle_tx {
+            let _ = tx.send(conn.interrupt_handle());
+        }
 
         // 1. Budget + per-job spill (temp) dir. The worker pre-creates ONE per-job
         // dir and passes it via `ctx.spill_dir` — the SAME path it declares as the
@@ -331,6 +344,13 @@ impl DuckDbEngine {
         let columns: Vec<String> = rows.as_ref().map(|s| s.column_names()).unwrap_or_default();
         let column_count = columns.len();
 
+        // DoS backstop: bound how much we pull into memory. DuckDB streams rows,
+        // but we materialize the whole result to hash + stream it, so an
+        // unbounded result (`range(1e12)`, wide cross joins) would otherwise grow
+        // this buffer without limit. Reject once the running estimate exceeds the
+        // configured ceiling rather than OOMing the host. `0` ⇒ no cap.
+        let cap = setup.max_result_bytes;
+        let mut materialized: u64 = 0;
         let mut rows_out: Vec<Vec<Value>> = Vec::new();
         while let Some(row) = rows
             .next()
@@ -341,11 +361,29 @@ impl DuckDbEngine {
                 let v = row
                     .get_ref(i)
                     .map_err(|e| EngineError::Exec(format!("get col {i}: {e}")))?;
-                out_row.push(value_from_ref(v));
+                let value = value_from_ref(v);
+                materialized = materialized.saturating_add(value_estimated_size(&value) as u64);
+                out_row.push(value);
+            }
+            if cap != 0 && materialized > cap {
+                return Err(EngineError::Exec(format!(
+                    "result exceeds max_result_bytes ({cap}): query produces too large a result to materialize"
+                )));
             }
             rows_out.push(out_row);
         }
         Ok(ResultSet::new(columns, rows_out))
+    }
+}
+
+/// A cheap in-memory size estimate for a materialized [`Value`], used only as a
+/// running bound for the result-size DoS backstop (not an exact wire size).
+fn value_estimated_size(v: &Value) -> usize {
+    match v {
+        Value::Null | Value::Bool(_) => 1,
+        Value::Int(_) | Value::Float(_) => 8,
+        Value::Text(s) => s.len() + 1,
+        Value::Blob(b) => b.len(),
     }
 }
 
@@ -394,9 +432,43 @@ impl QueryEngine for DuckDbEngine {
         let sql = sql.to_string();
         let setup = self.setup.clone();
         let ctx = ctx.clone();
-        tokio::task::spawn_blocking(move || DuckDbEngine::run_locked(&sql, lease, &setup, &ctx))
-            .await
-            .map_err(|e| EngineError::Exec(format!("join: {e}")))?
+        tokio::task::spawn_blocking(move || {
+            DuckDbEngine::run_locked(&sql, lease, &setup, &ctx, None)
+        })
+        .await
+        .map_err(|e| EngineError::Exec(format!("join: {e}")))?
+    }
+
+    async fn execute_job_cancellable(
+        &self,
+        sql: &str,
+        lease: ExecLease,
+        ctx: &JobContext,
+        cancel: Arc<Notify>,
+    ) -> Result<ResultSet, EngineError> {
+        let sql = sql.to_string();
+        let setup = self.setup.clone();
+        let ctx = ctx.clone();
+        // The blocking job sends its interrupt handle back as soon as the
+        // connection opens; a small bridge task waits for `cancel` and interrupts
+        // the running statement so an abandoned/over-deadline query stops burning
+        // a blocking thread instead of finishing (H7).
+        let (htx, hrx) = oneshot::channel::<Arc<InterruptHandle>>();
+        let bridge = tokio::spawn(async move {
+            if let Ok(handle) = hrx.await {
+                cancel.notified().await;
+                handle.interrupt();
+            }
+        });
+        let out = tokio::task::spawn_blocking(move || {
+            DuckDbEngine::run_locked(&sql, lease, &setup, &ctx, Some(htx))
+        })
+        .await
+        .map_err(|e| EngineError::Exec(format!("join: {e}")));
+        // The query finished (or errored/was interrupted): tear down the bridge so
+        // it never lingers when no cancellation arrived.
+        bridge.abort();
+        out?
     }
 
     fn version(&self) -> String {
@@ -524,10 +596,13 @@ mod tests {
     }
 
     async fn current_temp_file_encryption(eng: &DuckDbEngine) -> Value {
-        eng.execute("SELECT current_setting('temp_file_encryption') AS e", lease())
-            .await
-            .expect("reading temp_file_encryption must succeed on :memory:")
-            .rows[0][0]
+        eng.execute(
+            "SELECT current_setting('temp_file_encryption') AS e",
+            lease(),
+        )
+        .await
+        .expect("reading temp_file_encryption must succeed on :memory:")
+        .rows[0][0]
             .clone()
     }
 

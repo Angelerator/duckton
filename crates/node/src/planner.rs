@@ -613,7 +613,10 @@ mod tests {
         let _r = ex.reserve(400).expect("400 <= 500 fits");
         // A free slot remains, but 400 + 200 > 500 ⇒ the CAS rejects.
         assert!(ex.slot_available());
-        assert!(ex.reserve(200).is_none(), "over-budget reservation must be rejected");
+        assert!(
+            ex.reserve(200).is_none(),
+            "over-budget reservation must be rejected"
+        );
         // A reservation that fits the remaining 100 still succeeds.
         let _r2 = ex.reserve(100).expect("400 + 100 == 500 fits exactly");
         assert_eq!(ex.headroom_bytes(), 0);
@@ -644,7 +647,9 @@ mod tests {
         // Pre-occupy 800 of the governor on the SERVED role.
         let served = governor.try_reserve(Role::Served, 800, 1).unwrap();
         // Local fits in the remaining 200 of the shared pool…
-        let r = ex.reserve(200).expect("200 fits the remaining governor headroom");
+        let r = ex
+            .reserve(200)
+            .expect("200 fits the remaining governor headroom");
         assert_eq!(governor.free_memory(), 0);
         // …but a further local reservation is refused by the governor even though
         // the LOCAL budget (1000) would allow it — the shared cap binds.

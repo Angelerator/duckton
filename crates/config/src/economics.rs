@@ -1057,7 +1057,10 @@ mod tests {
         let mut e = EconomicsConfig::default();
         e.pricing.model = PricingModel::Fixed;
         e.pricing.rate_per_second = 1_000_000_000;
-        assert!(!e.pricing.metered_active(), "fixed model never engages metering");
+        assert!(
+            !e.pricing.metered_active(),
+            "fixed model never engages metering"
+        );
     }
 
     #[test]

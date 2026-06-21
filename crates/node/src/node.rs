@@ -29,7 +29,9 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
-use p2p_config::{BlocklistStore, ConfigError, DataClassCfg, GridConfig, PreferMode, QueryOverrides};
+use p2p_config::{
+    BlocklistStore, ConfigError, DataClassCfg, GridConfig, PreferMode, QueryOverrides,
+};
 use p2p_proto::{Attestation, NodeId};
 use p2p_settlement::StakeRegistry;
 use p2p_transport::{NodeIdentity, QuicTransport, Transport, TransportError};
@@ -38,7 +40,6 @@ use p2p_trust::InMemoryTrustStore;
 use crate::admission::AdmissionController;
 use crate::antiabuse::{Blocklist, RateLimiter};
 use crate::coordinator::{Coordinator, CoordinatorError, QueryOutcome};
-use crate::governor::CapacityGovernor;
 use crate::discovery::{Candidate, StaticDiscovery};
 use crate::engine::QueryEngine;
 use crate::estimator::{
@@ -46,6 +47,7 @@ use crate::estimator::{
     has_data_source, ndjson_metadata, EstimateParams, Projection, QueryShape, ScanEstimate,
     WorkingSetEstimate,
 };
+use crate::governor::CapacityGovernor;
 use crate::planner::{DefaultPlanner, LocalExecutor, LocalOrRemotePlanner};
 use crate::worker::{Worker, WorkerParams};
 
@@ -208,8 +210,7 @@ impl Node {
                         coordinator = coordinator.with_presign_provider(provider);
                     }
                 }
-                p2p_config::CredentialMode::ScopedSecret
-                | p2p_config::CredentialMode::Sealed => {
+                p2p_config::CredentialMode::ScopedSecret | p2p_config::CredentialMode::Sealed => {
                     if let Some(provider) =
                         crate::storage::default_credential_provider(&config.storage)
                     {
@@ -331,6 +332,23 @@ impl Node {
     /// it donates resources and executes queries for others. The advertised
     /// budget/attestation come from the resolved [`GridConfig`].
     pub fn spawn_host(&self) -> tokio::task::JoinHandle<()> {
+        // Startup security-posture summary — the first thing to check when
+        // troubleshooting "is my node accepting/rejecting/leaking as intended".
+        // One structured line covering the controls an operator most often
+        // misconfigures (identity pinning, OS sandbox, remote egress, on-chain).
+        let sb = self.host_sandbox();
+        tracing::info!(
+            bind = %self.config.network.bind_addr,
+            pinning = ?self.config.identity.pinning_mode,
+            security_mode = ?self.config.security.mode,
+            sandbox_enabled = sb.enabled,
+            sandbox_backend = ?crate::sandbox::effective_backend(sb.backend),
+            process_per_job = sb.process_per_job,
+            remote_access = self.config.storage.enable_remote_access,
+            egress_confined = self.host_remote_egress_confined(),
+            economics = self.config.economics.enabled,
+            "starting host: serving grid jobs (security posture summary)"
+        );
         // Non-GDPR system-metadata capture (architecture: machine-class analytics
         // + routing HINT). Collect a signed `SystemProfile` on host start and
         // refresh it on the configured interval. A self-reported hint only — it
@@ -664,7 +682,10 @@ fn size_data_sources(sql: &str) -> Option<WorkingSetEstimate> {
         }
         let path = std::path::Path::new(&lit);
         let looks_like_data = matches!(
-            path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref(),
+            path.extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
             Some("parquet" | "csv" | "tsv" | "json" | "ndjson" | "jsonl")
         );
         // Only treat a literal as a data source if it has a data extension or
@@ -709,7 +730,11 @@ fn size_data_sources(sql: &str) -> Option<WorkingSetEstimate> {
     // the peak is the bounded scan buffer. This intentionally under-states peak
     // RAM but states the SCANNED bytes accurately — the proven-`max_input_bytes`
     // half of the capability gate keys on scanned bytes, which is what we know.
-    Some(estimate_working_set(&scan, &QueryShape::streaming(), &params))
+    Some(estimate_working_set(
+        &scan,
+        &QueryShape::streaming(),
+        &params,
+    ))
 }
 
 /// Metadata-only [`ScanEstimate`] for one local path. Delta directory →
@@ -851,7 +876,9 @@ mod tests {
     #[test]
     fn preflight_unknowable_sources_yield_none() {
         // A remote object we cannot stat pre-flight ⇒ None (route remote as today).
-        assert!(preflight_estimate("SELECT * FROM read_parquet('s3://bucket/k.parquet')").is_none());
+        assert!(
+            preflight_estimate("SELECT * FROM read_parquet('s3://bucket/k.parquet')").is_none()
+        );
         // A glob we cannot expand here ⇒ None.
         assert!(preflight_estimate("SELECT * FROM read_csv_auto('/data/*.csv')").is_none());
         // A relation / table function with no on-disk literal ⇒ None.
@@ -956,7 +983,10 @@ mod tests {
             input_fingerprint_hint: None,
         };
         assert!(
-            matches!(worker.bid_for(&mk(1_000)).decision, BidDecision::Reject { .. }),
+            matches!(
+                worker.bid_for(&mk(1_000)).decision,
+                BidDecision::Reject { .. }
+            ),
             "over-budget offer must be cost-gated"
         );
         assert!(
@@ -1027,7 +1057,11 @@ mod tests {
         assert!(accept(&w.bid_for(&mk(None, vec![], vec!["eu"]))));
         // A host with NO declared region fails closed under a region pin.
         let n = build(&|_| {});
-        assert!(reject(&n.host_worker().bid_for(&mk(None, vec![], vec!["eu"]))));
+        assert!(reject(&n.host_worker().bid_for(&mk(
+            None,
+            vec![],
+            vec!["eu"]
+        ))));
     }
 
     #[tokio::test]
@@ -1091,15 +1125,23 @@ mod tests {
         // A merely-declared group with no token ⇒ reject (soft claims don't count).
         assert!(reject(&w.bid_for(&offer(None, vec!["finance"]))));
         // A token for a different group ⇒ reject.
-        assert!(reject(&w.bid_for(&offer(Some(mint("ops", now + 100_000)), vec![]))));
+        assert!(reject(
+            &w.bid_for(&offer(Some(mint("ops", now + 100_000)), vec![]))
+        ));
         // An expired token ⇒ reject.
-        assert!(reject(&w.bid_for(&offer(Some(mint("finance", now.saturating_sub(10))), vec![]))));
+        assert!(reject(&w.bid_for(&offer(
+            Some(mint("finance", now.saturating_sub(10))),
+            vec![]
+        ))));
         // A valid token NOT bound to this requester id ⇒ reject.
         let other = SigningKey::generate(&mut OsRng);
         let stolen = CapabilityToken::mint(
             &issuer,
             &other.verifying_key().to_bytes(),
-            vec![Caveat::Group("finance".into()), Caveat::ExpiresAt(now + 100_000)],
+            vec![
+                Caveat::Group("finance".into()),
+                Caveat::ExpiresAt(now + 100_000),
+            ],
         );
         assert!(reject(&w.bid_for(&offer(
             Some(serde_json::to_string(&stolen).unwrap()),
@@ -1113,11 +1155,8 @@ mod tests {
         // `requester_id` must equal the authenticated mTLS peer. A spoofed offer
         // (requester_id != peer) is rejected; the honest case (they match, as in
         // every real dial) is admitted on the default public config.
-        let node = Node::with_config(
-            GridConfig::default(),
-            Arc::new(MockEngine::deterministic()),
-        )
-        .unwrap();
+        let node = Node::with_config(GridConfig::default(), Arc::new(MockEngine::deterministic()))
+            .unwrap();
         let w = node.host_worker();
         let mk = |claimed: &str| Offer {
             job_id: JobId::new(),
@@ -1213,7 +1252,9 @@ mod tests {
         let cfg = base_private(vec![req_id.0.clone()], vec!["finance"]);
         let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
         let w = node.host_worker();
-        assert!(accept(&w.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))));
+        assert!(accept(
+            &w.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))
+        ));
 
         // 2. No group token ⇒ rejected (soft declared groups never count).
         assert!(reject(&w.bid_for_peer(&req_id, &offer(None))));
@@ -1222,7 +1263,9 @@ mod tests {
         let cfg = base_private(vec![req_id.0.clone()], vec![]);
         let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
         let w_ungrouped = node.host_worker();
-        assert!(reject(&w_ungrouped.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))));
+        assert!(reject(
+            &w_ungrouped.bid_for_peer(&req_id, &offer(Some(finance_token.clone())))
+        ));
 
         // 4. UNROSTERED requester (a valid member id, but not the requester) ⇒
         //    default-deny rejects it even with a valid token.
@@ -1230,7 +1273,9 @@ mod tests {
         let cfg = base_private(vec![other_id], vec!["finance"]);
         let node = Node::with_config(cfg, Arc::new(MockEngine::deterministic())).unwrap();
         let w_roster = node.host_worker();
-        assert!(reject(&w_roster.bid_for_peer(&req_id, &offer(Some(finance_token)))));
+        assert!(reject(
+            &w_roster.bid_for_peer(&req_id, &offer(Some(finance_token)))
+        ));
     }
 
     #[tokio::test]
@@ -1284,11 +1329,8 @@ mod tests {
 
         // A host WITHOUT remote access serves normally (the guard is conditional,
         // not a blanket refusal) — same secure defaults, no open-egress risk.
-        let node2 = Node::with_config(
-            GridConfig::default(),
-            Arc::new(MockEngine::deterministic()),
-        )
-        .unwrap();
+        let node2 = Node::with_config(GridConfig::default(), Arc::new(MockEngine::deterministic()))
+            .unwrap();
         assert!(matches!(
             node2.host_worker().bid_for(&mk_offer()).decision,
             BidDecision::Accept
@@ -1300,11 +1342,8 @@ mod tests {
         // Task #2: the secure sandbox posture is HOST-only. The global default is
         // neutral (off), so a pure requester is never force-sandboxed; the host
         // serving path applies the secure posture at spawn_host.
-        let node = Node::with_config(
-            GridConfig::default(),
-            Arc::new(MockEngine::deterministic()),
-        )
-        .unwrap();
+        let node = Node::with_config(GridConfig::default(), Arc::new(MockEngine::deterministic()))
+            .unwrap();
 
         // Global default is neutral (the requester's self-run posture).
         assert!(!node.config().sandbox.enabled);

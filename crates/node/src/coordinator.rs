@@ -11,14 +11,14 @@ use std::time::{Duration, Instant};
 
 use p2p_config::{DataClassCfg, GridConfig, QueryOverrides, VerifyModeCfg};
 use p2p_proto::{
-    Ack, Attestation, AttestationLevel, Bid, BidDecision, CapabilityProfile, Cancel, DataClass,
-    Dispatch, InputSnapshot, JobId, NodeId, Offer, Progress, QueryHash, Receipt, ResultSet, Verdict,
-    VerifyMode, Wire,
+    Ack, Attestation, AttestationLevel, Bid, BidDecision, Cancel, CapabilityProfile, DataClass,
+    Dispatch, InputSnapshot, JobId, NodeId, Offer, Progress, QueryHash, Receipt, ResultSet,
+    Verdict, VerifyMode, Wire,
 };
 use p2p_settlement::{
-    ensure_escrow_covers, latency_score, required_escrow_total, throughput_score, Amount, JobRecord,
-    OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement, SettlementOutcome, SlashReason,
-    StakeRegistry, WalletAddress, BPS_DENOM,
+    ensure_escrow_covers, latency_score, required_escrow_total, throughput_score, Amount,
+    JobRecord, OnchainPolicy, ParamsSource, Payout, RecordAnchor, Settlement, SettlementOutcome,
+    SlashReason, StakeRegistry, WalletAddress, BPS_DENOM,
 };
 use p2p_transport::endpoint::{read_msg, write_msg};
 use p2p_transport::{Conn, NodeIdentity, QuicTransport, RecvStream, SendStream, Transport};
@@ -28,7 +28,7 @@ use p2p_trust::{
     soft_trust_score, AttestationVerifier, CommitKey, ReceiptDraft, TrustInputs, TrustStore,
 };
 use rand::Rng;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::antiabuse::Blocklist;
 use crate::canary::CanaryAuditor;
@@ -584,6 +584,10 @@ struct RequestScope {
     /// The requester's group-membership proof (JSON `CapabilityToken`), stamped
     /// into the Offer so token-tier hosts can verify it. `None` under soft tier.
     group_proof: Option<String>,
+    /// Target node ids (`nodes => ['b3:...']`): when non-empty, the job is offered
+    /// to and dispatched to ONLY these exact nodes (fail-closed). Empty ⇒ normal
+    /// routing.
+    nodes: Vec<NodeId>,
 }
 
 impl Coordinator {
@@ -756,13 +760,30 @@ impl Coordinator {
         match &self.attestation_verifier {
             Some(v) => {
                 let bound = attestation_bound_pub(att).unwrap_or([0u8; 32]);
-                if v.verify(att, nonce, &bound).is_ok() {
-                    att.level
-                } else {
-                    AttestationLevel::L0
+                match v.verify(att, nonce, &bound) {
+                    Ok(()) => att.level,
+                    Err(e) => {
+                        // Troubleshooting: a bid claimed > L0 but its evidence did
+                        // not verify (bad/absent evidence, wrong measurement, replayed
+                        // nonce, untrusted authority, or an inflated level). Treat as
+                        // L0 (fail-closed) and say WHY — sensitive jobs that need a
+                        // verified tier will then skip this host.
+                        debug!(
+                            claimed = ?att.level,
+                            "attestation verification failed ({e}); treating bid as L0"
+                        );
+                        AttestationLevel::L0
+                    }
                 }
             }
-            None => AttestationLevel::L0,
+            None => {
+                debug!(
+                    claimed = ?att.level,
+                    "bid claims attestation > L0 but no AttestationVerifier is wired; \
+                     treating as L0 (a spoofed level cannot reach a sensitive-data gate)"
+                );
+                AttestationLevel::L0
+            }
         }
     }
 
@@ -1020,7 +1041,8 @@ impl Coordinator {
         // No pre-flight estimate on this entry point ⇒ the per-job observed input
         // size stays unknown (`0`). The estimate-aware entry is
         // [`Coordinator::run_query_planned`].
-        self.dispatch_to_grid(sql, cfg, &overrides, None, None).await
+        self.dispatch_to_grid(sql, cfg, &overrides, None, None)
+            .await
     }
 
     /// Dispatch a query to the grid (the non-local path shared by
@@ -1075,7 +1097,19 @@ impl Coordinator {
             },
             regions: overrides.regions.clone(),
             group_proof: cfg.membership.group_token.clone(),
+            // Per-call node targeting: each requested id is taken verbatim as a
+            // `NodeId` (the `b3:<hex>` identity string). An id that matches no
+            // reachable candidate simply yields no candidates (a clear
+            // NoCandidates error), never a silent fallback to another node.
+            nodes: overrides.nodes.iter().cloned().map(NodeId).collect(),
         };
+        if !scope.nodes.is_empty() {
+            debug!(
+                job = %job_id,
+                targets = scope.nodes.len(),
+                "node-targeted query: restricting offers/dispatch to the requested node id(s)"
+            );
+        }
 
         self.run_resilient(
             sql,
@@ -1171,7 +1205,9 @@ impl Coordinator {
                     // higher-capacity candidates → the job exceeds every available
                     // node's capacity (clear, actionable error).
                     if saw_resource_exceeded {
-                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                        return Err(CoordinatorError::ExceedsCapacity {
+                            reason: last_reason,
+                        });
                     }
                     if retries == 0 {
                         return Err(CoordinatorError::NoCandidates);
@@ -1184,7 +1220,9 @@ impl Coordinator {
                 Ok(AttemptResult::InsufficientWorkers { have, quorum }) => {
                     self.progress.clear(job_id);
                     if saw_resource_exceeded {
-                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                        return Err(CoordinatorError::ExceedsCapacity {
+                            reason: last_reason,
+                        });
                     }
                     if retries == 0 {
                         return Err(CoordinatorError::InsufficientWorkers { have, quorum });
@@ -1292,12 +1330,16 @@ impl Coordinator {
                     // the dedicated capacity error rather than spin indefinitely.
                     if excluded.len() == excluded_before && capacity_floor == floor_before {
                         self.progress.clear(job_id);
-                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                        return Err(CoordinatorError::ExceedsCapacity {
+                            reason: last_reason,
+                        });
                     }
                     // Same stop conditions as the Inconclusive path.
                     if cfg.scheduler.max_retries != 0 && retries >= cfg.scheduler.max_retries {
                         self.progress.clear(job_id);
-                        return Err(CoordinatorError::ExceedsCapacity { reason: last_reason });
+                        return Err(CoordinatorError::ExceedsCapacity {
+                            reason: last_reason,
+                        });
                     }
                     if cfg.scheduler.max_total_duration_ms != 0
                         && started.elapsed()
@@ -1425,6 +1467,10 @@ impl Coordinator {
             // unknown-labeled candidate is dropped, not kept on the soft
             // assumption the host re-checks. Public mode keeps today's soft prune.
             fail_closed_labels: cfg.is_private(),
+            // Per-call node targeting (`nodes => [...]`): honored INSIDE discovery
+            // so a targeted node is reliably returned (not randomly sampled out),
+            // and re-checked in the retain below.
+            nodes: scope.nodes.clone(),
         };
         let mut candidates = self
             .discovery
@@ -1451,73 +1497,76 @@ impl Coordinator {
                 return false;
             }
             match &c.node_id {
-            Some(id) => {
-                // Anti-abuse deny-list (each node independently refuses flagged actors).
-                if cfg.antiabuse.enabled {
-                    if let Some(bl) = &self.blocklist {
-                        if bl.is_blocked(id.as_str()) {
+                Some(id) => {
+                    // Anti-abuse deny-list (each node independently refuses flagged actors).
+                    if cfg.antiabuse.enabled {
+                        if let Some(bl) = &self.blocklist {
+                            if bl.is_blocked(id.as_str()) {
+                                return false;
+                            }
+                        }
+                    }
+                    // Already tried (responded / hard-failed) this job → route elsewhere.
+                    if excluded.contains(id) {
+                        return false;
+                    }
+                    // Size-based capability gate (Part B): drop a candidate whose
+                    // gossiped PROVEN capacity clearly cannot handle this job's scanned
+                    // bytes. Cold-start safe — a node with no (or thin) proven history
+                    // is NEVER excluded here (see `proven_capacity_admits`). The free-mem
+                    // gate (which needs the bid) is applied after bidding below. Only
+                    // consult the (locked) capability cache when there is an estimate —
+                    // the no-estimate path stays byte-for-byte unchanged.
+                    let scanned = estimated_input_bytes.unwrap_or(0);
+                    if scanned > 0
+                        && !proven_capacity_admits(
+                            self.discovery.proven_capacity(id).as_ref(),
+                            scanned,
+                        )
+                    {
+                        return false;
+                    }
+                    // Liveness: drop a phi-convicted peer SWIM did not rescue.
+                    if let Some(v) = &self.liveness {
+                        if v.is_excluded(id, now_live) {
                             return false;
                         }
                     }
-                }
-                // Already tried (responded / hard-failed) this job → route elsewhere.
-                if excluded.contains(id) {
-                    return false;
-                }
-                // Size-based capability gate (Part B): drop a candidate whose
-                // gossiped PROVEN capacity clearly cannot handle this job's scanned
-                // bytes. Cold-start safe — a node with no (or thin) proven history
-                // is NEVER excluded here (see `proven_capacity_admits`). The free-mem
-                // gate (which needs the bid) is applied after bidding below. Only
-                // consult the (locked) capability cache when there is an estimate —
-                // the no-estimate path stays byte-for-byte unchanged.
-                let scanned = estimated_input_bytes.unwrap_or(0);
-                if scanned > 0
-                    && !proven_capacity_admits(self.discovery.proven_capacity(id).as_ref(), scanned)
-                {
-                    return false;
-                }
-                // Liveness: drop a phi-convicted peer SWIM did not rescue.
-                if let Some(v) = &self.liveness {
-                    if v.is_excluded(id, now_live) {
-                        return false;
+                    // Staked-hosts security gate: when required, only bonded hosts
+                    // (positive stake in the wired registry) qualify. No registry
+                    // wired ⇒ nobody qualifies (fail closed → NoCandidates).
+                    if cfg.scheduler.require_staked_hosts {
+                        let staked = self
+                            .stake_registry
+                            .as_ref()
+                            .map(|r| r.stake_of(id) > 0)
+                            .unwrap_or(false);
+                        if !staked {
+                            return false;
+                        }
                     }
-                }
-                // Staked-hosts security gate: when required, only bonded hosts
-                // (positive stake in the wired registry) qualify. No registry
-                // wired ⇒ nobody qualifies (fail closed → NoCandidates).
-                if cfg.scheduler.require_staked_hosts {
-                    let staked = self
-                        .stake_registry
-                        .as_ref()
-                        .map(|r| r.stake_of(id) > 0)
-                        .unwrap_or(false);
-                    if !staked {
-                        return false;
+                    // Sybil stake-floor gate (anti-cheat): when `[sybil].min_stake`
+                    // (whole TON) is set, a candidate must clear that bonded stake to
+                    // qualify — raising the cost of minting throwaway identities.
+                    // Default `0` ⇒ off; like the staked-hosts gate it fails closed
+                    // when no registry/stake is present.
+                    if cfg.sybil.min_stake > 0 {
+                        const TON: Amount = 1_000_000_000;
+                        let need = cfg.sybil.min_stake as Amount * TON;
+                        let staked = self
+                            .stake_registry
+                            .as_ref()
+                            .map(|r| r.stake_of(id))
+                            .unwrap_or(0);
+                        if staked < need {
+                            return false;
+                        }
                     }
+                    true
                 }
-                // Sybil stake-floor gate (anti-cheat): when `[sybil].min_stake`
-                // (whole TON) is set, a candidate must clear that bonded stake to
-                // qualify — raising the cost of minting throwaway identities.
-                // Default `0` ⇒ off; like the staked-hosts gate it fails closed
-                // when no registry/stake is present.
-                if cfg.sybil.min_stake > 0 {
-                    const TON: Amount = 1_000_000_000;
-                    let need = cfg.sybil.min_stake as Amount * TON;
-                    let staked = self
-                        .stake_registry
-                        .as_ref()
-                        .map(|r| r.stake_of(id))
-                        .unwrap_or(0);
-                    if staked < need {
-                        return false;
-                    }
-                }
-                true
-            }
-            // Unknown id (TOFU) can't be tracked → keep, UNLESS a stake gate is on
-            // (an unverifiable peer cannot be proven bonded → drop, fail closed).
-            None => !cfg.scheduler.require_staked_hosts && cfg.sybil.min_stake == 0,
+                // Unknown id (TOFU) can't be tracked → keep, UNLESS a stake gate is on
+                // (an unverifiable peer cannot be proven bonded → drop, fail closed).
+                None => !cfg.scheduler.require_staked_hosts && cfg.sybil.min_stake == 0,
             }
         });
         if candidates.is_empty() {
@@ -1638,7 +1687,9 @@ impl Coordinator {
             // advertising unknown (`0`) free memory is not excluded (don't gate on
             // what we don't know).
             .filter(|(_, bid)| {
-                capacity_floor == 0 || bid.free_mem_bytes == 0 || bid.free_mem_bytes > capacity_floor
+                capacity_floor == 0
+                    || bid.free_mem_bytes == 0
+                    || bid.free_mem_bytes > capacity_floor
             })
             .filter_map(|(worker, bid)| {
                 let trust = self.effective_trust(&worker, cfg, now, paid);
@@ -1661,8 +1712,10 @@ impl Coordinator {
 
         // Retain each eligible worker's bid for the per-worker metered cap deadline
         // and the winner's metered settle terms.
-        let bid_by_node: HashMap<NodeId, Bid> =
-            eligible.iter().map(|(w, b, _)| (w.clone(), b.clone())).collect();
+        let bid_by_node: HashMap<NodeId, Bid> = eligible
+            .iter()
+            .map(|(w, b, _)| (w.clone(), b.clone()))
+            .collect();
 
         // 3b. COMPOSITE SELECTION SCORE (performance prioritization): blend the
         //     counterparty-MEASURED perf (size-normalized latency + throughput from
@@ -1740,17 +1793,12 @@ impl Coordinator {
             if worst_cap_base > 0 {
                 let n_verifiers = scored.len().saturating_sub(1);
                 let fee_bps = to_bps(cfg.economics.fees.platform_fee_pct) as u16;
-                let comm_bps =
-                    to_bps(cfg.economics.fees.participation_commission_frac) as u16;
+                let comm_bps = to_bps(cfg.economics.fees.participation_commission_frac) as u16;
                 let max_escrow =
                     (cfg.economics.pricing.max_bid as Amount).saturating_mul(TON_NANOTON);
-                if let Err(e) = ensure_escrow_covers(
-                    max_escrow,
-                    worst_cap_base,
-                    n_verifiers,
-                    fee_bps,
-                    comm_bps,
-                ) {
+                if let Err(e) =
+                    ensure_escrow_covers(max_escrow, worst_cap_base, n_verifiers, fee_bps, comm_bps)
+                {
                     return Err(CoordinatorError::InsufficientEscrow(e.to_string()));
                 }
             }
@@ -1776,10 +1824,10 @@ impl Coordinator {
         //
         //  * SCOPED_SECRET / SEALED: mint a short-lived, read-only credential
         //    scoped to the resolved input prefix and attach it so the worker builds
-        //    a `CREATE SECRET`. Scoped to exactly the pinned objects' common prefix
-        //    (falls back to the provider root only when unpinned). Delivered
-        //    UNSEALED here (sealing needs the winner's attestation-bound key, which
-        //    L0 hosts don't ship — see the sealing gap).
+        //    a `CREATE SECRET`. Scoped to exactly the pinned objects' common prefix;
+        //    an UNPINNED job (empty prefix → provider-root scope) is REFUSED rather
+        //    than over-granted (M2). Delivered UNSEALED here (sealing needs the
+        //    winner's attestation-bound key, which L0 hosts don't ship — sealing gap).
         //
         // Unwired providers (default, no remote access) ⇒ neither is attached: the
         // unchanged local-data path.
@@ -1804,12 +1852,29 @@ impl Coordinator {
                 }
             }
             p2p_config::CredentialMode::ScopedSecret | p2p_config::CredentialMode::Sealed => {
-                credential = self.credential_provider.as_ref().map(|p| {
+                credential = self.credential_provider.as_ref().and_then(|p| {
                     let prefix = input_snapshot
                         .as_ref()
                         .map(credential_prefix)
                         .unwrap_or_default();
-                    p.issue(&prefix, cfg.storage.credential_ttl_secs)
+                    // M2: never hand out a PROVIDER-ROOT-scoped credential. An empty
+                    // prefix (an unpinned job) would scope the short-lived secret to
+                    // the WHOLE provider root and ship it to every hedged replica —
+                    // far broader than the job needs. Fail closed: require pinned
+                    // inputs for scoped-secret remote reads (or use presigned mode)
+                    // rather than over-grant. The job then fails at read time with a
+                    // clear "no credential" error instead of leaking broad access.
+                    if prefix.is_empty() {
+                        tracing::warn!(
+                            "scoped-secret credential not issued: job has no pinned inputs to \
+                             scope it to (an empty prefix would grant provider-root access). \
+                             Pin inputs, or use presigned credential mode, for remote \
+                             scoped-secret reads."
+                        );
+                        None
+                    } else {
+                        Some(p.issue(&prefix, cfg.storage.credential_ttl_secs))
+                    }
                 });
             }
         }
@@ -1871,8 +1936,9 @@ impl Coordinator {
             // Wait at least the cap (+ stall slack) for a metered worker to commit
             // OR report its cap-abort; otherwise the configured attempt deadline.
             let this_attempt_deadline = match cap_ms {
-                Some(ms) => attempt_deadline
-                    .max(Duration::from_millis(ms.saturating_add(stall_ms))),
+                Some(ms) => {
+                    attempt_deadline.max(Duration::from_millis(ms.saturating_add(stall_ms)))
+                }
                 None => attempt_deadline,
             };
             let worker = worker.clone();
@@ -2535,8 +2601,14 @@ impl Coordinator {
         // Planner chose remote (or failed over): dispatch to the grid, threading
         // the estimate through for the receipt's observed input size and the
         // size-based capability gate.
-        self.dispatch_to_grid(sql, cfg, &overrides, estimated_input_bytes, estimated_peak_bytes)
-            .await
+        self.dispatch_to_grid(
+            sql,
+            cfg,
+            &overrides,
+            estimated_input_bytes,
+            estimated_peak_bytes,
+        )
+        .await
     }
 
     /// Consult the planner and, if it chooses the local path, execute the query
@@ -2680,7 +2752,8 @@ impl Coordinator {
         } else {
             0.0
         };
-        let score = (soft_trust_score(&cfg.trust.weights, &inputs) + bonus + cap_term).clamp(0.0, 1.0);
+        let score =
+            (soft_trust_score(&cfg.trust.weights, &inputs) + bonus + cap_term).clamp(0.0, 1.0);
         // Newcomer trust ceiling (anti-cheat): a thin-history node cannot exceed
         // `newcomer_trust_ceiling` until it has `newcomer_obs_threshold` verified
         // observations — so a freshly minted identity (even a well-staked or
@@ -2984,6 +3057,13 @@ impl Coordinator {
                 candidate_wallets.push(w);
             }
         }
+        // Bind the SAME φ and κ (basis points) the split below is computed with —
+        // the synced GlobalParams values already overlaid onto `cfg.economics` — so
+        // the escrow's on-chain `platformFee == base*φ/10000` and per-verifier
+        // `commission == base*κ/10000` checks match the produced split even after an
+        // admin rate change (a stale wired rate would otherwise revert every settle).
+        let bound_fee_bps = to_bps(cfg.economics.fees.platform_fee_pct) as u16;
+        let bound_comm_bps = to_bps(cfg.economics.fees.participation_commission_frac) as u16;
         let handle = match settlement.open_escrow_with_terms(
             job_id,
             max_bid,
@@ -2993,10 +3073,15 @@ impl Coordinator {
             // Bind the chain-authoritative fee recipient (admin treasury) into the
             // per-job terms; the `ton` rail rejects a mismatching local treasury.
             chain_fee_recipient,
+            Some(bound_fee_bps),
+            Some(bound_comm_bps),
         ) {
             Ok(h) => h,
             Err(e) => {
-                debug!("open_escrow failed: {e}");
+                // Paid job could not lock its escrow on-chain — surface at WARN with
+                // the job id so an operator can trace which query failed to settle
+                // (treasury mismatch, no fee recipient, deploy not confirmed, RPC).
+                warn!(job = %job_id, "open escrow failed, paid job will not settle: {e}");
                 return;
             }
         };
@@ -3055,14 +3140,17 @@ impl Coordinator {
         // (free winner) and every party gets their correct share. Reject rather than
         // under-pay; the derived base fits, so this passes in steady state and
         // catches a misconfiguration with a clear, human-readable error.
-        if let Err(e) = ensure_escrow_covers(
-            b,
-            base,
-            participants.len(),
-            fee_bps as u16,
-            comm_bps as u16,
-        ) {
-            debug!("escrow coverage preflight failed, not settling: {e}");
+        if let Err(e) =
+            ensure_escrow_covers(b, base, participants.len(), fee_bps as u16, comm_bps as u16)
+        {
+            warn!(
+                job = %job_id,
+                escrow = %handle.address.to_raw_string(),
+                escrow_b = b,
+                base,
+                participants = participants.len(),
+                "escrow coverage preflight failed, not settling (would revert on-chain): {e}"
+            );
             return;
         }
         let outcome = SettlementOutcome {
@@ -3076,7 +3164,11 @@ impl Coordinator {
             platform_fee: fee,
         };
         if let Err(e) = settlement.settle(&handle, &outcome) {
-            debug!("escrow settle failed: {e}");
+            warn!(
+                job = %job_id,
+                escrow = %handle.address.to_raw_string(),
+                "escrow settle failed (on-chain abort or unconfirmed): {e}"
+            );
             return;
         }
         if let Some(anchor) = &self.record_anchor {
@@ -3353,11 +3445,21 @@ mod capacity_gate_tests {
         // Fits within free_mem + spill ⇒ admit; clearly beyond ⇒ exclude.
         let free = 1024 * 1024; // 1 MiB advertised
         assert!(advertised_capacity_admits(free, None, free + spill, spill));
-        assert!(!advertised_capacity_admits(free, None, free + spill + 1, spill));
+        assert!(!advertised_capacity_admits(
+            free,
+            None,
+            free + spill + 1,
+            spill
+        ));
         // A PROVEN sustained peak (+ proven spill) extends the effective capacity,
         // so a node that has really run this big before is admitted.
         let p = profile(0, 256 * 1024 * 1024, 4 * 1024 * 1024 * 1024, 10);
-        assert!(advertised_capacity_admits(free, Some(&p), 4 * 1024 * 1024 * 1024, spill));
+        assert!(advertised_capacity_admits(
+            free,
+            Some(&p),
+            4 * 1024 * 1024 * 1024,
+            spill
+        ));
     }
 }
 
@@ -3426,7 +3528,10 @@ mod metering_tests {
         // the billed seconds are capped at ceil(2000ms × 1.5)=ceil(3s)=3 — the
         // winner cannot over-bill against the measured median.
         let billed = metered_billed_seconds(8_000, &[8_000, 2_000, 2_000], 1.5);
-        assert_eq!(billed, 3, "over-reporting winner capped at median × tolerance");
+        assert_eq!(
+            billed, 3,
+            "over-reporting winner capped at median × tolerance"
+        );
         // When the winner is in line with the median, its own (smaller) seconds win.
         let billed = metered_billed_seconds(2_000, &[2_000, 2_100, 1_900], 1.5);
         assert_eq!(billed, 2);
@@ -3552,7 +3657,10 @@ mod selection_scoring_tests {
             "a max-stake low-reputation node must NOT outrank a reliable one: A={score_a} B={score_b}"
         );
         // B is below the reliability floor ⇒ its stake earns literally nothing.
-        assert_eq!(stake_reliability_factor(rel_b, r.stake_reliability_floor), 0.0);
+        assert_eq!(
+            stake_reliability_factor(rel_b, r.stake_reliability_floor),
+            0.0
+        );
 
         // Counterfactual: had B's stake been credited in full (reliability forced
         // to 1.0, i.e. an UN-gated additive stake term), B would have outranked A.

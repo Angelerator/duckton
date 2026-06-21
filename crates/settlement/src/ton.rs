@@ -977,7 +977,7 @@ pub struct EscrowInit {
 
 /// Build the per-job `EscrowTerms` child cell (mirrors `escrow_types.tolk`:
 /// `treasury: address, expectedHash: uint256, candidatesHash: uint256,
-/// paramsVersion: uint32, platformFeeBps: uint16`).
+/// paramsVersion: uint32, platformFeeBps: uint16, participationCommissionBps: uint16`).
 ///
 /// `platform_fee_bps` is the admin's authoritative platform-fee rate φ (bps) bound
 /// at open from `GlobalParams.get_platform_fee_bps` for `params_version`; the
@@ -1003,6 +1003,7 @@ pub fn build_escrow_terms(
     candidates_hash: &[u8; 32],
     params_version: u32,
     platform_fee_bps: u16,
+    participation_commission_bps: u16,
 ) -> Cell {
     CellBuilder::new()
         .store_address(treasury)
@@ -1010,9 +1011,12 @@ pub fn build_escrow_terms(
         .store_u256(candidates_hash)
         .store_uint(params_version as u128, 32)
         // FEE ENFORCEMENT (φ): the admin's platform-fee rate (bps) bound at open so
-        // the escrow enforces `platformFee == winnerAmount*φ` to `treasury` at settle.
-        // Appended last → additive layout (matches escrow_types.tolk::EscrowTerms).
+        // the escrow enforces `platformFee == base*φ` to `treasury` at settle.
         .store_uint(platform_fee_bps as u128, 16)
+        // COMMISSION ENFORCEMENT (κ): the admin's participation-commission rate (bps)
+        // bound at open so the escrow enforces each participation leg == `base*κ`.
+        // Appended last → additive layout (matches escrow_types.tolk::EscrowTerms).
+        .store_uint(participation_commission_bps as u128, 16)
         .build()
 }
 
@@ -1225,6 +1229,14 @@ pub struct TonSettlement<R: TonRpc> {
     /// and the φ the deployed `GlobalParams` holds for the pinned params version. `0`
     /// (default) ⇒ no fee enforced (legacy/offline ABI tests with explicit fees).
     platform_fee_bps: u16,
+    /// COMMISSION ENFORCEMENT (κ): the admin's authoritative participation-commission
+    /// rate (bps) bound into a freshly built `EscrowTerms.participationCommissionBps`
+    /// at open. When > 0 the on-chain escrow REQUIRES each participation leg to equal
+    /// EXACTLY `base * κ / 10000` — so a compromised arbiter cannot shave the agreeing
+    /// verifiers' promised commission. Must equal the κ the coordinator computes its
+    /// split with (synced `GlobalParams.get_participation_commission_bps`). `0`
+    /// (default) ⇒ no commission enforced.
+    participation_commission_bps: u16,
 }
 
 impl<R: TonRpc> TonSettlement<R> {
@@ -1243,6 +1255,7 @@ impl<R: TonRpc> TonSettlement<R> {
             qid: QueryIdGen::new(),
             candidates: Vec::new(),
             platform_fee_bps: 0,
+            participation_commission_bps: 0,
         }
     }
 
@@ -1267,6 +1280,7 @@ impl<R: TonRpc> TonSettlement<R> {
             qid: QueryIdGen::new(),
             candidates: Vec::new(),
             platform_fee_bps: 0,
+            participation_commission_bps: 0,
         }
     }
 
@@ -1277,6 +1291,15 @@ impl<R: TonRpc> TonSettlement<R> {
     /// coordinator computes its split with and the deployed `GlobalParams` holds.
     pub fn with_platform_fee_bps(mut self, platform_fee_bps: u16) -> Self {
         self.platform_fee_bps = platform_fee_bps;
+        self
+    }
+
+    /// COMMISSION ENFORCEMENT (κ): bind the admin's participation-commission rate
+    /// (bps) into the per-job `EscrowTerms` at open. When > 0 the on-chain escrow
+    /// requires each participation leg to be EXACTLY `base * κ / 10000`. Set this to
+    /// the same κ the coordinator computes its split with (synced `GlobalParams`).
+    pub fn with_participation_commission_bps(mut self, participation_commission_bps: u16) -> Self {
+        self.participation_commission_bps = participation_commission_bps;
         self
     }
 
@@ -1393,6 +1416,7 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn open_escrow_with_terms(
         &self,
         job: &JobId,
@@ -1401,6 +1425,8 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         params_version: u32,
         candidates: &[WalletAddress],
         fee_recipient: Option<WalletAddress>,
+        platform_fee_bps: Option<u16>,
+        participation_commission_bps: Option<u16>,
     ) -> Result<EscrowHandle, SettleError> {
         // Build a FRESH per-job `EscrowTerms` binding the HTLC lock (the agreed
         // quorum result hash) + the B1 candidate-set commitment + the on-chain
@@ -1414,17 +1440,35 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         let requester = self.requester.ok_or_else(|| {
             SettleError::Backend("open_escrow requires a requester wallet".into())
         })?;
+        // FEE ENFORCEMENT (φ): the rate bound into the terms (and enforced at
+        // settle). Prefer the caller's chain-synced φ (the value the coordinator
+        // computes the split with for `params_version`) over the rail's wired φ,
+        // so an admin fee change can never desync the bound terms from the split
+        // (which would make settle revert FEE_MISMATCH). Fall back to the wired
+        // value when the caller passes none (no params source).
+        let fee_bps = platform_fee_bps.unwrap_or(self.platform_fee_bps);
+        // COMMISSION ENFORCEMENT (κ): same precedence as φ — prefer the caller's
+        // chain-synced κ (the value the coordinator computes each verifier
+        // commission with) over the wired κ, so the bound terms match the split.
+        let comm_bps = participation_commission_bps.unwrap_or(self.participation_commission_bps);
         // FEE-RECIPIENT enforcement: the platform-fee `treasury` is sourced from the
         // AUTHORITATIVE on-chain `GlobalParams.fee_recipient` (`fee_recipient`),
         // NOT from local config. Precedence: chain value wins; a locally-configured
         // `self.treasury` is only an optional cross-check that MUST match the chain
         // value (else we refuse to open — the admin treasury can't be silently
-        // replaced). When the chain value is unknown (None: no params source wired),
-        // fall back to the configured treasury / arbiter (documented residual).
+        // replaced).
         let treasury = match fee_recipient {
             Some(chain) => {
                 if let Some(local) = self.treasury {
                     if local != chain {
+                        tracing::warn!(
+                            job = %job.0,
+                            local_treasury = %local.to_raw_string(),
+                            chain_fee_recipient = %chain.to_raw_string(),
+                            params_version,
+                            "refusing to open escrow: local treasury disagrees with the \
+                             authoritative on-chain GlobalParams.fee_recipient"
+                        );
                         return Err(SettleError::TreasuryMismatch {
                             bound: local.to_raw_string(),
                             expected: chain.to_raw_string(),
@@ -1434,7 +1478,31 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
                 }
                 chain
             }
-            None => self.treasury.unwrap_or(self.arbiter),
+            // No authoritative chain recipient (no params source wired). Use a
+            // locally-configured treasury if present. Otherwise (M3) the OLD code
+            // fell back to `self.arbiter` — paying the platform fee to the
+            // COORDINATOR's OWN wallet. Only tolerate the absence when NO fee is
+            // actually charged (φ = 0, so the treasury is never paid); when a fee
+            // WOULD be collected, refuse to open rather than silently misdirect it.
+            None => match self.treasury {
+                Some(t) => t,
+                None if fee_bps == 0 => self.arbiter,
+                None => {
+                    tracing::warn!(
+                        job = %job.0,
+                        fee_bps,
+                        "refusing to open escrow: non-zero platform fee but no fee recipient \
+                         known (no GlobalParams source wired AND no local treasury)"
+                    );
+                    return Err(SettleError::Backend(
+                        "cannot open escrow: platform fee is non-zero but no fee recipient is \
+                         known (no GlobalParams source wired AND no local treasury configured). \
+                         Wire a params source or configure the treasury so the fee is not \
+                         misdirected to the arbiter/coordinator wallet."
+                            .into(),
+                    ));
+                }
+            },
         };
         // B1: bind the candidate-set commitment over the per-job payout set passed
         // by the coordinator (winner ∪ agreeing non-winners). `settle` MUST later
@@ -1446,14 +1514,16 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
             candidates
         };
         let candidates_hash = candidates_commitment(cands);
-        // FEE ENFORCEMENT (φ): bind the admin fee recipient (`treasury`) + rate
-        // (`platform_fee_bps`) so the escrow enforces the exact platform cut at settle.
+        // Bind the admin fee recipient (`treasury`) + rate (`fee_bps`) + commission
+        // rate (`comm_bps`) so the escrow enforces the exact platform cut AND each
+        // verifier's exact κ·base commission at settle.
         let terms = build_escrow_terms(
             &treasury,
             expected_hash,
             &candidates_hash,
             params_version,
-            self.platform_fee_bps,
+            fee_bps,
+            comm_bps,
         );
         let deadline = now_secs_u32().saturating_add(self.escrow_window_secs);
         let init = EscrowInit {
@@ -1472,11 +1542,32 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // Confirm the funded deploy actually lands + succeeds on-chain BEFORE
         // returning the handle, so the coordinator never settles against an
         // escrow that was never funded/deployed (no fire-and-forget).
+        tracing::info!(
+            job = %job.0,
+            escrow = %address.to_raw_string(),
+            locked_b = max_bid,
+            deploy_value,
+            fee_bps,
+            comm_bps,
+            params_version,
+            treasury = %treasury.to_raw_string(),
+            "opening per-job escrow: funded deploy + confirmation"
+        );
         let before = self.rpc.last_tx_lt(&address)?;
         self.rpc
             .deploy(&address, deploy_value, &state_init, &body)?;
-        self.rpc
-            .await_confirmation(&address, before, CONFIRM_TIMEOUT_SECS)?;
+        if let Err(e) = self
+            .rpc
+            .await_confirmation(&address, before, CONFIRM_TIMEOUT_SECS)
+        {
+            tracing::warn!(
+                job = %job.0,
+                escrow = %address.to_raw_string(),
+                "escrow deploy not confirmed on-chain: {e}"
+            );
+            return Err(e);
+        }
+        tracing::info!(job = %job.0, escrow = %address.to_raw_string(), "escrow deployed + confirmed");
         Ok(EscrowHandle {
             job: job.clone(),
             address,
@@ -1486,6 +1577,13 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
 
     fn settle(&self, h: &EscrowHandle, outcome: &SettlementOutcome) -> Result<(), SettleError> {
         if outcome.total() > h.max_bid {
+            tracing::warn!(
+                escrow = %h.address.to_raw_string(),
+                payout = outcome.total(),
+                escrow_b = h.max_bid,
+                "refusing to settle: computed payout exceeds the locked escrow (coverage \
+                 preflight) — would revert PAYOUT_EXCEEDS_ESCROW on-chain"
+            );
             return Err(SettleError::PayoutExceedsEscrow {
                 payout: outcome.total(),
                 escrow: h.max_bid,
@@ -1519,21 +1617,56 @@ impl<R: TonRpc> Settlement for TonSettlement<R> {
         // Attach `settle_gas` so the escrow's compute phase can run (a 0-value
         // internal message aborts before compute). The bounded `B` split is paid
         // from the escrow's own balance, not from this gas.
+        tracing::info!(
+            escrow = %h.address.to_raw_string(),
+            winner = %outcome.winner.to.to_raw_string(),
+            winner_amount = outcome.winner.amount,
+            base = outcome.base,
+            platform_fee = outcome.platform_fee,
+            participants = outcome.participants.len(),
+            "settling escrow on the agreed quorum hash"
+        );
         let before = self.rpc.last_tx_lt(&h.address)?;
         self.rpc.send_internal(&h.address, self.settle_gas, &body)?;
         // Confirm the escrow actually released — settle did not throw on the
-        // candidate-commitment / result-hash check and was not aborted — before
-        // reporting the job paid.
-        self.rpc
+        // candidate-commitment / result-hash / fee / commission checks and was not
+        // aborted — before reporting the job paid.
+        match self
+            .rpc
             .await_confirmation(&h.address, before, CONFIRM_TIMEOUT_SECS)
+        {
+            Ok(()) => {
+                tracing::info!(escrow = %h.address.to_raw_string(), "escrow settled + confirmed");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(
+                    escrow = %h.address.to_raw_string(),
+                    "settle not confirmed (on-chain abort or unverifiable outcome): {e}"
+                );
+                Err(e)
+            }
+        }
     }
 
     fn refund(&self, h: &EscrowHandle) -> Result<(), SettleError> {
+        tracing::info!(escrow = %h.address.to_raw_string(), "refunding escrow to requester (timeout)");
         let body = build_escrow_refund(self.qid.next());
         let before = self.rpc.last_tx_lt(&h.address)?;
         self.rpc.send_internal(&h.address, self.settle_gas, &body)?;
-        self.rpc
+        match self
+            .rpc
             .await_confirmation(&h.address, before, CONFIRM_TIMEOUT_SECS)
+        {
+            Ok(()) => {
+                tracing::info!(escrow = %h.address.to_raw_string(), "escrow refund confirmed");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!(escrow = %h.address.to_raw_string(), "escrow refund not confirmed: {e}");
+                Err(e)
+            }
+        }
     }
 
     fn is_onchain(&self) -> bool {
@@ -1885,7 +2018,7 @@ impl ToncenterRpc {
     fn fetch_latest_tx(
         &self,
         account: &WalletAddress,
-    ) -> Result<Option<(u64, Option<i32>)>, SettleError> {
+    ) -> Result<Option<(u64, TxOutcome)>, SettleError> {
         let json = format!(r#"{{"address":"{}","limit":1}}"#, account.to_raw_string());
         let raw = self.curl_post("getTransactions", &json)?;
         let v: serde_json::Value = serde_json::from_str(&raw)
@@ -1907,25 +2040,47 @@ impl ToncenterRpc {
         let lt = lt_s
             .parse::<u64>()
             .map_err(|e| SettleError::Backend(format!("parse lt '{lt_s}': {e}")))?;
-        Ok(Some((lt, tx_failure_exit_code(tx))))
+        Ok(Some((lt, tx_outcome(tx))))
     }
 }
 
-/// Extract a FAILURE exit code from a transaction's `description`, if the endpoint
-/// exposes one. Returns `Some(code)` only when the transaction failed — a non-zero
-/// compute-phase `exit_code`, a non-zero action-phase `result_code`, or `aborted`
-/// — and `None` when it succeeded *or* the description is absent (toncenter v2
-/// omits it, in which case a landed transaction is treated as confirmation).
+/// The execution outcome of a landed transaction, as far as the RPC endpoint
+/// lets us determine it. `Unknown` is DISTINCT from `Succeeded`: a toncenter v2
+/// `getTransactions` response omits the `description`, so a landed transaction
+/// could have aborted without us seeing it. We must never report settlement
+/// success on an `Unknown` outcome (H4: a failed settle would otherwise be
+/// recorded as paid).
 #[cfg(feature = "ton-live")]
-fn tx_failure_exit_code(tx: &serde_json::Value) -> Option<i32> {
-    let desc = tx.get("description")?;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TxOutcome {
+    /// The transaction ran and FAILED (non-zero compute/action phase, or aborted).
+    Failed(i32),
+    /// The endpoint exposed a `description` and it shows the transaction succeeded.
+    Succeeded,
+    /// The endpoint did NOT expose an execution outcome (no `description`) — we
+    /// cannot tell success from failure and must not assume either.
+    Unknown,
+}
+
+/// Classify a transaction's execution outcome from its `description`. A non-zero
+/// compute-phase `exit_code`, a non-zero action-phase `result_code`, or
+/// `aborted` ⇒ [`TxOutcome::Failed`]. A present description with none of those ⇒
+/// [`TxOutcome::Succeeded`]. An ABSENT description (toncenter v2 omits it) ⇒
+/// [`TxOutcome::Unknown`] — we cannot tell success from failure, so the caller
+/// must NOT treat it as confirmation (the old code returned `None` here and a
+/// landed-but-failed tx was silently accepted as success).
+#[cfg(feature = "ton-live")]
+fn tx_outcome(tx: &serde_json::Value) -> TxOutcome {
+    let Some(desc) = tx.get("description") else {
+        return TxOutcome::Unknown;
+    };
     let compute = desc
         .get("compute_ph")
         .and_then(|c| c.get("exit_code"))
         .and_then(|x| x.as_i64());
     if let Some(c) = compute {
         if c != 0 {
-            return Some(c as i32);
+            return TxOutcome::Failed(c as i32);
         }
     }
     let action = desc
@@ -1934,13 +2089,13 @@ fn tx_failure_exit_code(tx: &serde_json::Value) -> Option<i32> {
         .and_then(|x| x.as_i64());
     if let Some(rc) = action {
         if rc != 0 {
-            return Some(rc as i32);
+            return TxOutcome::Failed(rc as i32);
         }
     }
     if desc.get("aborted").and_then(|a| a.as_bool()) == Some(true) {
-        return Some(compute.unwrap_or(-1) as i32);
+        return TxOutcome::Failed(compute.unwrap_or(-1) as i32);
     }
-    None
+    TxOutcome::Succeeded
 }
 
 #[cfg(feature = "ton-live")]
@@ -2064,14 +2219,21 @@ impl TonRpc for ToncenterRpc {
             .and_then(|e| e.get(1))
             .ok_or_else(|| SettleError::Backend(format!("no stack[0] for {method}: {raw}")))?;
         // The slice/cell payload carries the BoC under `.bytes` (base64).
-        let b64 = entry
-            .get("bytes")
-            .and_then(|x| x.as_str())
-            .ok_or_else(|| SettleError::Backend(format!("address getter has no cell bytes: {raw}")))?;
+        let b64 = entry.get("bytes").and_then(|x| x.as_str()).ok_or_else(|| {
+            SettleError::Backend(format!("address getter has no cell bytes: {raw}"))
+        })?;
         let boc = crate::wallet::base64_decode(b64.trim())
             .ok_or_else(|| SettleError::Backend("address cell: invalid base64 BoC".into()))?;
-        let cell = Cell::from_boc(&boc)
-            .ok_or_else(|| SettleError::Backend("address cell: BoC failed to parse".into()))?;
+        let cell = Cell::from_boc(&boc).ok_or_else(|| {
+            // On-chain troubleshooting: the RPC returned a BoC the hardened parser
+            // rejected (truncated/oversized/cyclic/over-deep/bad-CRC) — surface the
+            // size so a malformed or hostile endpoint response is diagnosable.
+            tracing::warn!(
+                bytes = boc.len(),
+                "RPC get-method returned a BoC that failed to parse (malformed address cell)"
+            );
+            SettleError::Backend("address cell: BoC failed to parse".into())
+        })?;
         let parsed = cell
             .parser()
             .load_address()
@@ -2094,14 +2256,25 @@ impl TonRpc for ToncenterRpc {
     ) -> Result<(), SettleError> {
         let deadline = now_secs_u32() as u64 + deadline_secs;
         loop {
-            if let Some((lt, failure)) = self.fetch_latest_tx(account)? {
+            if let Some((lt, outcome)) = self.fetch_latest_tx(account)? {
                 if lt > after_lt {
-                    // A newer transaction landed on the destination. If the
-                    // endpoint reported a phase failure, surface it; otherwise the
-                    // landed transaction is the confirmation.
-                    return match failure {
-                        Some(exit_code) => Err(SettleError::TxFailed { exit_code }),
-                        None => Ok(()),
+                    // A newer transaction landed on the destination. Surface a
+                    // reported failure; treat a verified success as confirmation;
+                    // and REFUSE to report success when the endpoint hides the
+                    // outcome (H4) — reporting "paid" on an unverifiable result is
+                    // worse than failing loudly. Polling longer cannot make a
+                    // description appear, so fail immediately with guidance.
+                    return match outcome {
+                        TxOutcome::Failed(exit_code) => Err(SettleError::TxFailed { exit_code }),
+                        TxOutcome::Succeeded => Ok(()),
+                        TxOutcome::Unknown => Err(SettleError::Backend(
+                            "a newer transaction landed but the RPC endpoint does not expose its \
+                             execution outcome (no `description`/exit code — e.g. toncenter v2 \
+                             `getTransactions`). Refusing to confirm an unverifiable result; \
+                             configure a description-capable endpoint (toncenter v3 / TON API) \
+                             for on-chain settlement."
+                                .into(),
+                        )),
                     };
                 }
             }
@@ -2264,14 +2437,13 @@ mod tests {
     fn global_params_client_reads_code_version() {
         let mut values = HashMap::new();
         values.insert("get_code_version".to_string(), 3i128);
-        let client =
-            GlobalParamsClient::new(
-                GetMethodRpc {
-                    values,
-                    ..Default::default()
-                },
-                WalletAddress::new(0, [0xCD; 32]),
-            );
+        let client = GlobalParamsClient::new(
+            GetMethodRpc {
+                values,
+                ..Default::default()
+            },
+            WalletAddress::new(0, [0xCD; 32]),
+        );
         assert_eq!(client.code_version().unwrap(), 3);
     }
 
@@ -2449,44 +2621,46 @@ mod tests {
     #[test]
     fn escrow_terms_cell_layout() {
         // EscrowTerms = treasury(addr 267) + expectedHash(uint256) +
-        // candidatesHash(uint256) + paramsVersion(uint32) + platformFeeBps(uint16).
-        // All five round-trip in field order — `platformFeeBps` is appended last
-        // (the φ fee-enforcement field bound at open).
+        // candidatesHash(uint256) + paramsVersion(uint32) + platformFeeBps(uint16) +
+        // participationCommissionBps(uint16). All six round-trip in field order —
+        // `platformFeeBps` (φ) then `participationCommissionBps` (κ) are appended
+        // last (the fee/commission enforcement fields bound at open).
         let treasury = WalletAddress::new(0, [0x7eu8; 32]);
         let expected = [0xABu8; 32];
         let cand = [0xCDu8; 32];
-        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500);
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500, 500);
         let mut p = terms.parser();
         assert_eq!(p.load_address(), Some(treasury));
         assert_eq!(p.load_bits(256).unwrap(), expected.to_vec());
         assert_eq!(p.load_bits(256).unwrap(), cand.to_vec());
         assert_eq!(p.load_uint(32).unwrap(), 7);
         assert_eq!(p.load_uint(16).unwrap(), 1500);
+        assert_eq!(p.load_uint(16).unwrap(), 500);
     }
 
     #[test]
     fn escrow_terms_cell_matches_onchain() {
-        // Pin the v2 EscrowTerms cell hash to the Acton emulator
+        // Pin the v3 EscrowTerms cell hash to the Acton emulator
         // (ton/scripts/_probe_v2.tolk): treasury=0x7e.., expectedHash=0xabab..,
         // candidatesHash = commitment over {winner 0x02.., KEY1 0x11..},
-        // paramsVersion = 7, platformFeeBps = 1500. Proves the 5-field terms layout
-        // (hence the escrow deterministic address) is byte-identical to the
-        // contract's `.toCell()`.
+        // paramsVersion = 7, platformFeeBps = 1500, participationCommissionBps = 500.
+        // Proves the 6-field terms layout (hence the escrow deterministic address)
+        // is byte-identical to the contract's `.toCell()`.
         let treasury = WalletAddress::new(0, [0x7eu8; 32]);
         let expected = [0xABu8; 32];
         let winner = WalletAddress::new(0, [0x02u8; 32]);
         let key1 = WalletAddress::new(0, [0x11u8; 32]);
         let cand = candidates_commitment(&[winner, key1]);
-        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500);
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500, 500);
         assert_eq!(
             hex::encode(terms.repr_hash()),
-            "f88e4cbebc319a422d01aa62a95bdd03f5eb4fb038ea788919383e8e0b47c14e"
+            "05a993fe1d08b2327a830a1b99caca4f879ec9a2517ca76201c04571bc299a6c"
         );
-        // candidatesHash = 0 (unbound), same other fields — ESCROW_TERMS_V2_UNBOUND.
-        let unbound = build_escrow_terms(&treasury, &expected, &[0u8; 32], 7, 1500);
+        // candidatesHash = 0 (unbound), same other fields — ESCROW_TERMS_V3_UNBOUND.
+        let unbound = build_escrow_terms(&treasury, &expected, &[0u8; 32], 7, 1500, 500);
         assert_eq!(
             hex::encode(unbound.repr_hash()),
-            "ceab07e82560af4860013a45e95364c32c459e1cdbe22352ee9e9a988362285f"
+            "28b75b0f8c393984a50d35cd7888bf55a505c7e165b57b64393272da7f036f33"
         );
     }
 
@@ -2503,7 +2677,7 @@ mod tests {
         let winner = WalletAddress::new(0, [0x02u8; 32]);
         let key1 = WalletAddress::new(0, [0x11u8; 32]);
         let cand = candidates_commitment(&[winner, key1]);
-        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500);
+        let terms = build_escrow_terms(&treasury, &expected, &cand, 7, 1500, 500);
         let init = EscrowInit {
             requester: key1,
             arbiter: winner,
@@ -2514,7 +2688,7 @@ mod tests {
         let addr = WalletAddress::from_state_init(BASECHAIN, &code, &data);
         assert_eq!(
             hex::encode(addr.hash),
-            "f634b9fd85d5c3ed640a99d3abc4563b1e6844229fedaef8a2443045afc1e71d"
+            "5af54256b23facb2d12bd4ba9df2876a99dfeb8aac4121f659301c226c160b6d"
         );
     }
 
@@ -2910,7 +3084,16 @@ mod tests {
         .with_requester(WalletAddress::new(0, [1; 32]))
         .with_treasury(wrong);
         let err = s
-            .open_escrow_with_terms(&JobId("j".into()), 100, &[3u8; 32], 7, &[], Some(chain))
+            .open_escrow_with_terms(
+                &JobId("j".into()),
+                100,
+                &[3u8; 32],
+                7,
+                &[],
+                Some(chain),
+                None,
+                None,
+            )
             .unwrap_err();
         match err {
             SettleError::TreasuryMismatch {
@@ -2944,14 +3127,32 @@ mod tests {
         };
         let e1 = mk()
             .with_treasury(chain)
-            .open_escrow_with_terms(&JobId("j".into()), 100, &[3u8; 32], 7, &[], Some(chain))
+            .open_escrow_with_terms(
+                &JobId("j".into()),
+                100,
+                &[3u8; 32],
+                7,
+                &[],
+                Some(chain),
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(
             !matches!(e1, SettleError::TreasuryMismatch { .. }),
             "a local treasury equal to the chain value must NOT be a mismatch, got {e1:?}"
         );
         let e2 = mk()
-            .open_escrow_with_terms(&JobId("j".into()), 100, &[3u8; 32], 7, &[], Some(chain))
+            .open_escrow_with_terms(
+                &JobId("j".into()),
+                100,
+                &[3u8; 32],
+                7,
+                &[],
+                Some(chain),
+                None,
+                None,
+            )
             .unwrap_err();
         assert!(
             !matches!(e2, SettleError::TreasuryMismatch { .. }),

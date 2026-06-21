@@ -238,7 +238,11 @@ pub trait PresignProvider: Send + Sync {
 
     /// Sign `uri` (e.g. `s3://bucket/key.parquet`) for `ttl_secs`, returning the
     /// presigned HTTPS URL a worker can read with no credential.
-    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError>;
+    fn presign(
+        &self,
+        uri: &str,
+        ttl_secs: u64,
+    ) -> Result<String, crate::datasource::DataSourceError>;
 }
 
 /// A no-cloud, deterministic presigner used for the open-grid default and tests.
@@ -274,7 +278,11 @@ impl PresignProvider for FakePresignProvider {
         "fake-presign"
     }
 
-    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError> {
+    fn presign(
+        &self,
+        uri: &str,
+        ttl_secs: u64,
+    ) -> Result<String, crate::datasource::DataSourceError> {
         // Drop the scheme, keep `host_or_bucket/key…` as the object path so the
         // signed URL stays per-object and recognizable.
         let path = uri.split_once("://").map(|(_, rest)| rest).unwrap_or(uri);
@@ -421,7 +429,11 @@ impl PresignProvider for S3PresignProvider {
         "s3"
     }
 
-    fn presign(&self, uri: &str, ttl_secs: u64) -> Result<String, crate::datasource::DataSourceError> {
+    fn presign(
+        &self,
+        uri: &str,
+        ttl_secs: u64,
+    ) -> Result<String, crate::datasource::DataSourceError> {
         self.presign_at(uri, ttl_secs, now_secs())
     }
 }
@@ -754,7 +766,10 @@ mod tests {
         // Time-limited bearer artifact: carries an expiry + a signature, no creds.
         assert!(a.contains("X-Amz-Expires=900"), "{a}");
         assert!(a.contains("X-Amz-Signature="), "{a}");
-        assert!(!a.contains("secret"), "no credential material in the URL: {a}");
+        assert!(
+            !a.contains("secret"),
+            "no credential material in the URL: {a}"
+        );
         // Deterministic per-object signature (URI-only) ⇒ two signs agree.
         assert_eq!(
             p.presign("s3://bucket/events/2024/a.parquet", 900).unwrap(),
@@ -769,7 +784,9 @@ mod tests {
         let url = p
             .presign_at("s3://my-bucket/data/part-0.parquet", 600, 1_700_000_000)
             .unwrap();
-        assert!(url.starts_with("https://my-bucket.s3.us-east-1.amazonaws.com/data/part-0.parquet?"));
+        assert!(
+            url.starts_with("https://my-bucket.s3.us-east-1.amazonaws.com/data/part-0.parquet?")
+        );
         assert!(url.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"));
         assert!(url.contains("X-Amz-Expires=600"));
         assert!(url.contains("X-Amz-Credential=AKIDEXAMPLE%2F"));

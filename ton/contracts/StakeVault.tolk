@@ -34,12 +34,12 @@ type AllowedMessageToVault =
     | StakeWithdraw
     | StakeKeeperWithdraw
     | StakeSlash
-    | StakeClaim           // C1 pull a queued/bounced payout
+    | StakeClaim // C1 pull a queued/bounced payout
     | ProvideWalletAddress // TEP-89 jetton-wallet discovery
     | ReceiptTopUp
     | StakeAnnounceUpgrade // §8.6 timelocked code upgrade: step 1 (announce)
-    | StakeApplyUpgrade    // §8.6 timelocked code upgrade: step 2 (apply, after delay)
-    | StakeCancelUpgrade   // §8.6 abort a pending announcement
+    | StakeApplyUpgrade // §8.6 timelocked code upgrade: step 2 (apply, after delay)
+    | StakeCancelUpgrade // §8.6 abort a pending announcement
 
 // C1/C2 bounce-safety. A bounced MINT rolls back the staked/totalSupply credit
 // (so a failed receipt mint cannot inflate supply); a bounced PAYOUT is credited
@@ -52,15 +52,25 @@ fun onBouncedMessage(in: InMessageBounced) {
     var storage = lazy VaultStorage.load();
 
     if (op == OP_JETTON_TRANSFER_INTERNAL) {
-        // C2: mint bounced. Body = op, queryId(64), amount(coins). Roll back the
-        // credit that the deposit optimistically applied. Guard staked against
-        // underflow in case an unbond moved stake out before the bounce landed
-        // (the receipt was never minted, so totalSupply must always shrink).
+        // C2: mint bounced. Body = op, queryId(64), amount(coins). The receipt was
+        // never minted, so claw the deposited `amount` back OUT of the bonded
+        // buckets and shrink totalSupply by the SAME amount — keeping the
+        // invariant `totalSupply == staked + unbondingAmount` exact. Pull from
+        // `staked` first, then from the cooldown bucket if a `StakeRequestUnbond`
+        // moved the just-deposited stake there before the bounce landed (the old
+        // code shrank totalSupply by the full `amount` but `staked` by only
+        // `min(amount, staked)`, desyncing supply from backing whenever an unbond
+        // raced the bounce). `min` guards every leg against underflow.
         body.skipBits(64); // queryId
         val amount = body.loadCoins();
-        val backOut = min(amount, storage.staked);
-        storage.staked -= backOut;
-        storage.totalSupply -= amount;
+        val fromStaked = min(amount, storage.staked);
+        storage.staked -= fromStaked;
+        val fromUnbonding = min(amount - fromStaked, storage.unbondingAmount);
+        storage.unbondingAmount -= fromUnbonding;
+        // Shrink supply only by what was actually reclaimed from backing, so the
+        // invariant holds even in the (unreachable today) case where less than
+        // `amount` remained bonded.
+        storage.totalSupply -= fromStaked + fromUnbonding;
         storage.save();
     } else if (op == OP_STAKE_PAYOUT) {
         // C1: payout bounced. Credit the returned value to the pull-ledger.
@@ -80,7 +90,9 @@ fun onInternalMessage(in: InMessage) {
         StakeDeposit => {
             var storage = lazy VaultStorage.load();
             assert (in.senderAddress == storage.owner) throw ErrCode.NOT_OWNER;
-            assert (in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE) throw ErrCode.NOT_ENOUGH_GAS;
+            assert (
+                in.valueCoins >= msg.amount + MIN_TONS_FOR_STORAGE
+            ) throw ErrCode.NOT_ENOUGH_GAS;
 
             val cfg = storage.config.load();
             // C4: reject a misconfigured vault at first use (no on-chain setter).
@@ -171,7 +183,10 @@ fun onInternalMessage(in: InMessage) {
             // its fixed bounty FIRST (from the liquid remainder), then sweep the
             // rest to the owner with carry-remaining. Reserving only staked+buffer
             // (not the bounty) keeps the bounty within the sendable balance.
-            reserveToncoinsOnBalance(storage.staked + MIN_TONS_FOR_STORAGE, RESERVE_MODE_EXACT_AMOUNT);
+            reserveToncoinsOnBalance(
+                storage.staked + MIN_TONS_FOR_STORAGE,
+                RESERVE_MODE_EXACT_AMOUNT,
+            );
             if (bounty > 0) {
                 payout(in.senderAddress, bounty, msg.queryId);
             }

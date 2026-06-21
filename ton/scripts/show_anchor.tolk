@@ -76,6 +76,9 @@ fun main() {
             roots: createEmptyMap(),
             config: cfg.toCell(),
             codeVersion: 0,
+            pendingCodeHash: 0,
+            pendingCodeAt: 0,
+            upgradeDelay: 0,
         };
         anchor = RecordAnchor.fromStorage(storage);
         anchor.deploy(deployer.address, { value: ton("0.1") }).waitForTrace();

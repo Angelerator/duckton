@@ -920,7 +920,10 @@ async fn oom_subset_reroutes_to_higher_capacity_and_succeeds() {
         .run_query("SELECT 1", QueryOverrides::default())
         .await
         .unwrap();
-    assert!(outcome.verified, "must succeed after re-routing past the OOMed nodes");
+    assert!(
+        outcome.verified,
+        "must succeed after re-routing past the OOMed nodes"
+    );
     assert!(
         outcome
             .participants

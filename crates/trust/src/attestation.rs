@@ -23,7 +23,11 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use p2p_proto::{Attestation, AttestationLevel};
 use serde::{Deserialize, Serialize};
 
-const DOMAIN: &[u8] = b"duckdb-p2p-attestation-v1";
+// v2 binds the claimed `level` into the signed evidence (v1 signed only
+// measurement+nonce+bound_pub, so a host could inflate the UNSIGNED level field
+// past what the authority attested). The domain bump prevents a v1 signature
+// from ever being reinterpreted as a v2 one.
+const DOMAIN: &[u8] = b"duckdb-p2p-attestation-v2";
 
 /// Errors from attestation verification.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -56,9 +60,20 @@ struct MockEvidence {
     sig_hex: String,
 }
 
-fn evidence_signing_bytes(measurement: &str, nonce: &[u8], bound_pub: &[u8; 32]) -> Vec<u8> {
+/// Canonical bytes the attestation authority signs. The claimed `level` is part
+/// of the preimage so it is cryptographically bound: a host cannot present
+/// authority-signed L1 evidence and then advertise `level = L2` (the signature
+/// would not verify over the inflated level). Length-prefixed fields keep the
+/// encoding unambiguous.
+fn evidence_signing_bytes(
+    level: AttestationLevel,
+    measurement: &str,
+    nonce: &[u8],
+    bound_pub: &[u8; 32],
+) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(DOMAIN);
+    buf.push(level as u8);
     buf.extend_from_slice(&(measurement.len() as u64).to_le_bytes());
     buf.extend_from_slice(measurement.as_bytes());
     buf.extend_from_slice(&(nonce.len() as u64).to_le_bytes());
@@ -120,9 +135,12 @@ impl Attestor for MockAttestor {
     }
 
     fn produce(&self, nonce: &[u8], bound_pub: &[u8; 32]) -> Attestation {
-        let sig = self
-            .authority
-            .sign(&evidence_signing_bytes(&self.measurement, nonce, bound_pub));
+        let sig = self.authority.sign(&evidence_signing_bytes(
+            self.level,
+            &self.measurement,
+            nonce,
+            bound_pub,
+        ));
         let evidence = MockEvidence {
             measurement: self.measurement.clone(),
             nonce_hex: hex::encode(nonce),
@@ -194,8 +212,11 @@ impl AttestationVerifier for AllowlistVerifier {
         let vk = VerifyingKey::from_bytes(&authority_pub).map_err(|_| AttestError::BadEvidence)?;
         let sig_bytes = hex::decode(&evidence.sig_hex).map_err(|_| AttestError::BadEvidence)?;
         let sig_arr: [u8; 64] = sig_bytes.try_into().map_err(|_| AttestError::BadEvidence)?;
+        // Verify over the CLAIMED `att.level`: the authority signed its real
+        // level, so an inflated level (e.g. L1 evidence advertised as L2) yields
+        // a signing preimage the signature does not cover and fails here.
         vk.verify_strict(
-            &evidence_signing_bytes(&evidence.measurement, nonce, bound_pub),
+            &evidence_signing_bytes(att.level, &evidence.measurement, nonce, bound_pub),
             &Signature::from_bytes(&sig_arr),
         )
         .map_err(|_| AttestError::BadEvidence)?;
@@ -285,6 +306,30 @@ mod tests {
         assert_eq!(
             v.verify(&att, &[1u8; 16], &[2u8; 32]),
             Err(AttestError::UntrustedAuthority)
+        );
+    }
+
+    #[test]
+    fn inflated_level_rejected() {
+        // A host holds VALID L1 evidence (allowlisted measurement, fresh nonce,
+        // trusted authority) but advertises level = L2 to clear an L2 gate. The
+        // level is part of the signed preimage, so verification must fail.
+        let authority = SigningKey::generate(&mut OsRng);
+        let authority_pub = authority.verifying_key().to_bytes();
+        let attestor = MockAttestor::new(authority, "duckdb-enclave-v1", AttestationLevel::L1);
+        let nonce = [3u8; 16];
+        let bound = [4u8; 32];
+        let mut att = attestor.produce(&nonce, &bound);
+        // Tamper: claim a higher tier than the authority signed.
+        att.level = AttestationLevel::L2;
+        let v = AllowlistVerifier::new(
+            authority_pub,
+            ["duckdb-enclave-v1".to_string()],
+            AttestationLevel::L2,
+        );
+        assert_eq!(
+            v.verify(&att, &nonce, &bound),
+            Err(AttestError::BadEvidence)
         );
     }
 

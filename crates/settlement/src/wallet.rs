@@ -380,12 +380,10 @@ pub fn verify_sig(public_key: &[u8; 32], msg: &[u8], sig: &[u8; 64]) -> bool {
 mod tests {
     use super::*;
 
-    /// The repo's own `deployer` wallet (global.wallets.toml) — a v5r1 wallet with
-    /// a published testnet address. Re-deriving it end-to-end (mnemonic → key →
-    /// data cell → StateInit → address) cross-checks the whole pipeline offline.
-    const DEPLOYER_MNEMONIC: &str = "bunker hurry expose soon champion mix mango involve inmate nature funny spirit cute play frost cigar retreat spin front rigid mixed measure ice swamp";
-    const DEPLOYER_TESTNET_RAW: &str =
-        "0:8fed4a847cdc2969a3460cfdcc8a13cf05bf98779658734114f956d77268e983";
+    /// A deterministic, NON-SECRET seed for tests that only need *some* valid
+    /// wallet key (signing / BoC round-trip). Never a real wallet seed — those
+    /// must never be committed (see `.gitignore`: `*.mnemonic`, `*.wallets.toml`).
+    const TEST_SEED: [u8; 32] = [0x42; 32];
 
     #[test]
     fn wallet_id_matches_ton_reference() {
@@ -405,22 +403,33 @@ mod tests {
         );
     }
 
+    /// Cross-check the full mnemonic → key → data cell → StateInit → address
+    /// pipeline against a real wallet WITHOUT committing any seed: the mnemonic
+    /// and its expected addresses are supplied out-of-band via env vars (e.g. a
+    /// CI secret). Skipped when unset so the suite never depends on a secret.
     #[test]
-    fn deployer_mnemonic_rederives_published_testnet_address() {
-        let key = WalletKey::from_mnemonic(DEPLOYER_MNEMONIC).unwrap();
+    fn mnemonic_rederives_published_testnet_address() {
+        let (Ok(mnemonic), Ok(raw), Ok(friendly)) = (
+            std::env::var("P2P_TEST_DEPLOYER_MNEMONIC"),
+            std::env::var("P2P_TEST_DEPLOYER_RAW"),
+            std::env::var("P2P_TEST_DEPLOYER_FRIENDLY"),
+        ) else {
+            eprintln!(
+                "skipping mnemonic_rederives_published_testnet_address: set \
+                 P2P_TEST_DEPLOYER_{{MNEMONIC,RAW,FRIENDLY}} to run"
+            );
+            return;
+        };
+        let key = WalletKey::from_mnemonic(&mnemonic).unwrap();
         let wallet = WalletV5R1::testnet(key.public_key());
         let addr = wallet.address();
-        assert_eq!(addr.to_raw_string(), DEPLOYER_TESTNET_RAW);
-        // And the base64 form in global.wallets.toml must match too.
-        let friendly =
-            WalletAddress::from_base64_str("kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422")
-                .unwrap();
-        assert_eq!(addr, friendly);
+        assert_eq!(addr.to_raw_string(), raw);
+        assert_eq!(addr, WalletAddress::from_base64_str(&friendly).unwrap());
     }
 
     #[test]
     fn signed_external_message_signature_verifies_and_boc_round_trips() {
-        let key = WalletKey::from_mnemonic(DEPLOYER_MNEMONIC).unwrap();
+        let key = WalletKey::from_seed(&TEST_SEED);
         let wallet = WalletV5R1::testnet(key.public_key());
 
         let body = CellBuilder::new().store_uint(0xdead_beef, 32).build();

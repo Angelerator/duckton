@@ -218,8 +218,14 @@ mod tests {
 
     #[test]
     fn fingerprint_is_order_independent() {
-        let a = vec![obj("s3://b/2.parquet", s3("v2")), obj("s3://b/1.parquet", s3("v1"))];
-        let b = vec![obj("s3://b/1.parquet", s3("v1")), obj("s3://b/2.parquet", s3("v2"))];
+        let a = vec![
+            obj("s3://b/2.parquet", s3("v2")),
+            obj("s3://b/1.parquet", s3("v1")),
+        ];
+        let b = vec![
+            obj("s3://b/1.parquet", s3("v1")),
+            obj("s3://b/2.parquet", s3("v2")),
+        ];
         assert_eq!(compute_fingerprint(&a), compute_fingerprint(&b));
     }
 
@@ -233,7 +239,10 @@ mod tests {
     #[test]
     fn fingerprint_changes_when_an_object_is_added() {
         let one = vec![obj("s3://b/1.parquet", s3("v1"))];
-        let two = vec![obj("s3://b/1.parquet", s3("v1")), obj("s3://b/2.parquet", s3("v2"))];
+        let two = vec![
+            obj("s3://b/1.parquet", s3("v1")),
+            obj("s3://b/2.parquet", s3("v2")),
+        ];
         assert_ne!(compute_fingerprint(&one), compute_fingerprint(&two));
     }
 
@@ -250,7 +259,14 @@ mod tests {
 
     #[test]
     fn distinct_version_variants_do_not_collide() {
-        let s3o = vec![obj("u", ObjectVersion::S3 { version_id: None, etag: None, size: 0 })];
+        let s3o = vec![obj(
+            "u",
+            ObjectVersion::S3 {
+                version_id: None,
+                etag: None,
+                size: 0,
+            },
+        )];
         let gcs = vec![obj("u", ObjectVersion::Gcs { generation: None })];
         assert_ne!(compute_fingerprint(&s3o), compute_fingerprint(&gcs));
     }
@@ -263,6 +279,9 @@ mod tests {
             size: 1,
         };
         assert!(!v.is_concrete());
-        assert!(ObjectVersion::ContentAddressed { sha256: "ab".into() }.is_concrete());
+        assert!(ObjectVersion::ContentAddressed {
+            sha256: "ab".into()
+        }
+        .is_concrete());
     }
 }

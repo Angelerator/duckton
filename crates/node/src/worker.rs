@@ -2,7 +2,8 @@
 //! budget lease, commits a result hash first, then streams the result only if it
 //! wins (architecture §3, §10, §11).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -25,6 +26,23 @@ use p2p_proto::ResultSet;
 /// Decode a hex ed25519 pubkey into 32 bytes (`None` on malformed input).
 fn decode_pubkey(hex_s: &str) -> Option<[u8; 32]> {
     hex::decode(hex_s).ok()?.try_into().ok()
+}
+
+/// How long an accepting [`Bid`] authorizes a subsequent [`Dispatch`] for that
+/// job from the SAME requester (C1). The honest offer→bid→dispatch round-trip is
+/// sub-second to a few seconds even across re-dispatch attempts (each attempt
+/// re-broadcasts an Offer to its fresh candidate set), so a generous window
+/// absorbs scheduler backoff while still bounding how long a one-shot
+/// authorization lives.
+const DISPATCH_AUTH_TTL: Duration = Duration::from_secs(300);
+
+/// A one-job dispatch authorization minted when this host bids ACCEPT on an
+/// Offer (C1). It records WHICH authenticated peer the host agreed to serve and
+/// WHEN the authorization expires, so a later `Dispatch` can be bound back to a
+/// fully gated Offer instead of executing unconditionally.
+struct DispatchAuth {
+    requester: p2p_proto::NodeId,
+    expires_at: Instant,
 }
 
 /// What a worker actually read for a job's pinned inputs (deterministic-input
@@ -120,8 +138,7 @@ impl SpillDirGuard {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+                    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
                 }
                 Self {
                     path,
@@ -360,6 +377,15 @@ pub struct Worker {
     /// serve a remote-access job unconfined, rather than crashing or silently
     /// allowing open egress. `None` (default) ⇒ serve normally.
     serving_block: Option<Arc<str>>,
+    /// Per-job dispatch authorizations (C1). An entry is minted only when this
+    /// host bids ACCEPT on an Offer (i.e. it passed EVERY Offer-phase gate:
+    /// serving-block fail-safe, membership/roster/group/region, anti-abuse,
+    /// data-class), keyed by job id → (authenticated requester, expiry). A
+    /// `Dispatch` is honored only if it matches a live authorization for the
+    /// SAME peer — so a peer can never skip the bid handshake and execute SQL by
+    /// sending a bare `Dispatch`. Shared across per-connection `Worker` clones
+    /// via the `Arc`.
+    authorized: Arc<Mutex<HashMap<String, DispatchAuth>>>,
 }
 
 impl Worker {
@@ -383,6 +409,7 @@ impl Worker {
             attest_bound_pub: [0u8; 32],
             input_reader: Arc::new(EchoInputReader),
             serving_block: None,
+            authorized: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -572,13 +599,22 @@ impl Worker {
 
     /// Build a rejecting bid with a given reason (no admission, no receipt).
     fn reject_bid(&self, offer: &Offer, reason: impl Into<String>) -> Bid {
+        let reason = reason.into();
+        // Single chokepoint for every offer decline — log WHY at debug so an
+        // operator can diagnose "my host isn't getting jobs" (standby, blocklist,
+        // wrong group/region/network, over-budget, data class not served, etc.)
+        // without enabling wire tracing. No secrets are logged (ids + reason only).
+        debug!(
+            job = %offer.job_id,
+            requester = %offer.requester_id,
+            data_class = ?offer.data_class,
+            "declining offer: {reason}"
+        );
         let free = self.admission.free();
         Bid {
             job_id: offer.job_id.clone(),
             worker_id: self.transport.local_node_id().clone(),
-            decision: BidDecision::Reject {
-                reason: reason.into(),
-            },
+            decision: BidDecision::Reject { reason },
             eta_ms: 0,
             price: 0,
             attestation: self.attestation.clone(),
@@ -609,7 +645,11 @@ impl Worker {
         const AVG_ROW_BYTES: u64 = 256;
         let bytes = offer
             .cost_hint_bytes
-            .or_else(|| offer.cost_hint_rows.map(|r| r.saturating_mul(AVG_ROW_BYTES)))
+            .or_else(|| {
+                offer
+                    .cost_hint_rows
+                    .map(|r| r.saturating_mul(AVG_ROW_BYTES))
+            })
             .unwrap_or(0);
         // Cold-start: a conservative measured-throughput assumption (a real host
         // would refine this from its self-capability profile). ceil(bytes/tput),
@@ -619,7 +659,12 @@ impl Worker {
         let cap_seconds = estimated_seconds
             .saturating_mul(p.cap_multiplier.max(1))
             .max(1);
-        (rate_per_second, p.rate_per_gb, estimated_seconds, cap_seconds)
+        (
+            rate_per_second,
+            p.rate_per_gb,
+            estimated_seconds,
+            cap_seconds,
+        )
     }
 
     /// Pre-admission anti-abuse gates (ARCHITECTURE "Abuse resistance"): refuse a
@@ -704,7 +749,49 @@ impl Worker {
                 "offer requester_id does not match the authenticated mTLS peer",
             );
         }
-        self.make_bid(offer)
+        let bid = self.make_bid(offer);
+        // C1: minting a dispatch authorization ONLY on an accepting bid binds a
+        // future `Dispatch` back to an Offer that cleared every admission gate,
+        // for this exact authenticated peer. A rejected offer mints nothing, so
+        // a bare `Dispatch` (no prior accepting bid) is refused in
+        // `handle_dispatch`.
+        if matches!(bid.decision, BidDecision::Accept) {
+            self.authorize_dispatch(&offer.job_id, peer);
+            debug!(
+                job = %offer.job_id,
+                requester = %peer,
+                eta_ms = bid.eta_ms,
+                "accepted offer; minted dispatch authorization"
+            );
+        }
+        bid
+    }
+
+    /// Record that this host agreed (via an accepting [`Bid`]) to serve `job_id`
+    /// for `requester` (C1). Expired authorizations are swept on every insert so
+    /// the ledger stays bounded by the offers accepted within [`DISPATCH_AUTH_TTL`].
+    fn authorize_dispatch(&self, job_id: &p2p_proto::JobId, requester: &p2p_proto::NodeId) {
+        let now = Instant::now();
+        let mut map = self.authorized.lock().unwrap();
+        map.retain(|_, a| a.expires_at > now);
+        map.insert(
+            job_id.0.clone(),
+            DispatchAuth {
+                requester: requester.clone(),
+                expires_at: now + DISPATCH_AUTH_TTL,
+            },
+        );
+    }
+
+    /// C1 gate: is there a live dispatch authorization for `job_id` belonging to
+    /// `peer`? True only if this host bid ACCEPT on the matching Offer from the
+    /// SAME authenticated peer within [`DISPATCH_AUTH_TTL`]. Expired entries are
+    /// swept here too.
+    fn dispatch_authorized(&self, job_id: &p2p_proto::JobId, peer: &p2p_proto::NodeId) -> bool {
+        let now = Instant::now();
+        let mut map = self.authorized.lock().unwrap();
+        map.retain(|_, a| a.expires_at > now);
+        map.get(&job_id.0).is_some_and(|a| &a.requester == peer)
     }
 
     /// Request-scoping admission gate (architecture §7.5): reject an offer this
@@ -772,9 +859,7 @@ impl Worker {
                 p2p_config::GroupEnforcement::Token => self.token_proves_group(offer),
             };
             if !shares {
-                return Some(
-                    self.reject_bid(offer, "requester shares none of the host's groups"),
-                );
+                return Some(self.reject_bid(offer, "requester shares none of the host's groups"));
             }
         }
         // 4. Region pin: only hosts in a requested region qualify; a host with no
@@ -944,7 +1029,11 @@ impl Worker {
         start: Instant,
         cap_deadline: Option<Duration>,
     ) -> ExecOutcome {
-        let exec = self.engine.execute_job(
+        // Cancellation token: notified on every ABORT path below (loser reset,
+        // metered cap, host deadline) so the engine interrupts a long/abandoned
+        // query instead of leaving a blocking thread to run it to completion (H7).
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let exec = self.engine.execute_job_cancellable(
             &dispatch.sql,
             ExecLease {
                 memory_bytes: mem,
@@ -952,6 +1041,7 @@ impl Worker {
                 max_spill_bytes: spill_cap,
             },
             ctx,
+            cancel.clone(),
         );
         tokio::pin!(exec);
 
@@ -1012,13 +1102,33 @@ impl Worker {
                 // Coordinator cancelled / reset the dispatch stream while we were
                 // still computing: abandon immediately (loser of the hedged race).
                 _ = &mut cancel_watch => {
-                    debug!(job = %dispatch.job_id, "dispatch cancelled mid-execution; aborting job");
+                    debug!(
+                        job = %dispatch.job_id,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "dispatch cancelled mid-execution (lost the hedged race / stream reset); \
+                         interrupting the engine and aborting job"
+                    );
+                    cancel.notify_one();
                     return ExecOutcome::Cancelled;
                 }
                 _ = cap_timeout, if cap_deadline.is_some() => {
+                    warn!(
+                        job = %dispatch.job_id,
+                        cap_ms = cap_deadline.map(|d| d.as_millis() as u64).unwrap_or(0),
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "metered cap deadline exceeded; interrupting the engine and aborting job"
+                    );
+                    cancel.notify_one();
                     return ExecOutcome::CapExceeded;
                 }
                 _ = timeout, if !deadline.is_zero() => {
+                    warn!(
+                        job = %dispatch.job_id,
+                        timeout_ms = deadline.as_millis() as u64,
+                        elapsed_ms = start.elapsed().as_millis() as u64,
+                        "host job_timeout exceeded; interrupting the engine and abandoning job"
+                    );
+                    cancel.notify_one();
                     return ExecOutcome::Abandoned;
                 }
                 _ = async { ticker.as_mut().unwrap().tick().await }, if ticker.is_some() => {
@@ -1064,6 +1174,40 @@ impl Worker {
         mut recv: RecvStream,
     ) -> p2p_transport::Result<()> {
         let worker_id = self.transport.local_node_id().clone();
+
+        // C1 — admission re-binding. Every Offer-phase gate (serving-block
+        // fail-safe, membership/roster/group/region, anti-abuse, data-class) runs
+        // in `make_bid`, NOT here. Honor a `Dispatch` only when it matches a live
+        // authorization minted by an accepting `Bid` from this SAME authenticated
+        // peer; otherwise a peer could skip the bid handshake and execute SQL
+        // unconditionally — bypassing the remote-access SSRF fail-safe, private
+        // roster, group/region scoping, and rate limits. A bare/forged/foreign
+        // dispatch is declined cleanly (no execution, no receipt, no score).
+        if !self.dispatch_authorized(&dispatch.job_id, conn.peer_node_id()) {
+            // Security-relevant: surface at WARN — an unauthorized dispatch means
+            // either a benign race (authorization expired) or a peer trying to skip
+            // the bid handshake. Logged with the job + peer so it is attributable.
+            warn!(
+                job = %dispatch.job_id,
+                peer = %conn.peer_node_id(),
+                "rejecting unauthorized dispatch: no live accepting-bid authorization \
+                 from this peer for this job (expired window, or a peer bypassing the \
+                 Offer/Bid handshake)"
+            );
+            write_msg(
+                &mut send,
+                &Wire::Ack(Ack {
+                    job_id: dispatch.job_id,
+                    ok: false,
+                    detail: "dispatch not authorized: no accepting bid from this peer for this job"
+                        .into(),
+                }),
+            )
+            .await?;
+            let _ = send.finish();
+            return Ok(());
+        }
+
         // The per-job memory the worker RESERVES against its donated budget (what
         // the planner admitted it for). `0` ⇒ the worker's own per-job default.
         let admit_mem = if dispatch.memory_limit_bytes == 0 {
@@ -1209,7 +1353,15 @@ impl Worker {
             .map(Duration::from_millis);
         let exec = self
             .execute_with_progress(
-                &dispatch, mem, threads, spill_cap, &ctx, &mut send, &mut recv, &worker_id, start,
+                &dispatch,
+                mem,
+                threads,
+                spill_cap,
+                &ctx,
+                &mut send,
+                &mut recv,
+                &worker_id,
+                start,
                 cap_deadline,
             )
             .await;
@@ -1250,6 +1402,15 @@ impl Worker {
                 return Ok(());
             }
             ExecOutcome::Err(e) => {
+                // The query failed on this host (rejected by lockdown, exceeded the
+                // result cap, or a genuine engine error). Log host-side so an
+                // operator can see WHY a host keeps faulting — the requester only
+                // gets the short `exec error` detail.
+                warn!(
+                    job = %dispatch.job_id,
+                    elapsed_ms = start.elapsed().as_millis() as u64,
+                    "job execution failed: {e}"
+                );
                 write_msg(
                     &mut send,
                     &Wire::Ack(Ack {
@@ -1263,6 +1424,12 @@ impl Worker {
                 return Ok(());
             }
         };
+        debug!(
+            job = %dispatch.job_id,
+            rows = result.row_count(),
+            elapsed_ms = start.elapsed().as_millis() as u64,
+            "job executed successfully; committing result hash"
+        );
 
         let result_hash = canonical_hash(&result);
         let latency_ms = start.elapsed().as_millis() as u64;
@@ -1325,7 +1492,7 @@ mod tests {
         assert_eq!(effective_spill_cap(0, 0), 0); // both unbounded → unbounded
         assert_eq!(effective_spill_cap(0, 4096), 4096); // host cap only
         assert_eq!(effective_spill_cap(4096, 0), 4096); // requester cap only
-        // Both set → the smaller (tighter) wins so the host is always protected.
+                                                        // Both set → the smaller (tighter) wins so the host is always protected.
         assert_eq!(effective_spill_cap(4096, 8192), 4096);
         assert_eq!(effective_spill_cap(8192, 4096), 4096);
     }
@@ -1359,6 +1526,9 @@ mod tests {
                 assert_eq!(mode, 0o700, "spill dir must be private (0700)");
             }
         }
-        assert!(!path.exists(), "spill dir must be removed when the guard drops");
+        assert!(
+            !path.exists(),
+            "spill dir must be removed when the guard drops"
+        );
     }
 }

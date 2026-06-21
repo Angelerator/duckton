@@ -108,7 +108,10 @@ pub fn parse_input_sources(sql: &str) -> SqlSources {
     let lower = sql.to_ascii_lowercase();
     let literals = string_literals(sql);
     // Lowercased literal values aligned with `literals` (for scheme/ext checks).
-    let lower_vals: Vec<String> = literals.iter().map(|l| l.value.to_ascii_lowercase()).collect();
+    let lower_vals: Vec<String> = literals
+        .iter()
+        .map(|l| l.value.to_ascii_lowercase())
+        .collect();
 
     let mut sources: Vec<SqlSource> = Vec::new();
     let mut dynamic = false;
@@ -116,7 +119,10 @@ pub fn parse_input_sources(sql: &str) -> SqlSources {
 
     // 1. Lakehouse readers: delta_scan(...) / iceberg_scan(...). The first
     //    string-literal argument is the table location; a non-literal ⇒ dynamic.
-    for (fname, kind) in [("delta_scan", SourceKind::Delta), ("iceberg_scan", SourceKind::Iceberg)] {
+    for (fname, kind) in [
+        ("delta_scan", SourceKind::Delta),
+        ("iceberg_scan", SourceKind::Iceberg),
+    ] {
         for call in fn_call_offsets(&lower, fname) {
             match first_literal_after(&literals, call) {
                 Some(i) => {
@@ -142,7 +148,11 @@ pub fn parse_input_sources(sql: &str) -> SqlSources {
                         let v = &literals[i].value;
                         sources.push(SqlSource {
                             uri: v.clone(),
-                            kind: if is_glob(v) { SourceKind::Glob } else { SourceKind::Object },
+                            kind: if is_glob(v) {
+                                SourceKind::Glob
+                            } else {
+                                SourceKind::Object
+                            },
                         });
                     }
                 }
@@ -160,7 +170,11 @@ pub fn parse_input_sources(sql: &str) -> SqlSources {
         if looks_like_object_uri(&lower_vals[i]) {
             sources.push(SqlSource {
                 uri: lit.value.clone(),
-                kind: if is_glob(&lit.value) { SourceKind::Glob } else { SourceKind::Object },
+                kind: if is_glob(&lit.value) {
+                    SourceKind::Glob
+                } else {
+                    SourceKind::Object
+                },
             });
         }
     }
@@ -224,7 +238,8 @@ fn fn_call_offsets(lower: &str, name: &str) -> Vec<usize> {
         let idx = from + rel;
         // Word boundary before the name (not part of a longer identifier).
         let prev_ok = idx == 0
-            || !lower.as_bytes()[idx - 1].is_ascii_alphanumeric() && lower.as_bytes()[idx - 1] != b'_';
+            || !lower.as_bytes()[idx - 1].is_ascii_alphanumeric()
+                && lower.as_bytes()[idx - 1] != b'_';
         let after = idx + name.len();
         let mut j = after;
         while j < lower.len() && lower.as_bytes()[j] == b' ' {
@@ -261,11 +276,17 @@ fn is_glob(s: &str) -> bool {
 /// Whether a (lowercased) literal looks like an external data object/URI worth
 /// pinning: has a remote scheme, or a known data-file extension.
 fn looks_like_object_uri(lower: &str) -> bool {
-    const SCHEMES: &[&str] = &["s3://", "gs://", "gcs://", "az://", "abfss://", "azure://", "https://", "http://", "file://"];
+    const SCHEMES: &[&str] = &[
+        "s3://", "gs://", "gcs://", "az://", "abfss://", "azure://", "https://", "http://",
+        "file://",
+    ];
     const EXTS: &[&str] = &[".parquet", ".csv", ".json", ".ndjson", ".tsv"];
     SCHEMES.iter().any(|s| lower.starts_with(s))
         || EXTS.iter().any(|e| lower.ends_with(e))
-        || (is_glob(lower) && EXTS.iter().any(|e| lower.contains(e.trim_start_matches('.'))))
+        || (is_glob(lower)
+            && EXTS
+                .iter()
+                .any(|e| lower.contains(e.trim_start_matches('.'))))
 }
 
 /// The provider id for a URI scheme (matches the storage `ProviderRegistry` ids).
@@ -275,7 +296,10 @@ pub fn provider_for_uri(uri: &str) -> &'static str {
         "s3"
     } else if lower.starts_with("gs://") || lower.starts_with("gcs://") {
         "gcs"
-    } else if lower.starts_with("az://") || lower.starts_with("abfss://") || lower.starts_with("azure://") {
+    } else if lower.starts_with("az://")
+        || lower.starts_with("abfss://")
+        || lower.starts_with("azure://")
+    {
         "az"
     } else if lower.starts_with("http://") || lower.starts_with("https://") {
         "https"
@@ -630,7 +654,10 @@ mod tests {
         let r = ManifestResolver::new();
         let snap = r.resolve(&sql).await.unwrap().unwrap();
         match &snap.objects[0].version {
-            ObjectVersion::Lakehouse { format, snapshot_id } => {
+            ObjectVersion::Lakehouse {
+                format,
+                snapshot_id,
+            } => {
                 assert_eq!(format, "delta");
                 assert_eq!(snapshot_id, "1", "latest commit version is pinned");
             }

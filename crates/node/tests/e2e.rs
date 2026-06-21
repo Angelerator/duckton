@@ -669,7 +669,10 @@ async fn input_drift_minority_is_not_penalized_and_redispatches() {
     // the drifter on a different fingerprint → benign re-dispatch; the retry sees
     // it honor the pin → the job completes.
     let outcome = coord
-        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .run_query(
+            "SELECT * FROM read_parquet('s3://bucket/events/data.parquet')",
+            Default::default(),
+        )
         .await
         .expect("benign input drift must re-dispatch and then succeed");
 
@@ -685,7 +688,10 @@ async fn input_drift_minority_is_not_penalized_and_redispatches() {
     assert_eq!(st.penalty(&honest2.node_id), 0.0);
     // No participant carries an Incorrect verdict in the winning attempt.
     assert!(
-        outcome.receipts.iter().all(|r| r.verdict != Verdict::Incorrect),
+        outcome
+            .receipts
+            .iter()
+            .all(|r| r.verdict != Verdict::Incorrect),
         "drift must never produce an Incorrect verdict"
     );
     // The verified answer is bound to the pinned input fingerprint.
@@ -722,12 +728,18 @@ async fn cheater_on_same_inputs_is_still_penalized_when_pinned() {
     .await;
 
     let outcome = coord
-        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .run_query(
+            "SELECT * FROM read_parquet('s3://bucket/events/data.parquet')",
+            Default::default(),
+        )
         .await
         .unwrap();
 
     assert!(outcome.verified);
-    assert_eq!(outcome.agreement, 2, "two honest workers agree on pinned inputs");
+    assert_eq!(
+        outcome.agreement, 2,
+        "two honest workers agree on pinned inputs"
+    );
     let cheater_receipt = outcome
         .receipts
         .iter()
@@ -778,7 +790,10 @@ async fn unfetchable_pinned_input_is_infeasible_without_penalty() {
     .await;
 
     let err = coord
-        .run_query("SELECT * FROM read_parquet('s3://bucket/events/data.parquet')", Default::default())
+        .run_query(
+            "SELECT * FROM read_parquet('s3://bucket/events/data.parquet')",
+            Default::default(),
+        )
         .await
         .unwrap_err();
     assert!(
@@ -808,7 +823,10 @@ async fn unpinned_jobs_are_unchanged_and_back_compatible() {
     // serde-default empty fingerprint.
     let coord = make_coordinator(&[&honest1, &honest2, &cheater], cfg, st.clone()).await;
 
-    let outcome = coord.run_query("SELECT 7", Default::default()).await.unwrap();
+    let outcome = coord
+        .run_query("SELECT 7", Default::default())
+        .await
+        .unwrap();
     assert!(outcome.verified);
     let cheater_receipt = outcome
         .receipts
@@ -818,7 +836,10 @@ async fn unpinned_jobs_are_unchanged_and_back_compatible() {
     assert_eq!(cheater_receipt.verdict, Verdict::Incorrect);
     assert!(st.penalty(&cheater.node_id) > 0.0);
     // The empty (unknown) fingerprint is carried through receipts without issue.
-    assert!(outcome.receipts.iter().all(|r| r.input_fingerprint.is_empty()));
+    assert!(outcome
+        .receipts
+        .iter()
+        .all(|r| r.input_fingerprint.is_empty()));
 }
 
 // ---------------------------------------------------------------------------
@@ -851,7 +872,10 @@ async fn observed_input_bytes_populated_from_estimate_and_feeds_perf() {
         .run_query_planned("SELECT 1", QueryOverrides::default(), Some(estimate))
         .await
         .unwrap();
-    assert!(!outcome.executed_locally, "no local exec wired ⇒ grid dispatch");
+    assert!(
+        !outcome.executed_locally,
+        "no local exec wired ⇒ grid dispatch"
+    );
 
     let winner = outcome.winner.clone().expect("a winner");
     // The winner's Correct receipt carries the ESTIMATED scanned bytes, not 0.
@@ -863,7 +887,9 @@ async fn observed_input_bytes_populated_from_estimate_and_feeds_perf() {
     assert_eq!(wr.observed_input_bytes, 4_000_000);
 
     // It folded into the rolling perf aggregate on the Correct receipt.
-    let perf = st.perf_aggregate(&winner).expect("perf recorded on Correct");
+    let perf = st
+        .perf_aggregate(&winner)
+        .expect("perf recorded on Correct");
     assert_eq!(perf.obs_count, 1);
     assert!((perf.ewma_bytes - 4_000_000.0).abs() < 1e-6);
 

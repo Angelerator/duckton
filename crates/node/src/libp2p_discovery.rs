@@ -843,7 +843,10 @@ impl SwarmDriver {
                     )
                 };
                 if outcome != AdOutcome::Accepted {
-                    debug!("rejected gossiped message on {:?}: {outcome:?}", message.topic);
+                    debug!(
+                        "rejected gossiped message on {:?}: {outcome:?}",
+                        message.topic
+                    );
                 }
             }
             SwarmEvent::Behaviour(DiscoveryBehaviourEvent::Identify(

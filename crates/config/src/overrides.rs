@@ -58,6 +58,13 @@ pub struct QueryOverrides {
     /// non-empty list raises the attestation floor under `region_trust = attested`
     /// (Phase 4). Empty ⇒ no region constraint.
     pub regions: Vec<String>,
+    /// Per-call **target node(s)** (`nodes => ['b3:...']`): restrict the job to
+    /// these EXACT node ids — the coordinator only offers to and dispatches to
+    /// candidates whose known id is in this set (fail-closed: a candidate with no
+    /// known id can never be a target). Combine with `replicas => 1, quorum => 1`
+    /// to send the whole job to one specific node, or `prefer => 'local'` to run
+    /// it on the requester itself. Empty ⇒ no node constraint (normal routing).
+    pub nodes: Vec<String>,
 }
 
 /// Rank of an attestation tier string for floor comparison (`L0 < L1 < L2`).
@@ -387,7 +394,10 @@ mod tests {
         .apply(&GridConfig::default())
         .unwrap();
         assert!(!eff.worker.enabled);
-        assert_eq!(eff.membership.networks, vec!["eu".to_string(), "default".to_string()]);
+        assert_eq!(
+            eff.membership.networks,
+            vec!["eu".to_string(), "default".to_string()]
+        );
         assert_eq!(eff.membership.groups, vec!["finance".to_string()]);
         assert_eq!(eff.membership.region.as_deref(), Some("eu"));
 

@@ -352,6 +352,7 @@ impl ConfigStore {
                 }
                 // Prefer file references; never persist a raw secret in the file.
                 if let Some(v) = get("mnemonic_file") {
+                    validate_secret_file_path("mnemonic_file", v)?;
                     out.push((
                         format!("economics.{net}.wallet.mnemonic_file"),
                         Value::String(v.into()),
@@ -364,6 +365,7 @@ impl ConfigStore {
                     ));
                 }
                 if let Some(v) = get("api_key_file") {
+                    validate_secret_file_path("api_key_file", v)?;
                     out.push((
                         format!("economics.{net}.api_key_file"),
                         Value::String(v.into()),
@@ -725,8 +727,7 @@ fn walk(prefix: &str, v: &Value, rows: &mut Vec<SettingRow>) {
 /// has a non-default (active) value or isn't one of the annotated gates.
 fn inert_note(key: &str, leaf: &Value) -> Option<&'static str> {
     let is_false = matches!(leaf, Value::Boolean(false));
-    let is_zero =
-        matches!(leaf, Value::Integer(0)) || matches!(leaf, Value::Float(f) if *f == 0.0);
+    let is_zero = matches!(leaf, Value::Integer(0)) || matches!(leaf, Value::Float(f) if *f == 0.0);
     match key {
         "economics.enabled" if is_false => Some(" (active: no — free / no-chain grid)"),
         "scheduler.require_staked_hosts" if is_false => Some(" (active: no)"),
@@ -824,12 +825,56 @@ fn pick_config_dir(
     None
 }
 
+/// Validate a secret-file path supplied through the runtime settings surface
+/// (e.g. `CALL p2p_wallet(mnemonic_file => '…')`). Reject relative paths and any
+/// `..` traversal component so an untrusted SQL session cannot point the node at
+/// a path computed relative to its CWD or escape upward. An absolute, traversal-
+/// free path is required; the operator remains responsible for the file's
+/// contents and permissions (the node reads it as its OWN wallet secret).
+fn validate_secret_file_path(field: &str, value: &str) -> Result<(), StoreError> {
+    let path = Path::new(value);
+    if !path.is_absolute() {
+        return Err(StoreError::BadParam(format!(
+            "{field} must be an absolute path (got '{value}')"
+        )));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(StoreError::BadParam(format!(
+            "{field} must not contain '..' path traversal (got '{value}')"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) {
     use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let mode = if meta.is_dir() { 0o700 } else { 0o600 };
-        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mode = if meta.is_dir() { 0o700 } else { 0o600 };
+            // Fail LOUDLY (not silently): if we cannot lock a secret/config file
+            // down to owner-only, the operator must know — a world/group-readable
+            // mnemonic or API key is a real exposure, and silently swallowing the
+            // error (the old `let _ =`) hid it on filesystems that reject chmod.
+            if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+                eprintln!(
+                    "warning: failed to restrict permissions on {} to {mode:o} ({e}); the file \
+                     may be readable by other users — secure it manually or use a filesystem \
+                     that supports Unix permissions",
+                    path.display()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not stat {} to restrict its permissions ({e}); ensure secrets \
+                 are owner-only",
+                path.display()
+            );
+        }
     }
 }
 
@@ -859,7 +904,7 @@ pub fn restrict_path_to_owner(path: &Path) {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
         use windows_sys::Win32::Security::Authorization::{
-            SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SE_FILE_OBJECT, SET_ACCESS,
+            SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, SET_ACCESS, SE_FILE_OBJECT,
             TRUSTEE_IS_SID, TRUSTEE_IS_USER, TRUSTEE_W,
         };
         use windows_sys::Win32::Security::{
@@ -955,17 +1000,35 @@ mod tests {
     fn config_dir_precedence_is_platform_aware() {
         // P2P_CONFIG_DIR wins outright on both platforms.
         assert_eq!(
-            pick_config_dir(Some("/explicit"), Some("/xdg"), Some("C:\\AppData"), Some("/home/u"), true),
+            pick_config_dir(
+                Some("/explicit"),
+                Some("/xdg"),
+                Some("C:\\AppData"),
+                Some("/home/u"),
+                true
+            ),
             Some(PathBuf::from("/explicit")),
         );
         // XDG_CONFIG_HOME is next on both platforms.
         assert_eq!(
-            pick_config_dir(None, Some("/xdg"), Some("C:\\AppData"), Some("/home/u"), false),
+            pick_config_dir(
+                None,
+                Some("/xdg"),
+                Some("C:\\AppData"),
+                Some("/home/u"),
+                false
+            ),
             Some(PathBuf::from("/xdg").join("duckdb-p2p")),
         );
         // Windows prefers %APPDATA% ahead of a (Git-Bash/MSYS) HOME.
         assert_eq!(
-            pick_config_dir(None, None, Some("C:\\Users\\me\\AppData\\Roaming"), Some("C:\\Users\\me"), true),
+            pick_config_dir(
+                None,
+                None,
+                Some("C:\\Users\\me\\AppData\\Roaming"),
+                Some("C:\\Users\\me"),
+                true
+            ),
             Some(PathBuf::from("C:\\Users\\me\\AppData\\Roaming").join("duckdb-p2p")),
         );
         // Unix ordering is UNCHANGED: HOME/.config wins, %APPDATA% ignored.

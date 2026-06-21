@@ -257,18 +257,23 @@ fn extension_p2p_query_meta_surfaces_outcome_metadata() {
     let (ok, stdout, stderr) =
         run("SELECT value FROM p2p_query_meta('SELECT 42 AS x') WHERE key='executed_locally';");
     assert!(ok, "p2p_query_meta failed: {stderr}");
-    assert_eq!(stdout, "true", "local query must report executed_locally=true");
+    assert_eq!(
+        stdout, "true",
+        "local query must report executed_locally=true"
+    );
 
     let (ok, stdout, _e) =
         run("SELECT value FROM p2p_query_meta('SELECT 42 AS x') WHERE key='verified';");
     assert!(ok);
     assert_eq!(stdout, "true", "own-machine local result is verified");
 
-    let (ok, stdout, _e) = run(
-        "SELECT value FROM p2p_query_meta('SELECT * FROM range(3)') WHERE key='result_rows';",
-    );
+    let (ok, stdout, _e) =
+        run("SELECT value FROM p2p_query_meta('SELECT * FROM range(3)') WHERE key='result_rows';");
     assert!(ok);
-    assert_eq!(stdout, "3", "metadata must report the real result row count");
+    assert_eq!(
+        stdout, "3",
+        "metadata must report the real result row count"
+    );
 
     // p2p_query (the row surface) is unchanged: still returns only the rows.
     let (ok, stdout, _e) = run("FROM p2p_query('SELECT 42 AS x');");
@@ -325,8 +330,7 @@ fn extension_p2p_node_metadata_returns_rows() {
     assert!(n > 10, "expected many metadata rows, got {n}");
 
     // The CPU arch is detected and non-empty (a real machine-class field).
-    let (ok, stdout, _e) =
-        run("SELECT value FROM p2p_node_metadata() WHERE key = 'arch';");
+    let (ok, stdout, _e) = run("SELECT value FROM p2p_node_metadata() WHERE key = 'arch';");
     assert!(ok);
     assert!(!stdout.is_empty(), "cpu arch should be detected");
 

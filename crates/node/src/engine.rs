@@ -129,6 +129,27 @@ pub trait QueryEngine: Send + Sync {
         self.execute(sql, lease).await
     }
 
+    /// Execute `sql` with cooperative cancellation: when `cancel` is notified,
+    /// the engine ABORTS the in-flight query as promptly as it can and returns an
+    /// error, instead of running it to completion (DoS hardening — a host that
+    /// hits its `job_timeout` / loses the hedged race must stop burning CPU/RAM,
+    /// not keep a blocking thread alive until a giant query finishes).
+    ///
+    /// The default delegates to [`QueryEngine::execute_job`] and ignores the
+    /// token — correct for the mock engine (jobs are trivial) and the subprocess
+    /// engine (which already kills its child when the dropped future tears the
+    /// pipe down). The in-process DuckDB engine overrides it to interrupt the
+    /// running statement via DuckDB's interrupt handle.
+    async fn execute_job_cancellable(
+        &self,
+        sql: &str,
+        lease: ExecLease,
+        ctx: &JobContext,
+        _cancel: Arc<tokio::sync::Notify>,
+    ) -> Result<ResultSet, EngineError> {
+        self.execute_job(sql, lease, ctx).await
+    }
+
     /// Engine version string (folded into the query hash for determinism).
     fn version(&self) -> String;
 }

@@ -648,8 +648,20 @@ impl Cell {
 
     /// Parse a BoC produced by [`Cell::to_boc`] back into its root cell. Supports
     /// the subset this crate emits (single root, optional crc, no index table).
-    /// Used by round-trip tests; returns `None` on any malformed input.
+    ///
+    /// Hardened against malformed/hostile input (e.g. a compromised or
+    /// man-in-the-middled RPC response): every field is bounds-checked, the cell
+    /// count is capped to bound allocation, the root and every ref index are
+    /// validated, child-first ordering is enforced (refs must point at a
+    /// higher-indexed, already-built cell), and the CRC (when present) is
+    /// verified. Returns `None` on ANY malformed input — it never panics.
     pub fn from_boc(bytes: &[u8]) -> Option<Cell> {
+        // A generous bound on the number of cells we will allocate for. The BoCs
+        // this crate exchanges (escrow terms, fee recipient, wallet data) are a
+        // handful of cells; this cap only exists to stop an attacker-controlled
+        // header from driving an unbounded allocation.
+        const MAX_BOC_CELLS: usize = 1 << 16;
+
         if bytes.len() < 6 || bytes[0..4] != [0xb5, 0xee, 0x9c, 0x72] {
             return None;
         }
@@ -657,10 +669,15 @@ impl Cell {
         let has_idx = flags & (1 << 7) != 0;
         let has_crc = flags & (1 << 6) != 0;
         let ref_size = (flags & 0b111) as usize;
+        // A zero-width ref size cannot encode any cell/root index; reject up front
+        // (it would otherwise make every index read 0 and alias all cells).
+        if ref_size == 0 || ref_size > 8 {
+            return None;
+        }
         let off_bytes = bytes[5] as usize;
         let mut p = 6usize;
         let read = |buf: &[u8], p: &mut usize, n: usize| -> Option<u64> {
-            if *p + n > buf.len() {
+            if n > 8 || *p + n > buf.len() {
                 return None;
             }
             let mut v = 0u64;
@@ -671,18 +688,36 @@ impl Cell {
             Some(v)
         };
         let cell_count = read(bytes, &mut p, ref_size)? as usize;
+        // Bound allocation before any `with_capacity`/`vec![..; cell_count]`.
+        if cell_count == 0 || cell_count > MAX_BOC_CELLS {
+            return None;
+        }
         let _roots = read(bytes, &mut p, ref_size)?;
         let _absent = read(bytes, &mut p, ref_size)?;
         let _tot = read(bytes, &mut p, off_bytes)?;
         let root_idx = read(bytes, &mut p, ref_size)? as usize;
+        // The root must reference a cell that exists.
+        if root_idx >= cell_count {
+            return None;
+        }
         if has_idx {
-            p += cell_count * off_bytes; // skip index table
+            // Skip the index table, bounds-checked (cell_count is capped above so
+            // the multiply cannot overflow).
+            p = p.checked_add(cell_count.checked_mul(off_bytes)?)?;
         }
         let body_end = if has_crc {
             bytes.len().checked_sub(4)?
         } else {
             bytes.len()
         };
+        // Verify the CRC32C trailer (when present) over the whole body before
+        // trusting any of the parsed structure.
+        if has_crc {
+            let want = u32::from_le_bytes(bytes[body_end..body_end + 4].try_into().ok()?);
+            if crc32c(&bytes[..body_end]) != want {
+                return None;
+            }
+        }
         // Parse raw (descriptor + data + ref indices) for each cell in order.
         let mut raw: Vec<(Vec<u8>, usize, Vec<usize>)> = Vec::with_capacity(cell_count);
         for _ in 0..cell_count {
@@ -701,6 +736,11 @@ impl Cell {
             let data = bytes[p..p + data_bytes].to_vec();
             p += data_bytes;
             let bit_len = if not_aligned {
+                // A "not aligned" descriptor needs at least one data byte to carry
+                // the augmentation completion bit; reject a malformed zero-length.
+                if data_bytes == 0 {
+                    return None;
+                }
                 // Strip the augmentation bit: bits = 8*(full) + position of the
                 // final set completion bit in the last byte.
                 let full = data_bytes - 1;
@@ -724,11 +764,39 @@ impl Cell {
             }
             raw.push((data, bit_len, refs));
         }
-        // Rebuild cells children-first (refs always have a higher index).
+        // TON's maximum cell tree depth. Bound it here so `repr_hash`/`depth`
+        // (both recursive) can never be driven into a stack overflow by a
+        // pathologically deep parsed tree.
+        const MAX_CELL_DEPTH: u16 = 1024;
+
+        // Rebuild cells children-first. This crate emits refs that always point at
+        // a HIGHER index, so iterating in reverse guarantees children are built
+        // before parents. Validate that invariant explicitly: a ref to an
+        // out-of-range index, or to a cell at index <= the current one (not yet
+        // built / a cycle), is malformed. Track each cell's depth (children are
+        // built first, so a child's depth is known) and reject an over-deep tree.
         let mut built: Vec<Option<Cell>> = vec![None; cell_count];
+        let mut depths: Vec<u16> = vec![0; cell_count];
         for i in (0..cell_count).rev() {
             let (data, bit_len, refs) = &raw[i];
-            let child_cells: Vec<Cell> = refs.iter().map(|&r| built[r].clone().unwrap()).collect();
+            let mut child_cells: Vec<Cell> = Vec::with_capacity(refs.len());
+            let mut max_child_depth: u16 = 0;
+            for &r in refs {
+                if r <= i || r >= cell_count {
+                    return None;
+                }
+                max_child_depth = max_child_depth.max(depths[r]);
+                child_cells.push(built[r].clone()?);
+            }
+            let depth = if refs.is_empty() {
+                0
+            } else {
+                max_child_depth.checked_add(1)?
+            };
+            if depth > MAX_CELL_DEPTH {
+                return None;
+            }
+            depths[i] = depth;
             built[i] = Some(Cell::from_parts(data.clone(), *bit_len, child_cells));
         }
         built[root_idx].clone()
