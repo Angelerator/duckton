@@ -1,0 +1,96 @@
+site_name: Duckton
+site_description: >-
+  A peer-to-peer distributed DuckDB compute grid over QUIC, with a verifiable
+  trust model and optional pay-per-query compute settled on TON.
+site_url: https://angelerator.github.io/duckton/
+repo_url: https://github.com/Angelerator/duckton
+repo_name: Angelerator/duckton
+edit_uri: edit/main/docs/
+copyright: Apache-2.0 licensed.
+
+theme:
+  name: material
+  language: en
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tabs
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+# Don't fail the build on pre-existing cross-links to source files in the deep
+# dives (they resolve on GitHub, not in the rendered site).
+strict: false
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Quickstart: getting-started/quickstart.md
+      - Installation: getting-started/installation.md
+      - Core concepts: getting-started/concepts.md
+  - Guides:
+      - Running queries: guides/running-queries.md
+      - Node targeting & single-node routing: guides/node-targeting.md
+      - Hosting & joining a network: guides/hosting-and-networks.md
+      - Paid queries (TON): guides/paid-queries.md
+      - Private / enterprise mode: PRIVATE_MODE.md
+  - Reference:
+      - SQL functions: reference/sql-functions.md
+      - Configuration: reference/configuration.md
+      - Observability & troubleshooting: operations/observability.md
+  - Deep dives:
+      - Architecture & trust design: ARCHITECTURE.md
+      - How it works (free vs paid): HOW_IT_WORKS.md
+      - Blockchain economics (TON): BLOCKCHAIN_ECONOMICS.md
+      - TON testnet runbook: TESTNET.md
+      - Improvement roadmap: IMPROVEMENT_ROADMAP.md
+  - Project:
+      - Security: project/security.md
+      - FAQ: project/faq.md
+      - Contributing: project/contributing.md

@@ -68,6 +68,11 @@ network-identity-bound key handshake).
 
 ## Documentation
 
+📖 **Full documentation site: <https://angelerator.github.io/duckton/>** (MkDocs
+Material; sources in [`docs/`](docs/), built + deployed by
+[`.github/workflows/docs.yml`](.github/workflows/docs.yml)). Quickstart, SQL/config
+reference, guides, and the deep dives below all live there.
+
 - [**docs/HOW_IT_WORKS.md**](docs/HOW_IT_WORKS.md) — how Duckton works in plain terms:
   the free-vs-paid economic model, **real captured TON testnet proof** of the on-chain
   split (15% treasury / 5% verifier / winner base, free-winner refunds, rejected

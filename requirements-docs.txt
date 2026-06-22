@@ -1,0 +1,5 @@
+# Documentation site toolchain (MkDocs Material).
+#   python3 -m pip install -r requirements-docs.txt
+#   mkdocs serve     # local preview at http://127.0.0.1:8000
+#   mkdocs build     # render the static site into ./site
+mkdocs-material>=9.5

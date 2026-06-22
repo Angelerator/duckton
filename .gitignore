@@ -3,6 +3,10 @@
 **/target/
 /dist
 
+# MkDocs documentation site build output (rendered by `mkdocs build` / deployed
+# to the gh-pages branch by CI — never commit the rendered HTML).
+/site
+
 # DuckDB Community-Extensions build flow (extension-ci-tools / `make release`)
 /build
 /configure
