@@ -14,7 +14,6 @@ import {
   NetworkToggle,
 } from "@/lib/network-mode";
 import { TonConnectProvider, WalletButton } from "@/lib/ton-connect";
-import { LiveProvider, LiveStatus } from "@/lib/live";
 import { meta } from "@/lib/data";
 
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
@@ -34,10 +33,6 @@ function SidebarFooter() {
   return (
     <div className="border-t px-4 py-3 text-xs">
       <div className="flex items-center justify-between">
-        <span className="text-muted-foreground">this node</span>
-        <span className="font-mono">node_7af3…d2b8</span>
-      </div>
-      <div className="mt-1.5 flex items-center justify-between">
         <span className="text-muted-foreground">protocol</span>
         <Badge variant="muted" className="font-mono">
           p2p/{meta.protocolVersion}
@@ -45,15 +40,13 @@ function SidebarFooter() {
       </div>
       <div className="mt-1.5 flex items-center justify-between">
         <span className="text-muted-foreground">duckton</span>
-        <span className="inline-flex items-center gap-1.5">
-          <Badge variant="ok" className="font-mono">
-            community v{meta.workspaceVersion}
-          </Badge>
-        </span>
+        <Badge variant="ok" className="font-mono">
+          community v{meta.workspaceVersion}
+        </Badge>
       </div>
       <div className="mt-1.5 flex items-center justify-between">
-        <span className="text-muted-foreground">engine</span>
-        <span className="font-mono">{meta.engineVersion}</span>
+        <span className="text-muted-foreground">seed</span>
+        <span className="font-mono">seed.duckton.com:9494</span>
       </div>
     </div>
   );
@@ -69,9 +62,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (bare) {
     return (
       <TonConnectProvider>
-        <NetworkModeProvider>
-          <LiveProvider>{children}</LiveProvider>
-        </NetworkModeProvider>
+        <NetworkModeProvider>{children}</NetworkModeProvider>
       </TonConnectProvider>
     );
   }
@@ -79,7 +70,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <TonConnectProvider>
     <NetworkModeProvider>
-    <LiveProvider>
       <a
         href="#main-content"
         className="bg-primary text-primary-foreground sr-only z-50 rounded-md px-3 py-2 text-sm font-medium focus:not-sr-only focus:fixed focus:left-4 focus:top-3"
@@ -119,7 +109,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </SheetContent>
           </Sheet>
 
-          <LiveStatus />
+          <Link href="/overview" className="text-sm font-semibold lg:hidden">
+            Duckton
+          </Link>
 
           <div className="ml-auto flex items-center gap-2">
             <NetworkToggle />
@@ -147,7 +139,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
       </div>
-    </LiveProvider>
     </NetworkModeProvider>
     </TonConnectProvider>
   );

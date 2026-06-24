@@ -16,6 +16,7 @@ import {
 import { num } from "@/lib/format";
 import { meta } from "@/lib/data";
 import { useRealNet, shortId } from "@/lib/real-net";
+import { useOnchain } from "@/lib/onchain";
 
 const YELLOW = "#FFD400";
 
@@ -256,42 +257,6 @@ function HowItWorks() {
       </div>
     </section>
   );
-}
-
-interface OnchainStats {
-  address: string;
-  explorer: string;
-  status: string | null;
-  balanceTon: number | null;
-  paramsVersion: number | null;
-  platformFeeBps: number | null;
-  participationBps: number | null;
-  fetchedAt: number;
-}
-
-/** Fetch genuinely live state for the mainnet GlobalParams contract (read from
- *  TON via the edge-cached /api/onchain route — not from the baked snapshot). */
-function useOnchain(): { data: OnchainStats | null; loading: boolean } {
-  const [data, setData] = React.useState<OnchainStats | null>(null);
-  const [loading, setLoading] = React.useState(true);
-  React.useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch("/api/onchain")
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d: OnchainStats | null) => {
-          if (alive && d) setData(d);
-        })
-        .catch(() => {})
-        .finally(() => alive && setLoading(false));
-    load();
-    const t = setInterval(load, 30_000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-  return { data, loading };
 }
 
 function StatRow({ label, value }: { label: string; value: React.ReactNode }) {

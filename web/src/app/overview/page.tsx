@@ -3,385 +3,166 @@
 import Link from "next/link";
 import {
   Activity,
-  ArrowRight,
+  ArrowUpRight,
   Coins,
-  Cpu,
   Gauge,
+  Landmark,
   Network,
-  ServerCog,
+  Server,
   ShieldCheck,
-  Zap,
+  Terminal,
 } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  AttestationBadge,
-  DataClassBadge,
-  PageHeader,
-  ScoreBar,
-  SectionTitle,
-  Stat,
-  StatusBadge,
-} from "@/components/common/atoms";
-import { AreaTrend, BarMini, Donut } from "@/components/common/charts";
-import { Explainer } from "@/components/common/explain";
+import { PageHeader, Stat } from "@/components/common/atoms";
 import { CopyId } from "@/components/common/copy";
-import { meta } from "@/lib/data";
-import { useLive } from "@/lib/live";
 import { useRealNet, shortId } from "@/lib/real-net";
-import { OverviewPlots } from "./overview-plots";
-import { ago, bytes, ms, num, pct } from "@/lib/format";
+import { useOnchain } from "@/lib/onchain";
+import { num } from "@/lib/format";
 
-/** Live REAL multi-node network (independent node processes over QUIC) — distinct
- *  from the loopback simulation below. */
-function RealNetworkCard() {
-  const net = useRealNet();
-  const live = net !== null && net.onlineHosts > 0;
-  return (
-    <Card className="border-primary/40">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Network className="size-4 text-primary" /> Live network — real nodes
-          {live ? <Badge variant="ok">live</Badge> : <Badge variant="muted">connecting…</Badge>}
-        </CardTitle>
-        <CardDescription>
-          Real, not the loopback demo below — independent node processes running verified distributed{" "}
-          <span className="font-mono">p2p_query</span> jobs across each other over QUIC. Counts climb live.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <Stat label="Online host nodes" value={`${net?.onlineHosts ?? "—"}`} sub="independent peers" icon={<ServerCog />} accent="ok" />
-          <Stat label="Real jobs executed" value={net ? num(net.realJobsRun) : "—"} sub="distributed + verified" icon={<Activity />} accent="info" />
-          <Stat label="Verified" value={net?.verifiedRatePct != null ? `${net.verifiedRatePct}%` : "—"} sub="quorum-agreed" icon={<ShieldCheck />} accent="primary" />
-          <Stat label="Avg latency" value={net?.avgLatencyMs != null ? `${net.avgLatencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} accent="info" />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {(net?.hosts ?? []).map((h) => (
-            <span
-              key={h}
-              className="text-muted-foreground inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-xs"
-              title={h}
-            >
-              <span className="bg-primary size-1.5 rounded-full" /> {shortId(h)}
-            </span>
-          ))}
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-const lifecycle = [
-  { stage: "Offer", note: "broadcast query_hash" },
-  { stage: "Bid", note: "ETA + attestation" },
-  { stage: "Dispatch", note: "SQL + scoped creds" },
-  { stage: "Commit", note: "result_hash first" },
-  { stage: "Verify", note: "quorum agreement" },
-  { stage: "Settle", note: "pay + RESET losers" },
-];
+const SEED = "seed.duckton.com:9494";
 
 export default function OverviewPage() {
-  // LIVE: the whole grid snapshot streams in realtime when the backend
-  // (cargo run -p console-server) is up; falls back to the baked snapshot offline.
-  const { overview, workers, jobs, connected } = useLive();
-  const verifyRate = overview.jobsRun ? overview.verified / overview.jobsRun : 0;
-  const topWorkers = [...workers].sort((a, b) => b.trust - a.trust).slice(0, 5);
+  const net = useRealNet();
+  const { data: chain } = useOnchain();
+  const live = net !== null && net.onlineHosts > 0;
+  const recent = net?.recent ?? [];
+
+  const fee = chain?.platformFeeBps != null ? `${(chain.platformFeeBps / 100).toFixed(1)}%` : "—";
+  const kappa = chain?.participationBps != null ? `${(chain.participationBps / 100).toFixed(1)}%` : "—";
+  const bal = chain?.balanceTon != null ? `${chain.balanceTon.toFixed(3)} TON` : "—";
 
   return (
     <div className="space-y-8">
       <PageHeader
-        title="Overview"
-        description="A decentralized, many-host DuckDB grid. Requesters broadcast a query; several hosts run it redundantly over QUIC; the first correct result that reaches quorum wins."
-        icon={<Activity />}
+        title="Network"
+        description="Live status of the Duckton grid — independent nodes running verified distributed queries over QUIC, settled on TON. Everything here is read live; nothing is simulated."
+        icon={<Network />}
       >
-        <Button asChild variant="outline">
-          <Link href="/jobs">
-            View jobs <ArrowRight />
-          </Link>
-        </Button>
-        <Button asChild>
-          <Link href="/query">
-            <Zap /> New query
-          </Link>
-        </Button>
+        <Badge variant={live ? "ok" : "muted"}>{live ? "live" : "connecting…"}</Badge>
       </PageHeader>
 
-      {/* REAL multi-node network (live), shown first. */}
-      <RealNetworkCard />
-
-      <Explainer
-        what="A live snapshot of the whole grid: how many machines are sharing compute right now, how many queries ran, how fast results came back, and how trustworthy the workers are."
-        impact="A high verified-rate and average trust mean you can rely on results without trusting any single machine — the grid cross-checks itself."
-      />
-
-      <SectionTitle
-        hint="simulation"
-        info="A rich in-process loopback grid (9 workers in one process) used to visualise the full protocol — real measurements, but a simulated topology. The panel above is the actual multi-node network."
-      >
-        Loopback grid dashboard
-      </SectionTitle>
-
-      {/* Stat row */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
-        <Stat
-          label="Workers online"
-          value={`${overview.workersOnline}/${overview.workersTotal}`}
-          sub="loopback grid hosts"
-          icon={<ServerCog />}
-          accent="ok"
-        />
-        <Stat
-          label="Jobs run"
-          value={num(overview.jobsRun)}
-          sub="this grid run"
-          icon={<Activity />}
-          accent="info"
-        />
+      {/* Live real-network stats */}
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <Stat label="Online nodes" value={`${net?.onlineHosts ?? "—"}`} sub="independent hosts" icon={<Server />} accent="ok" />
+        <Stat label="Jobs executed" value={net ? num(net.realJobsRun) : "—"} sub="distributed + verified" icon={<Activity />} accent="info" />
         <Stat
           label="Verified"
-          value={`${overview.verified}/${overview.jobsRun}`}
-          sub={`${pct(verifyRate, 1)} quorum-agreed`}
+          value={net?.verifiedRatePct != null ? `${net.verifiedRatePct}%` : "—"}
+          sub="quorum-agreed"
           icon={<ShieldCheck />}
           accent="primary"
-          hint="Share of jobs where enough workers returned the same answer (quorum) — your correctness signal."
+          hint="Share of jobs where a quorum of nodes returned the same byte-for-byte result."
         />
-        <Stat
-          label="Avg trust"
-          value={overview.avgTrust.toFixed(2)}
-          sub="effective_trust ∈ [0,1]"
-          icon={<ShieldCheck />}
-          accent="primary"
-          hint="Average 0–1 trustworthiness the grid computes per worker from its history, stake and hardware tier."
-        />
-        <Stat
-          label="Donated RAM"
-          value={bytes(overview.freeMemBytes, 0)}
-          sub="pooled across hosts"
-          icon={<Cpu />}
-          accent="info"
-          hint="Memory volunteered across all hosts — the shared capacity your queries draw on."
-        />
-        <Stat
-          label="Total staked"
-          value={`${num(overview.totalStakeTon)} TON`}
-          sub="stake at risk"
-          icon={<Coins />}
-          accent="warn"
-        />
+        <Stat label="Avg latency" value={net?.avgLatencyMs != null ? `${net.avgLatencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} accent="info" />
       </div>
 
-      {/* Result latency per job */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Gauge className="size-4 text-primary" /> Result latency per job (real loopback run)
-                {connected ? (
-                  <Badge variant="ok">live</Badge>
-                ) : (
-                  <Badge variant="muted">snapshot</Badge>
-                )}
-              </CardTitle>
-              <CardDescription>
-                {connected
-                  ? "Updates as queries run — streaming live from the grid backend."
-                  : "Baked snapshot — start the backend (cargo run -p console-server) to stream live."}
-              </CardDescription>
-            </div>
-            <div className="hidden gap-4 text-right sm:flex">
-              <div>
-                <div className="text-muted-foreground text-xs">verified</div>
-                <div className="text-lg font-semibold tabular-nums text-[var(--ok)]">
-                  {overview.verified}
-                </div>
-              </div>
-              <div>
-                <div className="text-muted-foreground text-xs">failed</div>
-                <div className="text-lg font-semibold tabular-nums text-destructive">
-                  {overview.failed}
-                </div>
-              </div>
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <AreaTrend
-            data={overview.series}
-            series={[{ key: "latencyMs", color: "var(--chart-1)", label: "latency (ms)" }]}
-            unit="ms"
-          />
-        </CardContent>
-      </Card>
-
-      {/* Two charts */}
-      <div className="grid gap-4 lg:grid-cols-5">
-        <Card className="lg:col-span-3">
+      {/* Host nodes + recent jobs */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
           <CardHeader>
-            <CardTitle>Result latency distribution</CardTitle>
-            <CardDescription>per-result commit timing across the run</CardDescription>
+            <CardTitle className="flex items-center gap-2">
+              <Server className="text-primary size-4" /> Host nodes
+            </CardTitle>
+            <CardDescription>Independent node processes (Ed25519 identities) currently serving jobs.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <BarMini data={overview.latencyHistogram} xKey="bucket" yKey="count" />
-          </CardContent>
-        </Card>
-        <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>Attestation mix</CardTitle>
-            <CardDescription>worker hardware-trust tiers</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Donut
-              data={overview.attestationMix.map((a) => ({
-                name: a.level,
-                value: a.count,
-                fill: a.fill,
-              }))}
-            />
-            <div className="mt-2 space-y-1">
-              {overview.attestationMix.map((a) => (
-                <div key={a.level} className="flex items-center gap-2 text-xs">
-                  <span className="size-2.5 rounded-full" style={{ background: a.fill }} />
-                  <span className="text-muted-foreground">{a.level}</span>
-                  <span className="ml-auto font-medium tabular-nums">{a.count}</span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Lifecycle strip */}
-      <div>
-        <SectionTitle
-          hint="happy path"
-          info="The stages a query passes through: workers bid, the SQL is dispatched, each commits a result fingerprint, the grid checks agreement, then pays the winner."
-        >
-          Request lifecycle
-        </SectionTitle>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          {lifecycle.map((s, i) => (
-            <div key={s.stage} className="bg-card relative rounded-lg border p-3">
-              <div className="text-muted-foreground/60 absolute right-2 top-2 font-mono text-xs">
-                {i + 1}
+          <CardContent className="space-y-2">
+            {(net?.hosts ?? []).map((h) => (
+              <div key={h} className="flex items-center gap-2">
+                <span className="size-1.5 rounded-full bg-[var(--ok)]" />
+                <CopyId value={h} display={shortId(h)} />
               </div>
-              <div className="text-primary text-sm font-semibold">{s.stage}</div>
-              <div className="text-muted-foreground mt-0.5 text-xs">{s.note}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Recent jobs + top workers */}
-      <div className="grid gap-4 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Recent jobs</CardTitle>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/jobs">
-                  All jobs <ArrowRight />
-                </Link>
-              </Button>
-            </div>
-          </CardHeader>
-          <CardContent className="px-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="pl-6">Job</TableHead>
-                  <TableHead>Class</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Rows</TableHead>
-                  <TableHead className="text-right">Latency</TableHead>
-                  <TableHead className="pr-6 text-right">When</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {jobs.map((j) => (
-                  <TableRow key={j.id}>
-                    <TableCell className="pl-6">
-                      <div className="flex flex-col">
-                        <span className="font-mono text-xs">{j.id}</span>
-                        <span className="text-muted-foreground text-xs">
-                          {j.fn} · k={j.k} q={j.quorum}
-                        </span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      <DataClassBadge value={j.dataClass} />
-                    </TableCell>
-                    <TableCell>
-                      <StatusBadge status={j.status} />
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {j.rowCount ? num(j.rowCount) : "—"}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {j.latencyMs ? ms(j.latencyMs) : "—"}
-                    </TableCell>
-                    <TableCell className="text-muted-foreground pr-6 text-right text-xs">
-                      {ago(j.createdAtMs)}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+            ))}
+            {!net || net.hosts.length === 0 ? <p className="text-muted-foreground text-sm">connecting…</p> : null}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <CardTitle>Top workers</CardTitle>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/workers">
-                  All <ArrowRight />
-                </Link>
-              </Button>
-            </div>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="text-primary size-4" /> Recent jobs
+            </CardTitle>
+            <CardDescription>Live distributed queries executed across the nodes.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {topWorkers.map((w) => (
-              <div key={w.id} className="flex items-center gap-3">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{w.alias}</span>
-                    <AttestationBadge level={w.attestation} />
-                  </div>
-                  <CopyId value={w.id} className="mt-0.5" />
-                </div>
-                <div className="w-24">
-                  <ScoreBar value={w.trust} />
-                </div>
+          <CardContent className="space-y-1.5">
+            {recent.slice(0, 6).map((j, i) => (
+              <div key={i} className="flex items-center justify-between gap-3 font-mono text-xs">
+                <span className="text-muted-foreground truncate">{j.query}</span>
+                <span className="shrink-0">
+                  <span className="text-primary">{shortId(j.winner)}</span> · {j.latencyMs}ms · q{j.participants}
+                </span>
               </div>
             ))}
+            {recent.length === 0 ? <p className="text-muted-foreground text-sm">connecting…</p> : null}
           </CardContent>
         </Card>
       </div>
 
-      <OverviewPlots />
+      {/* On-chain settlement (live mainnet) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Landmark className="text-primary size-4" /> On-chain settlement — TON mainnet
+            {chain?.status === "active" ? <Badge variant="ok">active</Badge> : <Badge variant="muted">reading…</Badge>}
+          </CardTitle>
+          <CardDescription>
+            Paid jobs settle through the platform-wide <span className="font-mono">GlobalParams</span> contract — read
+            live from TON.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <Stat label="Platform fee φ" value={fee} sub="of escrow" icon={<Coins />} accent="primary" />
+            <Stat label="Participation κ" value={kappa} sub="per verifier" icon={<ShieldCheck />} accent="info" />
+            <Stat label="Params version" value={chain?.paramsVersion != null ? `v${chain.paramsVersion}` : "—"} sub="on-chain" icon={<Activity />} accent="info" />
+            <Stat label="Contract balance" value={bal} sub="GlobalParams" icon={<Landmark />} accent="ok" />
+          </div>
+          {chain ? (
+            <div className="flex items-center gap-2 text-xs">
+              <CopyId value={chain.address} display={shortId(chain.address)} />
+              <a
+                href={chain.explorer}
+                target="_blank"
+                rel="noreferrer"
+                className="text-muted-foreground hover:text-primary inline-flex items-center gap-1"
+              >
+                Tonviewer <ArrowUpRight className="size-3" />
+              </a>
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
-      <p className="text-muted-foreground flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-center text-xs">
-        <Badge variant="ok" className="font-mono">
-          real
-        </Badge>
-        <span>
-          Real data from an in-process loopback grid run of the Duckton (p2p-*) crates — no hand-authored
-          values. Protocol {meta.protocolVersion} · engine {meta.engineVersion} · workspace{" "}
-          {meta.workspaceVersion}.
-        </span>
-      </p>
+      {/* Connect quickstart */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Terminal className="text-primary size-4" /> Connect
+          </CardTitle>
+          <CardDescription>Join the public network and run a verified query — all in plain SQL.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <pre className="bg-muted/50 overflow-x-auto rounded-lg border p-4 text-xs leading-relaxed">
+            <code>{`INSTALL duckton FROM community;
+LOAD duckton;
+CALL p2p_join(bootstrap => ['${SEED}']);
+SELECT * FROM p2p_query('SELECT 42 AS x');`}</code>
+          </pre>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/connect">
+                More examples <ArrowUpRight />
+              </Link>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="https://docs.duckton.com" target="_blank" rel="noreferrer">
+                Docs <ArrowUpRight />
+              </a>
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
