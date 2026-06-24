@@ -48,11 +48,17 @@ export const NETWORKS: Record<NetMode, NetworkInfo> = {
     label: "Mainnet",
     rpc: "https://toncenter.com/api/v2/",
     explorer: (a) => `https://tonviewer.com/${a}`,
-    deployed: false,
+    // GlobalParams (platform-wide singleton) is live on mainnet. StakeVault /
+    // JobEscrow / RecordAnchor are deployed on demand (per-node / per-job), so
+    // they stay null here until created.
+    deployed: true,
     realFunds: true,
-    confirmed: false, // economics.mainnet_confirmed === false
-    contracts: { ...NO_CONTRACTS },
-    wallet: null,
+    confirmed: false, // economics.mainnet_confirmed === false (settlement still guarded)
+    contracts: {
+      ...NO_CONTRACTS,
+      GlobalParams: "EQCV59kSoDDgmE8cheBNYwl2oYL9h5nkbyCqn99tN-N1w9Gg",
+    },
+    wallet: "EQABq1UU-PLPTQlDUwFNju_4xXyHLxSfPPyfqEvLPrjoxS82",
     resultHash: null,
   },
 };
@@ -149,8 +155,8 @@ export function MainnetWarningBar() {
     <div className="border-destructive/30 bg-destructive/10 text-destructive flex items-center justify-center gap-2 border-b px-4 py-1.5 text-center text-xs md:px-6">
       <AlertTriangle className="size-3.5 shrink-0" />
       <span>
-        <strong>Mainnet selected — real funds.</strong> Settlement is guarded
-        (<code className="font-mono">mainnet_confirmed = false</code>) and no contracts are deployed;
+        <strong>Mainnet selected — real funds.</strong> GlobalParams is live on mainnet, but settlement
+        is still guarded (<code className="font-mono">mainnet_confirmed = false</code>);
         the node refuses on-chain mainnet settlement until explicitly enabled.
       </span>
     </div>

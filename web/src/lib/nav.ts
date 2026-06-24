@@ -1,7 +1,7 @@
 import type { NavItem } from "./types";
 
 export const nav: NavItem[] = [
-  { title: "Overview", href: "/", icon: "LayoutDashboard", group: "Operate", description: "Grid health, throughput, and live activity" },
+  { title: "Overview", href: "/overview", icon: "LayoutDashboard", group: "Operate", description: "Grid health, throughput, and live activity" },
   { title: "Query Console", href: "/query", icon: "Terminal", group: "Operate", description: "Run p2p_query / p2p_join / p2p_share against the grid" },
   { title: "Jobs", href: "/jobs", icon: "ListChecks", group: "Operate", description: "Job lifecycle + hedged execution timeline" },
 

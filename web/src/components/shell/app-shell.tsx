@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { Menu, BookOpen } from "lucide-react";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
@@ -18,7 +19,7 @@ import { meta } from "@/lib/data";
 
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
   return (
-    <Link href="/" onClick={onNavigate} className="flex items-center gap-2.5 px-2">
+    <Link href="/overview" onClick={onNavigate} className="flex items-center gap-2.5 px-2">
       <div className="bg-primary text-primary-foreground grid size-8 place-items-center rounded-lg font-bold shadow-sm">
         <svg viewBox="0 0 24 24" className="size-5" fill="none">
           <path
@@ -73,6 +74,20 @@ function SidebarFooter() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [open, setOpen] = React.useState(false);
+  const pathname = usePathname();
+  // The public marketing landing (apex `/`) renders chrome-free (no sidebar/header)
+  // but still inside the data providers, so it can show live grid stats.
+  const bare = pathname === "/";
+
+  if (bare) {
+    return (
+      <TonConnectProvider>
+        <NetworkModeProvider>
+          <LiveProvider>{children}</LiveProvider>
+        </NetworkModeProvider>
+      </TonConnectProvider>
+    );
+  }
 
   return (
     <TonConnectProvider>

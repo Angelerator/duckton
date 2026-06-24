@@ -83,9 +83,10 @@ export function TonNetworkPanel() {
         </div>
         {net.realFunds ? (
           <p className="text-destructive/90 border-destructive/30 bg-destructive/10 rounded-md border px-3 py-2 text-xs">
-            Mainnet is not deployed in this snapshot and is guarded by{" "}
+            GlobalParams (the platform-wide singleton) is live on mainnet; StakeVault, JobEscrow and
+            RecordAnchor are deployed on demand. Settlement remains guarded by{" "}
             <code className="font-mono">economics.mainnet_confirmed = false</code> — the node refuses on-chain
-            mainnet settlement until explicitly enabled. The contracts and economic params are identical to
+            mainnet settlement until explicitly enabled. Contracts and economic params are identical to
             testnet (network-agnostic design); only the RPC, explorer and real-funds posture change.
           </p>
         ) : null}
