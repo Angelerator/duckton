@@ -10,5 +10,9 @@
   },
   "observability": {
     "enabled": true
-  }
+  },
+  "routes": [
+    { "pattern": "duckton.com", "custom_domain": true },
+    { "pattern": "console.duckton.com", "custom_domain": true }
+  ]
 }
