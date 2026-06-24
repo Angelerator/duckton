@@ -69,6 +69,28 @@ services:
       - worker_b_state:/node/state
     depends_on: [seed]
 
+  worker-c:
+    image: vm-seed
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP: "quic://seed:9494"
+      P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_SHARE_DATA_CLASSES: "public"
+    volumes:
+      - worker_c_state:/node/state
+    depends_on: [seed]
+
+  worker-d:
+    image: vm-seed
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP: "quic://seed:9494"
+      P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_SHARE_DATA_CLASSES: "public"
+    volumes:
+      - worker_d_state:/node/state
+    depends_on: [seed]
+
   # Requester that drives REAL distributed queries across the host nodes and
   # publishes a live JSON summary (served by Caddy at /api/network).
   collector:
@@ -80,7 +102,7 @@ services:
     volumes:
       - ./collector.sh:/collector.sh:ro
       - net_shared:/shared
-    depends_on: [seed, worker-a, worker-b]
+    depends_on: [seed, worker-a, worker-b, worker-c, worker-d]
 
 volumes:
   caddy_data:
@@ -88,4 +110,6 @@ volumes:
   seed_state:
   worker_a_state:
   worker_b_state:
+  worker_c_state:
+  worker_d_state:
   net_shared:

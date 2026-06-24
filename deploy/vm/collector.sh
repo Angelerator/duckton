@@ -17,9 +17,9 @@ CALL p2p_set('trust.bootstrap_trust','1.0');
 CALL p2p_set('budget.per_job_memory_bytes','33554432');
 CALL p2p_set('budget.per_job_threads','1');
 CALL p2p_trust(min_trust => 0, min_attest => 'L0');
-CALL p2p_selection(replicas => 3, quorum => 2, checksum_min => 1);
+CALL p2p_selection(replicas => 5, quorum => 3, checksum_min => 1);
 CALL p2p_planner(prefer => 'remote', local_execution => false);
-CALL p2p_join(bootstrap => ['quic://seed:9494','quic://worker-a:9494','quic://worker-b:9494']);"
+CALL p2p_join(bootstrap => ['quic://seed:9494','quic://worker-a:9494','quic://worker-b:9494','quic://worker-c:9494','quic://worker-d:9494']);"
 
 QUERIES=(
   "SELECT 42 AS x"
