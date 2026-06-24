@@ -13,8 +13,7 @@ import {
   Lock,
   Network,
 } from "lucide-react";
-import { useLive } from "@/lib/live";
-import { bytes, num, pct } from "@/lib/format";
+import { num } from "@/lib/format";
 import { meta } from "@/lib/data";
 
 const YELLOW = "#FFD400";
@@ -176,62 +175,6 @@ function StatCard({
   );
 }
 
-function LiveStats() {
-  const { overview, connected } = useLive();
-  const verifyRate = overview.jobsRun ? overview.verified / overview.jobsRun : 0;
-
-  return (
-    <section className="border-y border-white/10 bg-white/[0.015]">
-      <div className="mx-auto max-w-6xl px-5 py-12">
-        <div className="mb-5 flex items-center gap-2.5">
-          <span className="relative flex size-2.5">
-            {connected ? (
-              <span
-                className="absolute inline-flex size-full animate-ping rounded-full opacity-70"
-                style={{ background: YELLOW }}
-              />
-            ) : null}
-            <span
-              className="relative inline-flex size-2.5 rounded-full"
-              style={{ background: connected ? YELLOW : "#52525b" }}
-            />
-          </span>
-          <span className="text-sm font-medium text-white">
-            {connected ? "Live grid" : "Network snapshot"}
-          </span>
-          <span className="text-sm text-white/40">
-            {connected ? "streaming from a running grid" : "sample run of the p2p-* crates"}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-          <StatCard
-            label="Nodes online"
-            value={`${overview.workersOnline}/${overview.workersTotal}`}
-            sub="sharing compute"
-            icon={<Server />}
-          />
-          <StatCard label="Queries run" value={num(overview.jobsRun)} sub="this run" icon={<Activity />} />
-          <StatCard
-            label="Verified"
-            value={pct(verifyRate, 0)}
-            sub="quorum-agreed"
-            icon={<ShieldCheck />}
-          />
-          <StatCard label="Avg trust" value={overview.avgTrust.toFixed(2)} sub="0–1 score" icon={<Gauge />} />
-          <StatCard label="Pooled RAM" value={bytes(overview.freeMemBytes, 0)} sub="across nodes" icon={<Cpu />} />
-          <StatCard
-            label="Staked"
-            value={`${num(overview.totalStakeTon)} TON`}
-            sub="at risk on TON"
-            icon={<Coins />}
-          />
-        </div>
-      </div>
-    </section>
-  );
-}
-
 const features = [
   {
     icon: <Cpu />,
@@ -361,6 +304,9 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
 
 interface RealNet {
   realJobsRun: number;
+  attempts?: number;
+  verifiedRatePct?: number;
+  avgLatencyMs?: number;
   onlineHosts: number;
   hosts: string[];
   recent: { winner: string; latencyMs: number; participants: number; query: string; ts: number }[];
@@ -395,9 +341,9 @@ const shortId = (s: string) => (s.length > 16 ? `${s.slice(0, 9)}…${s.slice(-4
 function RealNetwork() {
   const net = useRealNet();
   const live = net !== null && net.onlineHosts > 0;
-  const last = net?.recent?.[0];
+  const recent = net?.recent ?? [];
   return (
-    <section className="mx-auto max-w-6xl px-5 py-16">
+    <section id="network" className="mx-auto max-w-6xl px-5 py-16">
       <div className="rounded-2xl border p-6 md:p-8" style={{ borderColor: `${YELLOW}30`, background: `${YELLOW}08` }}>
         <div className="flex flex-wrap items-center gap-3">
           <Network className="size-5" style={{ color: YELLOW }} />
@@ -411,16 +357,16 @@ function RealNetwork() {
           </span>
         </div>
         <p className="mt-3 max-w-2xl text-sm leading-relaxed text-white/60">
-          Not the demo dashboard — these are <span className="text-white">independent node processes</span> with
-          distinct Ed25519 identities, running real distributed <span className="font-mono text-white/80">p2p_query</span>{" "}
-          jobs across each other over QUIC with quorum verification. Counts climb as real jobs execute.
+          Real, not a simulation — <span className="text-white">independent node processes</span> with distinct
+          Ed25519 identities, running real distributed <span className="font-mono text-white/80">p2p_query</span> jobs
+          across each other over QUIC with quorum verification. Counts climb live as jobs execute.
         </p>
 
         <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
           <StatCard label="Online host nodes" value={`${net?.onlineHosts ?? "—"}`} sub="independent peers" icon={<Server />} />
           <StatCard label="Real jobs executed" value={net ? num(net.realJobsRun) : "—"} sub="distributed + verified" icon={<Activity />} />
-          <StatCard label="Last latency" value={last ? `${last.latencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} />
-          <StatCard label="Last quorum" value={last ? `${last.participants}` : "—"} sub="participants agreed" icon={<ShieldCheck />} />
+          <StatCard label="Verified" value={net?.verifiedRatePct != null ? `${net.verifiedRatePct}%` : "—"} sub="quorum-agreed" icon={<ShieldCheck />} />
+          <StatCard label="Avg latency" value={net?.avgLatencyMs != null ? `${net.avgLatencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} />
         </div>
 
         <div className="mt-5 grid gap-2 md:grid-cols-3">
@@ -432,10 +378,20 @@ function RealNetwork() {
           ))}
         </div>
 
-        {last ? (
-          <p className="mt-4 font-mono text-xs text-white/40">
-            last job · winner {shortId(last.winner)} · {last.latencyMs}ms · <span className="text-white/60">{last.query}</span>
-          </p>
+        {recent.length > 0 ? (
+          <div className="mt-5">
+            <div className="mb-2 text-xs font-medium text-white/40">Recent real jobs</div>
+            <div className="space-y-1">
+              {recent.slice(0, 5).map((j, i) => (
+                <div key={i} className="flex items-center justify-between gap-3 rounded-md border border-white/5 bg-[#0a0a0b] px-3 py-1.5 font-mono text-xs">
+                  <span className="truncate text-white/60">{j.query}</span>
+                  <span className="shrink-0 text-white/40">
+                    <span style={{ color: YELLOW }}>{shortId(j.winner)}</span> · {j.latencyMs}ms · q{j.participants}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
         ) : null}
       </div>
     </section>
@@ -705,7 +661,6 @@ export default function LandingPage() {
     <div className="min-h-svh bg-[#0a0a0b] text-white">
       <TopBar />
       <Hero />
-      <LiveStats />
       <RealNetwork />
       <WhatItIs />
       <HowItWorks />
