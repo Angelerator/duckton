@@ -87,7 +87,7 @@ function readMode(): NetMode {
   } catch {
     /* ignore */
   }
-  return "testnet";
+  return "mainnet";
 }
 
 function subscribeMode(onChange: () => void): () => void {
@@ -110,7 +110,7 @@ function writeMode(m: NetMode): void {
 }
 
 export function NetworkModeProvider({ children }: { children: React.ReactNode }) {
-  const mode = React.useSyncExternalStore(subscribeMode, readMode, (): NetMode => "testnet");
+  const mode = React.useSyncExternalStore(subscribeMode, readMode, (): NetMode => "mainnet");
   const setMode = React.useCallback((m: NetMode) => writeMode(m), []);
 
   const value = React.useMemo<Ctx>(() => ({ mode, net: NETWORKS[mode], setMode }), [mode, setMode]);

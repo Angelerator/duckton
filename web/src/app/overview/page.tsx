@@ -7,6 +7,7 @@ import {
   Coins,
   Cpu,
   Gauge,
+  Network,
   ServerCog,
   ShieldCheck,
   Zap,
@@ -36,8 +37,49 @@ import { Explainer } from "@/components/common/explain";
 import { CopyId } from "@/components/common/copy";
 import { meta } from "@/lib/data";
 import { useLive } from "@/lib/live";
+import { useRealNet, shortId } from "@/lib/real-net";
 import { OverviewPlots } from "./overview-plots";
 import { ago, bytes, ms, num, pct } from "@/lib/format";
+
+/** Live REAL multi-node network (independent node processes over QUIC) — distinct
+ *  from the loopback simulation below. */
+function RealNetworkCard() {
+  const net = useRealNet();
+  const live = net !== null && net.onlineHosts > 0;
+  return (
+    <Card className="border-primary/40">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Network className="size-4 text-primary" /> Live network — real nodes
+          {live ? <Badge variant="ok">live</Badge> : <Badge variant="muted">connecting…</Badge>}
+        </CardTitle>
+        <CardDescription>
+          Real, not the loopback demo below — independent node processes running verified distributed{" "}
+          <span className="font-mono">p2p_query</span> jobs across each other over QUIC. Counts climb live.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <Stat label="Online host nodes" value={`${net?.onlineHosts ?? "—"}`} sub="independent peers" icon={<ServerCog />} accent="ok" />
+          <Stat label="Real jobs executed" value={net ? num(net.realJobsRun) : "—"} sub="distributed + verified" icon={<Activity />} accent="info" />
+          <Stat label="Verified" value={net?.verifiedRatePct != null ? `${net.verifiedRatePct}%` : "—"} sub="quorum-agreed" icon={<ShieldCheck />} accent="primary" />
+          <Stat label="Avg latency" value={net?.avgLatencyMs != null ? `${net.avgLatencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} accent="info" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(net?.hosts ?? []).map((h) => (
+            <span
+              key={h}
+              className="text-muted-foreground inline-flex items-center gap-1.5 rounded-md border px-2 py-1 font-mono text-xs"
+              title={h}
+            >
+              <span className="bg-primary size-1.5 rounded-full" /> {shortId(h)}
+            </span>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 const lifecycle = [
   { stage: "Offer", note: "broadcast query_hash" },
@@ -74,10 +116,20 @@ export default function OverviewPage() {
         </Button>
       </PageHeader>
 
+      {/* REAL multi-node network (live), shown first. */}
+      <RealNetworkCard />
+
       <Explainer
         what="A live snapshot of the whole grid: how many machines are sharing compute right now, how many queries ran, how fast results came back, and how trustworthy the workers are."
         impact="A high verified-rate and average trust mean you can rely on results without trusting any single machine — the grid cross-checks itself."
       />
+
+      <SectionTitle
+        hint="simulation"
+        info="A rich in-process loopback grid (9 workers in one process) used to visualise the full protocol — real measurements, but a simulated topology. The panel above is the actual multi-node network."
+      >
+        Loopback grid dashboard
+      </SectionTitle>
 
       {/* Stat row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">

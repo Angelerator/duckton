@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { num } from "@/lib/format";
 import { meta } from "@/lib/data";
+import { useRealNet, shortId } from "@/lib/real-net";
 
 const YELLOW = "#FFD400";
 
@@ -301,42 +302,6 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
     </div>
   );
 }
-
-interface RealNet {
-  realJobsRun: number;
-  attempts?: number;
-  verifiedRatePct?: number;
-  avgLatencyMs?: number;
-  onlineHosts: number;
-  hosts: string[];
-  recent: { winner: string; latencyMs: number; participants: number; query: string; ts: number }[];
-  updatedAt: number;
-}
-
-const LIVE_NET_URL = "https://live.duckton.com/api/network";
-
-function useRealNet(): RealNet | null {
-  const [d, setD] = React.useState<RealNet | null>(null);
-  React.useEffect(() => {
-    let alive = true;
-    const load = () =>
-      fetch(LIVE_NET_URL)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((j: RealNet | null) => {
-          if (alive && j) setD(j);
-        })
-        .catch(() => {});
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
-  return d;
-}
-
-const shortId = (s: string) => (s.length > 16 ? `${s.slice(0, 9)}…${s.slice(-4)}` : s);
 
 function RealNetwork() {
   const net = useRealNet();
