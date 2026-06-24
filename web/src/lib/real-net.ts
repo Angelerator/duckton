@@ -17,7 +17,9 @@ export interface RealNet {
   updatedAt: number;
 }
 
-export const LIVE_NET_URL = "https://live.duckton.com/api/network";
+// Same-origin path (served by the Cloudflare Worker), which proxies to the VM.
+// Avoids corporate networks that 403 the raw cloud-IP live.duckton.com domain.
+export const LIVE_NET_URL = "/api/realnet";
 
 /** Poll the real-network summary every 5s. Returns null until the first load. */
 export function useRealNet(): RealNet | null {
