@@ -1,4 +1,13 @@
 live.duckton.com {
+	# REAL multi-node network summary, published by the collector (a JSON file).
+	handle /api/network {
+		root * /srv
+		rewrite * /network.json
+		header Content-Type application/json
+		header Access-Control-Allow-Origin *
+		header Cache-Control "public, max-age=5"
+		file_server
+	}
 	# The live grid API (SSE + JSON) — consumed by the web console, not a website.
 	handle /api/* {
 		reverse_proxy console-server:8787 {

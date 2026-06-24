@@ -359,6 +359,89 @@ function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+interface RealNet {
+  realJobsRun: number;
+  onlineHosts: number;
+  hosts: string[];
+  recent: { winner: string; latencyMs: number; participants: number; query: string; ts: number }[];
+  updatedAt: number;
+}
+
+const LIVE_NET_URL = "https://live.duckton.com/api/network";
+
+function useRealNet(): RealNet | null {
+  const [d, setD] = React.useState<RealNet | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch(LIVE_NET_URL)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((j: RealNet | null) => {
+          if (alive && j) setD(j);
+        })
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  return d;
+}
+
+const shortId = (s: string) => (s.length > 16 ? `${s.slice(0, 9)}…${s.slice(-4)}` : s);
+
+function RealNetwork() {
+  const net = useRealNet();
+  const live = net !== null && net.onlineHosts > 0;
+  const last = net?.recent?.[0];
+  return (
+    <section className="mx-auto max-w-6xl px-5 py-16">
+      <div className="rounded-2xl border p-6 md:p-8" style={{ borderColor: `${YELLOW}30`, background: `${YELLOW}08` }}>
+        <div className="flex flex-wrap items-center gap-3">
+          <Network className="size-5" style={{ color: YELLOW }} />
+          <h2 className="text-2xl font-bold tracking-tight text-white">Live network — real nodes</h2>
+          <span className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium" style={{ borderColor: `${YELLOW}40`, color: YELLOW }}>
+            <span className="relative flex size-2">
+              {live ? <span className="absolute inline-flex size-full animate-ping rounded-full opacity-70" style={{ background: YELLOW }} /> : null}
+              <span className="relative inline-flex size-2 rounded-full" style={{ background: live ? YELLOW : "#52525b" }} />
+            </span>
+            {live ? "live" : "connecting…"}
+          </span>
+        </div>
+        <p className="mt-3 max-w-2xl text-sm leading-relaxed text-white/60">
+          Not the demo dashboard — these are <span className="text-white">independent node processes</span> with
+          distinct Ed25519 identities, running real distributed <span className="font-mono text-white/80">p2p_query</span>{" "}
+          jobs across each other over QUIC with quorum verification. Counts climb as real jobs execute.
+        </p>
+
+        <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
+          <StatCard label="Online host nodes" value={`${net?.onlineHosts ?? "—"}`} sub="independent peers" icon={<Server />} />
+          <StatCard label="Real jobs executed" value={net ? num(net.realJobsRun) : "—"} sub="distributed + verified" icon={<Activity />} />
+          <StatCard label="Last latency" value={last ? `${last.latencyMs} ms` : "—"} sub="cross-node commit" icon={<Gauge />} />
+          <StatCard label="Last quorum" value={last ? `${last.participants}` : "—"} sub="participants agreed" icon={<ShieldCheck />} />
+        </div>
+
+        <div className="mt-5 grid gap-2 md:grid-cols-3">
+          {(net?.hosts ?? []).map((h) => (
+            <div key={h} className="flex items-center gap-2 rounded-lg border border-white/10 bg-[#0a0a0b] px-3 py-2">
+              <span className="size-1.5 rounded-full" style={{ background: YELLOW }} />
+              <span className="truncate font-mono text-xs text-white/70" title={h}>{shortId(h)}</span>
+            </div>
+          ))}
+        </div>
+
+        {last ? (
+          <p className="mt-4 font-mono text-xs text-white/40">
+            last job · winner {shortId(last.winner)} · {last.latencyMs}ms · <span className="text-white/60">{last.query}</span>
+          </p>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function MainnetPanel() {
   const { data, loading } = useOnchain();
   const fee = data?.platformFeeBps != null ? `${(data.platformFeeBps / 100).toFixed(1)}%` : "—";
@@ -623,6 +706,7 @@ export default function LandingPage() {
       <TopBar />
       <Hero />
       <LiveStats />
+      <RealNetwork />
       <WhatItIs />
       <HowItWorks />
       <Connect />

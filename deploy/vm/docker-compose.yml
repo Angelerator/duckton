@@ -27,8 +27,10 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+      - net_shared:/srv:ro
     depends_on: [console-server]
 
+  # Public bootstrap/seed node (reachable at the VM IP on UDP 9494).
   seed:
     build:
       context: ../..
@@ -43,7 +45,47 @@ services:
     volumes:
       - seed_state:/node/state
 
+  # Two more REAL host nodes (separate processes/containers) so the grid has
+  # multiple independent peers and real quorum. They reuse the built seed image.
+  worker-a:
+    image: vm-seed
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP: "quic://seed:9494"
+      P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_SHARE_DATA_CLASSES: "public"
+    volumes:
+      - worker_a_state:/node/state
+    depends_on: [seed]
+
+  worker-b:
+    image: vm-seed
+    restart: unless-stopped
+    environment:
+      BOOTSTRAP: "quic://seed:9494"
+      P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_SHARE_DATA_CLASSES: "public"
+    volumes:
+      - worker_b_state:/node/state
+    depends_on: [seed]
+
+  # Requester that drives REAL distributed queries across the host nodes and
+  # publishes a live JSON summary (served by Caddy at /api/network).
+  collector:
+    image: vm-seed
+    restart: unless-stopped
+    # Run as root so it can write the shared volume that Caddy serves.
+    user: "0:0"
+    entrypoint: ["/bin/bash", "/collector.sh"]
+    volumes:
+      - ./collector.sh:/collector.sh:ro
+      - net_shared:/shared
+    depends_on: [seed, worker-a, worker-b]
+
 volumes:
   caddy_data:
   caddy_config:
   seed_state:
+  worker_a_state:
+  worker_b_state:
+  net_shared:
