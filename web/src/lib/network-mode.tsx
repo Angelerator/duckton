@@ -55,7 +55,9 @@ export const NETWORKS: Record<NetMode, NetworkInfo> = {
     realFunds: true,
     confirmed: false, // economics.mainnet_confirmed === false (settlement still guarded)
     contracts: {
-      ...NO_CONTRACTS,
+      StakeVault: null,
+      JobEscrow: null,
+      RecordAnchor: null,
       GlobalParams: "EQCV59kSoDDgmE8cheBNYwl2oYL9h5nkbyCqn99tN-N1w9Gg",
     },
     wallet: "EQABq1UU-PLPTQlDUwFNju_4xXyHLxSfPPyfqEvLPrjoxS82",

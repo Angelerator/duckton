@@ -10,6 +10,11 @@
 // A static file with a hardcoded `url` can't satisfy the origin-match rule
 // across dev / LAN / tunnel / prod, so we derive `url` + `iconUrl` from the
 // request origin here (overridable with NEXT_PUBLIC_TONCONNECT_URL).
+//
+// The canonical public URL is `/tonconnect-manifest.json`; a rewrite in
+// next.config.ts maps it here. The route folder is intentionally NOT named
+// `*.json` because the OpenNext (Cloudflare Workers) bundler treats a build
+// output directory ending in `.json` as a file and fails with EISDIR.
 
 export const dynamic = "force-dynamic";
 
