@@ -88,7 +88,7 @@ export default function OverviewPage() {
           <CardContent className="space-y-1.5">
             {recent.slice(0, 6).map((j, i) => (
               <div key={i} className="flex items-center justify-between gap-3 font-mono text-xs">
-                <span className="text-muted-foreground truncate">{j.query}</span>
+                <span className="text-muted-foreground truncate">query #{j.queryHash}</span>
                 <span className="shrink-0">
                   <span className="text-primary">{shortId(j.winner)}</span> · {j.latencyMs}ms · q{j.participants}
                 </span>

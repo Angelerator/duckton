@@ -13,7 +13,7 @@ export interface RealNet {
   avgLatencyMs?: number;
   onlineHosts: number;
   hosts: string[];
-  recent: { winner: string; latencyMs: number; participants: number; query: string; ts: number }[];
+  recent: { winner: string; latencyMs: number; participants: number; queryHash: string; ts: number }[];
   updatedAt: number;
 }
 

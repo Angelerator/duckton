@@ -63,8 +63,11 @@ while true; do
     TOTAL=$((TOTAL + 1))
     LATSUM=$((LATSUM + ${LAT:-0}))
     HOSTS["$WINNER"]=1
-    item=$(printf '{"winner":"%s","latencyMs":%s,"participants":%s,"query":"%s","ts":%s}' \
-      "$WINNER" "${LAT:-0}" "${PART:-0}" "${Q//\"/}" "$(date -u +%s)")
+    # Publish only an opaque hash of the query — never the SQL text (privacy:
+    # the network itself only ever sees a query_hash in the broadcast Offer).
+    QH=$(printf '%s' "$Q" | sha256sum | cut -c1-16)
+    item=$(printf '{"winner":"%s","latencyMs":%s,"participants":%s,"queryHash":"%s","ts":%s}' \
+      "$WINNER" "${LAT:-0}" "${PART:-0}" "$QH" "$(date -u +%s)")
     RECENT_ITEMS=("$item" "${RECENT_ITEMS[@]:0:5}")   # keep newest 6
   fi
   echo "$TOTAL $ATTEMPTS $LATSUM" > "$STATE"

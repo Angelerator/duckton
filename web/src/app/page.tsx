@@ -314,7 +314,7 @@ function RealNetwork() {
             <div className="space-y-1">
               {recent.slice(0, 5).map((j, i) => (
                 <div key={i} className="flex items-center justify-between gap-3 rounded-md border border-white/5 bg-[#0a0a0b] px-3 py-1.5 font-mono text-xs">
-                  <span className="truncate text-white/60">{j.query}</span>
+                  <span className="truncate text-white/60">query #{j.queryHash}</span>
                   <span className="shrink-0 text-white/40">
                     <span style={{ color: YELLOW }}>{shortId(j.winner)}</span> · {j.latencyMs}ms · q{j.participants}
                   </span>
