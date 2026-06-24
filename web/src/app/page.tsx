@@ -10,7 +10,6 @@ import {
   Gauge,
   Server,
   ShieldCheck,
-  Zap,
   Lock,
   Network,
 } from "lucide-react";
@@ -32,11 +31,12 @@ const MAINNET_GP =
 
 function DuckMark({ className = "" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 48 48" className={className} aria-hidden="true">
-      <circle cx="24" cy="24" r="22" fill="#0a0a0b" stroke={YELLOW} strokeWidth="2" />
-      <circle cx="20" cy="23" r="9" fill={YELLOW} />
-      <path d="M28 20h7a3 3 0 0 1 0 6h-7z" fill={YELLOW} />
-    </svg>
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src="/duckton-logo.png"
+      alt="Duckton"
+      className={`rounded-[22%] ${className}`}
+    />
   );
 }
 
@@ -313,8 +313,58 @@ function HowItWorks() {
   );
 }
 
+interface OnchainStats {
+  address: string;
+  explorer: string;
+  status: string | null;
+  balanceTon: number | null;
+  paramsVersion: number | null;
+  platformFeeBps: number | null;
+  participationBps: number | null;
+  fetchedAt: number;
+}
+
+/** Fetch genuinely live state for the mainnet GlobalParams contract (read from
+ *  TON via the edge-cached /api/onchain route — not from the baked snapshot). */
+function useOnchain(): { data: OnchainStats | null; loading: boolean } {
+  const [data, setData] = React.useState<OnchainStats | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  React.useEffect(() => {
+    let alive = true;
+    const load = () =>
+      fetch("/api/onchain")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d: OnchainStats | null) => {
+          if (alive && d) setData(d);
+        })
+        .catch(() => {})
+        .finally(() => alive && setLoading(false));
+    load();
+    const t = setInterval(load, 30_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, []);
+  return { data, loading };
+}
+
+function StatRow({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between border-t border-white/5 py-2 text-sm first:border-t-0">
+      <span className="text-white/50">{label}</span>
+      <span className="font-medium tabular-nums text-white">{value}</span>
+    </div>
+  );
+}
+
 function MainnetPanel() {
-  const live = MAINNET_GP.length > 0;
+  const { data, loading } = useOnchain();
+  const fee = data?.platformFeeBps != null ? `${(data.platformFeeBps / 100).toFixed(1)}%` : "—";
+  const kappa = data?.participationBps != null ? `${(data.participationBps / 100).toFixed(1)}%` : "—";
+  const balance = data?.balanceTon != null ? `${data.balanceTon.toFixed(3)} TON` : "—";
+  const active = data?.status === "active";
+
   return (
     <section className="mx-auto max-w-6xl px-5 py-20">
       <div className="rounded-2xl border border-white/10 bg-white/[0.02] p-8 md:flex md:items-center md:gap-10">
@@ -326,38 +376,52 @@ function MainnetPanel() {
           <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/60">
             Paid jobs settle through on-chain escrow governed by a platform-wide{" "}
             <span className="font-mono text-white/80">GlobalParams</span> contract: platform fee φ,
-            participation commission κ, stake floors, and slashing — all enforced on TON.
+            participation commission κ, stake floors, and slashing — all enforced on TON. The figures
+            on the right are read live from TON mainnet.
           </p>
         </div>
-        <div className="mt-6 w-full md:mt-0 md:w-80">
-          {live ? (
-            <div className="rounded-xl border border-white/10 bg-[#0a0a0b] p-5">
-              <div className="text-xs font-medium text-white/50">GlobalParams · mainnet</div>
-              <div className="mt-1 break-all font-mono text-xs text-white/80">{MAINNET_GP}</div>
-              <a
-                href={`https://tonviewer.com/${MAINNET_GP}`}
-                target="_blank"
-                rel="noreferrer"
-                className="mt-3 inline-flex items-center gap-1.5 text-sm font-semibold"
-                style={{ color: YELLOW }}
-              >
-                View on Tonviewer <ArrowRight className="size-4" />
-              </a>
+        <div className="mt-6 w-full md:mt-0 md:w-96">
+          <div className="rounded-xl border border-white/10 bg-[#0a0a0b] p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-white/50">GlobalParams · mainnet</span>
+              <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+                <span className="relative flex size-2">
+                  {active ? (
+                    <span
+                      className="absolute inline-flex size-full animate-ping rounded-full opacity-70"
+                      style={{ background: YELLOW }}
+                    />
+                  ) : null}
+                  <span
+                    className="relative inline-flex size-2 rounded-full"
+                    style={{ background: active ? YELLOW : "#52525b" }}
+                  />
+                </span>
+                <span style={{ color: active ? YELLOW : undefined }} className={active ? "" : "text-white/40"}>
+                  {loading ? "reading chain…" : active ? "live" : "unreachable"}
+                </span>
+              </span>
             </div>
-          ) : (
-            <div className="rounded-xl border border-dashed border-white/15 bg-[#0a0a0b] p-5 text-center">
-              <div
-                className="mx-auto flex size-10 items-center justify-center rounded-full [&_svg]:size-5"
-                style={{ background: `${YELLOW}1a`, color: YELLOW }}
-              >
-                <Zap />
-              </div>
-              <div className="mt-3 text-sm font-semibold text-white">Mainnet launching soon</div>
-              <div className="mt-1 text-xs text-white/50">
-                Live today on testnet. Mainnet contracts are being deployed.
-              </div>
+
+            <div className="mt-3">
+              <StatRow label="Status" value={data?.status ?? "—"} />
+              <StatRow label="Balance" value={balance} />
+              <StatRow label="Params version" value={data?.paramsVersion ?? "—"} />
+              <StatRow label="Platform fee φ" value={fee} />
+              <StatRow label="Participation κ" value={kappa} />
             </div>
-          )}
+
+            <div className="mt-3 break-all font-mono text-[11px] leading-snug text-white/50">{MAINNET_GP}</div>
+            <a
+              href={`https://tonviewer.com/${MAINNET_GP}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-flex items-center gap-1.5 text-sm font-semibold"
+              style={{ color: YELLOW }}
+            >
+              View on Tonviewer <ArrowRight className="size-4" />
+            </a>
+          </div>
         </div>
       </div>
     </section>

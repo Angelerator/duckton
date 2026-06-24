@@ -20,21 +20,8 @@ import { meta } from "@/lib/data";
 function Brand({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <Link href="/overview" onClick={onNavigate} className="flex items-center gap-2.5 px-2">
-      <div className="bg-primary text-primary-foreground grid size-8 place-items-center rounded-lg font-bold shadow-sm">
-        <svg viewBox="0 0 24 24" className="size-5" fill="none">
-          <path
-            d="M4 7h5v5H4zM10 4h5v5h-5zM15 11h5v5h-5zM6 14h5v5H6z"
-            fill="currentColor"
-            opacity="0.9"
-          />
-          <path
-            d="M9 9.5l4-2M14.5 11.5l-3 4M9.5 13.5l4.5-1"
-            stroke="currentColor"
-            strokeWidth="1.1"
-            opacity="0.6"
-          />
-        </svg>
-      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src="/duckton-logo.png" alt="Duckton" className="size-8 rounded-lg shadow-sm" />
       <div className="leading-tight">
         <div className="text-sm font-semibold">Duckton</div>
         <div className="text-muted-foreground text-[10px]">p2p · console</div>
