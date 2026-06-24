@@ -1,6 +1,13 @@
 live.duckton.com {
-	reverse_proxy console-server:8787 {
-		# Disable response buffering so the SSE stream (/api/stream) flushes live.
-		flush_interval -1
+	# The live grid API (SSE + JSON) — consumed by the web console, not a website.
+	handle /api/* {
+		reverse_proxy console-server:8787 {
+			# Disable response buffering so /api/stream flushes the SSE live.
+			flush_interval -1
+		}
+	}
+	# Anything else (e.g. someone opening the bare domain) gets a clear note.
+	handle {
+		respond "Duckton live grid backend (API only). Try /api/health, /api/state, /api/stream. Dashboard: https://console.duckton.com" 200
 	}
 }

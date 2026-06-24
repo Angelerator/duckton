@@ -11,7 +11,8 @@ stats on duckton.com / console.duckton.com and the bootstrap entry point for pee
   The web app is built with `NEXT_PUBLIC_LIVE_URL=https://live.duckton.com`.
 - **seed node** → QUIC/UDP `9494`, advertised at `20.57.152.157:9494`.
   - node id: `b3:fac9ec4a76149cf8ceda42f98080ffd5b92d600dbb426b510d20975315ad6b65`
-  - peers join with: `CALL p2p_join(bootstrap => ['20.57.152.157:9494']);`
+  - peers join with: `CALL p2p_join(bootstrap => ['seed.duckton.com:9494']);`
+    (or the raw `20.57.152.157:9494` / `quic://seed.duckton.com:9494`)
 
 ## DNS (Cloudflare, DNS-only / grey-cloud)
 - `live.duckton.com` A → `20.57.152.157` (Caddy needs direct reach for TLS-ALPN).

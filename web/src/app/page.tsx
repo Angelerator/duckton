@@ -516,7 +516,7 @@ INSTALL duckton FROM community;
 LOAD duckton;
 
 -- 2. Join the public Duckton network via the live seed node
-CALL p2p_join(bootstrap => ['20.57.152.157:9494']);
+CALL p2p_join(bootstrap => ['seed.duckton.com:9494']);
 
 -- 3. Run SQL across independent nodes, verified by quorum
 SELECT * FROM p2p_query('SELECT 42 AS answer');
@@ -605,7 +605,7 @@ function Connect() {
 
         <p className="mt-5 text-sm text-white/40">
           Public jobs are free and fully off-chain. The seed node{" "}
-          <span className="font-mono text-white/60">20.57.152.157:9494</span> is live now — full
+          <span className="font-mono text-white/60">seed.duckton.com:9494</span> is live now — full
           reference in the{" "}
           <a href={DOCS_URL} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: YELLOW }}>
             docs
