@@ -64,6 +64,7 @@ function TopBar() {
         <nav className="ml-auto hidden items-center gap-7 text-sm md:flex">
           <NavLink href="#what">What it is</NavLink>
           <NavLink href="#how">How it works</NavLink>
+          <NavLink href="#connect">Connect</NavLink>
           <NavLink href={DOCS_URL}>Docs</NavLink>
           <NavLink href={GITHUB_URL}>GitHub</NavLink>
         </nav>
@@ -488,6 +489,134 @@ function Footer() {
   );
 }
 
+function CodeBlock({ code }: { code: string }) {
+  return (
+    <pre className="overflow-x-auto rounded-xl border border-white/10 bg-black/60 p-4 text-[13px] leading-relaxed">
+      <code className="font-mono">
+        {code.split("\n").map((line, i) => (
+          <div
+            key={i}
+            className={line.trimStart().startsWith("--") ? "text-white/40" : "text-white/90"}
+          >
+            {line || "\u00A0"}
+          </div>
+        ))}
+      </code>
+    </pre>
+  );
+}
+
+const EXAMPLES = [
+  {
+    id: "query",
+    label: "Run a verified query",
+    desc: "Install the extension, join the public Duckton network through the live seed node, and run SQL that independent hosts execute redundantly — accepted only when a quorum agrees byte-for-byte.",
+    code: `-- 1. Install + load the extension (DuckDB Community Extensions)
+INSTALL duckton FROM community;
+LOAD duckton;
+
+-- 2. Join the public Duckton network via the live seed node
+CALL p2p_join(bootstrap => ['20.57.152.157:9494']);
+
+-- 3. Run SQL across independent nodes, verified by quorum
+SELECT * FROM p2p_query('SELECT 42 AS answer');
+
+-- Target a subset: only nodes in a network / group / region
+SELECT * FROM p2p_query('SELECT count(*) FROM read_parquet(''s3://...'')',
+                        groups => ['eu-internal'], regions => ['eu']);`,
+  },
+  {
+    id: "earn",
+    label: "Share your machine & earn",
+    desc: "Donate a slice of an idle laptop, PC, or server and start serving others' jobs. Set your own rate (whole TON) to accept paid work — no central broker, no sign-up.",
+    code: `LOAD duckton;
+
+-- Donate compute and start serving others' jobs (becomes a host)
+CALL p2p_share(memory => '2GB', threads => 4, max_jobs => 4,
+               data_classes => ['public']);
+
+-- Set your rate to accept PAID work, then see who's around
+CALL p2p_pricing(unit_price => 5, max_bid => 100);   -- whole TON
+SELECT * FROM p2p_peers();
+
+-- Optional: bond stake for eligibility/priority on paid jobs
+CALL p2p_stake(amount => 100);`,
+  },
+  {
+    id: "pay",
+    label: "Pay & settle on TON",
+    desc: "Paid jobs lock the requester's max bid in a per-job escrow on TON. On settle, the winner, agreeing verifiers, and the platform treasury are paid and the remainder is refunded — all enforced on-chain by the live GlobalParams contract.",
+    code: `-- Turn on the TON money rail (mainnet = real funds, needs confirm)
+CALL p2p_economics(enabled => true, settlement => 'ton',
+                   network => 'mainnet', confirm => true,
+                   fee_recipient => 'EQ...your-treasury...');
+
+-- Point at the LIVE mainnet GlobalParams contract
+CALL p2p_contracts(
+  global_params => 'EQCV59kSoDDgmE8cheBNYwl2oYL9h5nkbyCqn99tN-N1w9Gg');
+
+-- Wallet via secure file refs (never paste secrets into SQL)
+CALL p2p_wallet(rpc => 'https://toncenter.com/api/v2/',
+                mnemonic_file => '~/.duckton/wallet.mnemonic',
+                address => 'EQ...');
+
+-- Run a PAID job: escrow opens on TON, splits enforced on-chain
+SELECT * FROM p2p_query('SELECT ...', payment => 'paid',
+                        replicas => 3, quorum => 2);`,
+  },
+];
+
+function Connect() {
+  const [active, setActive] = React.useState(EXAMPLES[0].id);
+  const ex = EXAMPLES.find((e) => e.id === active) ?? EXAMPLES[0];
+  return (
+    <section id="connect" className="border-y border-white/10 bg-white/[0.015]">
+      <div className="mx-auto max-w-6xl px-5 py-20">
+        <h2 className="text-3xl font-bold tracking-tight text-white md:text-4xl">
+          Connect in plain SQL
+        </h2>
+        <p className="mt-4 max-w-2xl text-white/60">
+          No daemon, no SDK. Everything is a DuckDB table function — join the network, share your
+          machine, and settle paid jobs on TON, all from SQL.
+        </p>
+
+        <div className="mt-8 flex flex-wrap gap-2">
+          {EXAMPLES.map((e) => (
+            <button
+              key={e.id}
+              type="button"
+              onClick={() => setActive(e.id)}
+              className={`rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+                active === e.id
+                  ? "text-black"
+                  : "border border-white/15 text-white/70 hover:text-white"
+              }`}
+              style={active === e.id ? { background: YELLOW } : undefined}
+            >
+              {e.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-6 grid gap-5 md:grid-cols-[1fr_1.4fr] md:items-start">
+          <p className="text-sm leading-relaxed text-white/60">{ex.desc}</p>
+          <CodeBlock code={ex.code} />
+        </div>
+
+        <p className="mt-5 text-sm text-white/40">
+          Public jobs are free and fully off-chain. The seed node{" "}
+          <span className="font-mono text-white/60">20.57.152.157:9494</span> is live now — full
+          reference in the{" "}
+          <a href={DOCS_URL} target="_blank" rel="noreferrer" className="font-semibold" style={{ color: YELLOW }}>
+            docs
+          </a>
+          .
+        </p>
+      </div>
+    </section>
+  );
+}
+
 export default function LandingPage() {
   return (
     <div className="min-h-svh bg-[#0a0a0b] text-white">
@@ -496,6 +625,7 @@ export default function LandingPage() {
       <LiveStats />
       <WhatItIs />
       <HowItWorks />
+      <Connect />
       <MainnetPanel />
       <CTA />
       <Footer />
