@@ -2,7 +2,7 @@ site_name: Duckton
 site_description: >-
   A peer-to-peer distributed DuckDB compute grid over QUIC, with a verifiable
   trust model and optional pay-per-query compute settled on TON.
-site_url: https://angelerator.github.io/duckton/
+site_url: https://docs.duckton.com/
 repo_url: https://github.com/Angelerator/duckton
 repo_name: Angelerator/duckton
 edit_uri: edit/main/docs/

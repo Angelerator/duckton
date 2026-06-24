@@ -27,6 +27,8 @@ Session.vim
 
 # Acton related
 .env
+.env.*
+!.env.*.example
 *.mnemonic
 wallets.toml
 global.wallets.toml

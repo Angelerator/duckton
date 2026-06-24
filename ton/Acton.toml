@@ -79,8 +79,13 @@ deploy-escrow-emulation = "acton script scripts/deploy_escrow.tolk"
 deploy-escrow-testnet = "acton script scripts/deploy_escrow.tolk --net testnet"
 deploy-global-params-emulation = "acton script scripts/deploy_global_params.tolk"
 deploy-global-params-testnet = "acton script scripts/deploy_global_params.tolk --net testnet"
+# MAINNET (real funds): deploys the platform-wide GlobalParams singleton. Requires
+# a funded `deployer` wallet and GP_FEE_RECIPIENT set. StakeVault/JobEscrow/
+# RecordAnchor are sharded and deploy on demand at runtime, not here.
+deploy-global-params-mainnet = "acton script scripts/deploy_global_params.tolk --net mainnet"
 upgrade-global-params-emulation = "acton script scripts/upgrade_global_params.tolk"
 upgrade-global-params-testnet = "acton script scripts/upgrade_global_params.tolk --net testnet"
+upgrade-global-params-mainnet = "acton script scripts/upgrade_global_params.tolk --net mainnet"
 e2e-emulation = "acton script scripts/e2e_testnet.tolk"
 e2e-testnet = "acton script scripts/e2e_testnet.tolk --net testnet"
 
