@@ -3,8 +3,8 @@ name: Docs
 # Build the MkDocs Material site and publish it to GitHub Pages (free hosting for
 # public repos). The site is rendered to the `gh-pages` branch by `mkdocs
 # gh-deploy`; enable Pages once (Settings → Pages → Source: "Deploy from a
-# branch" → branch `gh-pages` / root) and it serves at
-# https://angelerator.github.io/duckton/.
+# branch" → branch `gh-pages` / root). With the docs/CNAME file it serves at
+# https://docs.duckton.com/ (custom domain configured in Settings → Pages).
 on:
   push:
     branches: [main]
@@ -34,7 +34,7 @@ jobs:
           python-version: "3.x"
       - run: python3 -m pip install -r requirements-docs.txt
       - name: Build (verify) the site
-        run: mkdocs build --strict=false
+        run: mkdocs build
       - name: Deploy to GitHub Pages (gh-pages branch)
         if: github.event_name != 'pull_request'
         run: mkdocs gh-deploy --force --no-history
