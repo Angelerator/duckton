@@ -1,0 +1,37 @@
+# Live grid backend for duckton.com, exposed via a Cloudflare Tunnel.
+#
+#   console-server  — the live loopback grid (read-only, SSE metrics on :8787)
+#   cloudflared     — connects out to Cloudflare and serves it at your public
+#                     hostname (e.g. https://live.duckton.com). No inbound ports
+#                     need to be opened on the VPS.
+#
+# Setup: see README.md. TL;DR:
+#   1. Cloudflare Zero Trust → Networks → Tunnels → Create a tunnel → copy token.
+#   2. Add a public hostname: live.duckton.com → http://console-server:8787
+#   3. echo "TUNNEL_TOKEN=..." > .env
+#   4. docker compose up -d --build
+
+services:
+  console-server:
+    build:
+      context: ../..
+      dockerfile: deploy/console-server/Dockerfile
+    image: duckton-console-server:latest
+    container_name: duckton-console-server
+    environment:
+      CONSOLE_BIND: "0.0.0.0:8787"
+      CONSOLE_READONLY: "1"
+      CONSOLE_ALLOWED_ORIGINS: "https://duckton.com,https://console.duckton.com"
+    restart: unless-stopped
+    expose:
+      - "8787"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: duckton-cloudflared
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: "${TUNNEL_TOKEN:?set TUNNEL_TOKEN in deploy/console-server/.env}"
+    restart: unless-stopped
+    depends_on:
+      - console-server

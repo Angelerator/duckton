@@ -1398,22 +1398,39 @@ async fn main() {
         });
     }
 
-    let app = Router::new()
+    // Read-only mode for PUBLIC hosting (e.g. behind a Cloudflare Tunnel): the
+    // live read endpoints (state/stream/health) stay on, but `/api/query` — which
+    // runs unauthenticated arbitrary SQL on real DuckDB workers — is dropped so a
+    // public origin can't drive the grid. Ambient jobs keep metrics ticking, so
+    // the console/homepage still show live data. Set `CONSOLE_READONLY=1` to enable.
+    let readonly = matches!(
+        std::env::var("CONSOLE_READONLY").ok().as_deref(),
+        Some("1") | Some("true") | Some("TRUE")
+    );
+
+    let mut app = Router::new()
         .route("/api/state", get(state_handler))
         .route("/api/stream", get(stream_handler))
-        .route("/api/query", post(query_handler))
-        .route("/api/health", get(|| async { "ok" }))
-        .layer(build_cors())
-        .with_state(AppState {
-            q_tx,
-            bcast,
-            latest,
-        });
+        .route("/api/health", get(|| async { "ok" }));
+    if !readonly {
+        app = app.route("/api/query", post(query_handler));
+    }
+    let app = app.layer(build_cors()).with_state(AppState {
+        q_tx,
+        bcast,
+        latest,
+    });
 
-    let addr: SocketAddr = "127.0.0.1:8787".parse().unwrap();
-    println!(
-        "console-server live grid → http://{addr}  (SSE: /api/stream, query: POST /api/query)"
-    );
+    // Bind address is configurable so the server can listen on a container
+    // interface (e.g. `0.0.0.0:8787`) behind a tunnel. Defaults to loopback.
+    let bind = std::env::var("CONSOLE_BIND").unwrap_or_else(|_| "127.0.0.1:8787".to_string());
+    let addr: SocketAddr = bind.parse().expect("CONSOLE_BIND must be host:port");
+    let query_state = if readonly {
+        "disabled (read-only)"
+    } else {
+        "POST /api/query"
+    };
+    println!("console-server live grid → http://{addr}  (SSE: /api/stream, query: {query_state})");
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
