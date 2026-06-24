@@ -1,0 +1,6 @@
+live.duckton.com {
+	reverse_proxy console-server:8787 {
+		# Disable response buffering so the SSE stream (/api/stream) flushes live.
+		flush_interval -1
+	}
+}

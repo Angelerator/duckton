@@ -50,11 +50,11 @@ RUN set -eux; \
     case "$arch" in \
       arm64) \
         ddb_asset="duckdb_cli-linux-arm64.zip"; \
-        ddb_sha256="5e2399428793642e994f1584c47d49f4c58b7b4ec2297ea4a522353a6c553835" \
+        ddb_sha256="377f03fb9f17ab5a78f28f829cbfcb5333da8ab3c2d0788f27694f81df77ed29" \
         ;; \
       amd64) \
         ddb_asset="duckdb_cli-linux-amd64.zip"; \
-        ddb_sha256="35caef1fecbc8d7e2c07de4fd2cdefc5189ec9ba9e1cca228fb1a1c48cc52a8a" \
+        ddb_sha256="1f2fa724fb054b3dbe1a9cbd13de5b76997d850e7087ec762ba88db04e0180cf" \
         ;; \
       *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
     esac; \

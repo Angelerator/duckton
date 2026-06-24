@@ -1,0 +1,49 @@
+# Live deployment running on the Azure VM (westus2, B2ls_v2) behind Caddy TLS.
+#
+#   console-server — live loopback grid, read-only, SSE metrics (internal :8787)
+#   caddy          — auto-TLS reverse proxy: https://live.duckton.com -> console-server
+#   seed           — public p2p bootstrap node (QUIC/UDP 9494), advertised at the VM IP
+#
+# Bring up:  cd deploy/vm && docker compose up -d --build
+# (The web app is built with NEXT_PUBLIC_LIVE_URL=https://live.duckton.com.)
+
+services:
+  console-server:
+    build:
+      context: ../..
+      dockerfile: deploy/console-server/Dockerfile
+    environment:
+      CONSOLE_BIND: "0.0.0.0:8787"
+      CONSOLE_READONLY: "1"
+      CONSOLE_ALLOWED_ORIGINS: "https://duckton.com,https://console.duckton.com"
+    restart: unless-stopped
+    expose: ["8787"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [console-server]
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    ports: ["9494:9494/udp"]
+    environment:
+      P2P_BIND_ADDR: "0.0.0.0:9494"
+      # Externally-reachable address advertised to peers (the VM's public IP).
+      P2P_ADVERTISED_ADDR: "20.57.152.157:9494"
+      P2P_SHARE_DATA_CLASSES: "public"
+    volumes:
+      - seed_state:/node/state
+
+volumes:
+  caddy_data:
+  caddy_config:
+  seed_state:
