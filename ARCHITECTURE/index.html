@@ -1,0 +1,3833 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A peer-to-peer distributed DuckDB compute grid over QUIC, with a verifiable trust model and optional pay-per-query compute settled on TON.">
+      
+      
+      
+        <link rel="canonical" href="https://docs.duckton.com/ARCHITECTURE/">
+      
+      
+        <link rel="prev" href="../operations/observability/">
+      
+      
+        <link rel="next" href="../HOW_IT_WORKS/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Architecture & trust design - Duckton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#duckton-distributed-p2p-duckdb-over-quic-architecture-trust-design" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Duckton" class="md-header__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Duckton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Architecture & trust design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../guides/running-queries/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/sql-functions/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Deep dives
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../project/security/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Duckton" class="md-nav__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Duckton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running queries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/node-targeting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Node targeting & single-node routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/hosting-and-networks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting & joining a network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/paid-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paid queries (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PRIVATE_MODE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Private / enterprise mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/sql-functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deep dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & trust design
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & trust design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-goals-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Goals &amp; non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Goals &amp; non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#non-goals-for-the-first-milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-goals (for the first milestones)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-terminology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Terminology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-system-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. System architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. System architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-lifecycle-happy-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request lifecycle (happy path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-data-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Data plane
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Data plane">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-data-sources-formats-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Data sources &amp; formats (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-transport-quic-implementation-choice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Transport: QUIC implementation choice
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-identity-cryptography" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Identity &amp; cryptography
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-trustworthiness-mechanism-core-of-the-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Trustworthiness mechanism (core of the design)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Trustworthiness mechanism (core of the design)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-identity-sybil-resistance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Identity &amp; Sybil resistance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-attestation-tiers-what-the-hardware-can-prove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Attestation tiers (what the hardware can prove)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-reputation-from-signed-receipts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Reputation from signed receipts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-verification-how-a-result-is-judged-correct-without-trusting-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Verification (how a result is judged "correct" without trusting the worker)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-trust-score-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 Trust score &amp; policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-discovery-thousands-of-hosts-no-middleman" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Discovery ("thousands of hosts, no middleman")
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Discovery (&#34;thousands of hosts, no middleman&#34;)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-networking-global-nat-traversal-works-behind-homeoffice-nats-no-central-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Networking &amp; global NAT traversal ("works behind home/office NATs, no central server")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-security-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Security model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Security model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-in-transit-solved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 In transit — solved
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-at-rest-encrypt-the-data-deliver-the-key-per-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 At rest — encrypt the data, deliver the key per job
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-in-use-the-hard-part-and-the-honest-answer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 In use — the hard part, and the honest answer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9.3 In use — the hard part, and the honest answer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#931-confidential-tier-tee-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3.1 Confidential tier (TEE) flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#94-protecting-the-worker-from-a-malicious-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.4 Protecting the worker from a malicious query
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-resource-sharing-admission-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Resource sharing &amp; admission control
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-hedged-execution-scheduling-requester-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Hedged execution &amp; scheduling (requester side)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-sql-surface-extension-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. SQL surface (extension API)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. SQL surface (extension API)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#120-zero-config-quickstart-the-frictionless-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.0 Zero-config quickstart — the frictionless default
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#121-sql-admin-configuration-surface-business-user-friendly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 SQL admin / configuration surface (business-user friendly)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12.1 SQL admin / configuration surface (business-user friendly)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#remote-only-mode-route-everything-to-the-hosts-never-execute-locally" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote-only mode ("route everything to the hosts; never execute locally")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-network-mode-testnet-mainnet-real-funds-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 Network mode: testnet / mainnet (real-funds safety)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-roadmap-phasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Roadmap / phasing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-tech-stack-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Tech stack summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#141-economic-incentive-layer-ton-design-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Economic / incentive layer (TON) — design only
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-open-questions-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Open questions / risks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-protocol-versioning-compatibility-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. Protocol versioning &amp; compatibility (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#17-configuration-system-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        17. Configuration system (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#18-pluggability-scalability-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        18. Pluggability &amp; scalability (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#19-implementation-status-honest-deviations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        19. Implementation status &amp; honest deviations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#20-abuse-resistance-anti-griefing-robustness-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        20. Abuse resistance (anti-griefing &amp; robustness) — implemented
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="20. Abuse resistance (anti-griefing &amp; robustness) — implemented">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-failure-fault-attribution-the-core-fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Failure fault attribution (the core fix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-pre-flight-cost-gating-at-admission" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Pre-flight cost gating at admission
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-requester-reputation-trust-weighted-score-impact-newer-sender-less-effect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Requester reputation + trust-weighted score impact ("newer sender → less effect")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-blocking-bad-players-local-deny-lists-no-central-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Blocking bad players (local deny-lists, no central authority)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-non-determinism-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Non-determinism handling
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-free-mode-anti-spam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Free-mode anti-spam
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-eclipse-gossip-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Eclipse / gossip hardening
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#21-transport-performance-tuning-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        21. Transport performance tuning (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../HOW_IT_WORKS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works (free vs paid)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BLOCKCHAIN_ECONOMICS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blockchain economics (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTNET/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TON testnet runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../IMPROVEMENT_ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Improvement roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-goals-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Goals &amp; non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Goals &amp; non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#non-goals-for-the-first-milestones" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-goals (for the first milestones)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-terminology" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Terminology
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-system-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. System architecture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. System architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#request-lifecycle-happy-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Request lifecycle (happy path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-data-plane" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Data plane
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Data plane">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-data-sources-formats-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Data sources &amp; formats (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-transport-quic-implementation-choice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Transport: QUIC implementation choice
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-identity-cryptography" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Identity &amp; cryptography
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-trustworthiness-mechanism-core-of-the-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Trustworthiness mechanism (core of the design)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="7. Trustworthiness mechanism (core of the design)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#71-identity-sybil-resistance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.1 Identity &amp; Sybil resistance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#72-attestation-tiers-what-the-hardware-can-prove" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.2 Attestation tiers (what the hardware can prove)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#73-reputation-from-signed-receipts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.3 Reputation from signed receipts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#74-verification-how-a-result-is-judged-correct-without-trusting-the-worker" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.4 Verification (how a result is judged "correct" without trusting the worker)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#75-trust-score-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7.5 Trust score &amp; policy
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-discovery-thousands-of-hosts-no-middleman" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Discovery ("thousands of hosts, no middleman")
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Discovery (&#34;thousands of hosts, no middleman&#34;)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#81-networking-global-nat-traversal-works-behind-homeoffice-nats-no-central-server" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8.1 Networking &amp; global NAT traversal ("works behind home/office NATs, no central server")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-security-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Security model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9. Security model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#91-in-transit-solved" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.1 In transit — solved
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#92-at-rest-encrypt-the-data-deliver-the-key-per-job" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.2 At rest — encrypt the data, deliver the key per job
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#93-in-use-the-hard-part-and-the-honest-answer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3 In use — the hard part, and the honest answer
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="9.3 In use — the hard part, and the honest answer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#931-confidential-tier-tee-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.3.1 Confidential tier (TEE) flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#94-protecting-the-worker-from-a-malicious-query" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9.4 Protecting the worker from a malicious query
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-resource-sharing-admission-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Resource sharing &amp; admission control
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-hedged-execution-scheduling-requester-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Hedged execution &amp; scheduling (requester side)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-sql-surface-extension-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. SQL surface (extension API)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12. SQL surface (extension API)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#120-zero-config-quickstart-the-frictionless-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.0 Zero-config quickstart — the frictionless default
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#121-sql-admin-configuration-surface-business-user-friendly" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.1 SQL admin / configuration surface (business-user friendly)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="12.1 SQL admin / configuration surface (business-user friendly)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#remote-only-mode-route-everything-to-the-hosts-never-execute-locally" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote-only mode ("route everything to the hosts; never execute locally")
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#122-network-mode-testnet-mainnet-real-funds-safety" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12.2 Network mode: testnet / mainnet (real-funds safety)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#13-roadmap-phasing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        13. Roadmap / phasing
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#14-tech-stack-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14. Tech stack summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#141-economic-incentive-layer-ton-design-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        14.1 Economic / incentive layer (TON) — design only
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#15-open-questions-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        15. Open questions / risks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#16-protocol-versioning-compatibility-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        16. Protocol versioning &amp; compatibility (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#17-configuration-system-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        17. Configuration system (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#18-pluggability-scalability-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        18. Pluggability &amp; scalability (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#19-implementation-status-honest-deviations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        19. Implementation status &amp; honest deviations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#20-abuse-resistance-anti-griefing-robustness-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        20. Abuse resistance (anti-griefing &amp; robustness) — implemented
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="20. Abuse resistance (anti-griefing &amp; robustness) — implemented">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-failure-fault-attribution-the-core-fix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Failure fault attribution (the core fix)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-pre-flight-cost-gating-at-admission" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Pre-flight cost gating at admission
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-requester-reputation-trust-weighted-score-impact-newer-sender-less-effect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Requester reputation + trust-weighted score impact ("newer sender → less effect")
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-blocking-bad-players-local-deny-lists-no-central-authority" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Blocking bad players (local deny-lists, no central authority)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-non-determinism-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Non-determinism handling
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-free-mode-anti-spam" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Free-mode anti-spam
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-eclipse-gossip-hardening" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Eclipse / gossip hardening
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#21-transport-performance-tuning-implemented" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        21. Transport performance tuning (implemented)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="duckton-distributed-p2p-duckdb-over-quic-architecture-trust-design">Duckton — Distributed P2P DuckDB over QUIC: Architecture &amp; Trust Design<a class="headerlink" href="#duckton-distributed-p2p-duckdb-over-quic-architecture-trust-design" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>Status: Design draft (v0.1)
+Scope: A peer-to-peer compute grid where independent machines ("hosts") donate
+RAM/CPU and run DuckDB queries on behalf of remote requesters, with <strong>no central
+broker</strong>, <strong>end-to-end encrypted transport over QUIC</strong>, and a concrete
+<strong>trustworthiness mechanism</strong> so a requester can reason about <em>which</em> untrusted
+hosts to trust with a job.</p>
+</blockquote>
+<hr />
+<h2 id="1-goals-non-goals">1. Goals &amp; non-goals<a class="headerlink" href="#1-goals-non-goals" title="Permanent link">&para;</a></h2>
+<h3 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Run on ordinary <strong>local machines</strong> (laptops/desktops) that each run DuckDB + this extension.</li>
+<li>A host advertises a <strong>resource budget</strong> (RAM, CPU/threads, max concurrent jobs) it is willing to share.</li>
+<li>A requester broadcasts a <strong>query + scoped credentials</strong> to many candidate hosts.</li>
+<li>Several hosts <strong>accept</strong>; the query runs redundantly; the <strong>first correct result wins</strong> ("hedged execution"), the rest are cancelled.</li>
+<li><strong>Direct peer-to-peer</strong> communication over <strong>QUIC</strong> — no data-path middleman.</li>
+<li>A <strong>trust model</strong> that lets a requester decide which hosts are trustworthy enough for a given job, and detect/penalize cheaters.</li>
+<li>Data lives in <strong>cloud object storage</strong> (S3 / ADLS / GCS); hosts are pure compute.</li>
+</ul>
+<h3 id="non-goals-for-the-first-milestones">Non-goals (for the first milestones)<a class="headerlink" href="#non-goals-for-the-first-milestones" title="Permanent link">&para;</a></h3>
+<ul>
+<li>A full distributed query optimizer / data-sharding scatter-gather engine (deferred — see Roadmap Phase 4).</li>
+<li>Guaranteeing a <em>malicious host operator cannot read plaintext on commodity laptops</em> — this is <strong>physically impossible without confidential-computing hardware</strong> (see §9.3). We instead <strong>minimize blast radius</strong> and route sensitive data only to attested hosts.</li>
+</ul>
+<hr />
+<h2 id="2-terminology">2. Terminology<a class="headerlink" href="#2-terminology" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Node</strong></td>
+<td>A process running DuckDB + this extension. Every node is symmetric (can be client and server), like the Quack protocol.</td>
+</tr>
+<tr>
+<td><strong>Requester</strong></td>
+<td>A node that wants a query executed.</td>
+</tr>
+<tr>
+<td><strong>Host / Worker</strong></td>
+<td>A node that donates resources and executes queries for others.</td>
+</tr>
+<tr>
+<td><strong>Job</strong></td>
+<td>One query execution request, possibly dispatched redundantly to multiple workers.</td>
+</tr>
+<tr>
+<td><strong>Bid</strong></td>
+<td>A worker's offer to run a job (price/ETA + attestation evidence).</td>
+</tr>
+<tr>
+<td><strong>Quorum</strong></td>
+<td>The number of workers whose results must agree before a job is "verified".</td>
+</tr>
+<tr>
+<td><strong>Receipt</strong></td>
+<td>A signed statement about a completed job's outcome, used to build reputation.</td>
+</tr>
+<tr>
+<td><strong>Trust score</strong></td>
+<td>A requester-computable estimate of a worker's trustworthiness.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-system-architecture">3. System architecture<a class="headerlink" href="#3-system-architecture" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>graph TB
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    subgraph N[&quot;Every node = DuckDB + p2p extension (symmetric)&quot;]
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>        direction LR
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>        SQL[SQL surface&lt;br/&gt;p2p_share / p2p_join / p2p_query]
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>        CORE[Coordinator core&lt;br/&gt;scheduler · bidder · verifier]
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>        NET[QUIC endpoint&lt;br/&gt;mTLS · streams · datagrams]
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>        TRUST[Trust engine&lt;br/&gt;identity · reputation · attestation]
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>        SANDBOX[Sandboxed exec DuckDB&lt;br/&gt;locked-down + budgeted]
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        SQL --- CORE
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>        CORE --- NET
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        CORE --- TRUST
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        CORE --- SANDBOX
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    end
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    DISC[(Discovery layer&lt;br/&gt;Kademlia DHT + gossip)]
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    STORE[(Object storage&lt;br/&gt;S3 / ADLS / GCS&lt;br/&gt;encrypted-at-rest)]
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    BOOT[Bootstrap peers&lt;br/&gt;join only, no data]
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    NET &lt;--&gt;|QUIC mTLS| DISC
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    BOOT -.-&gt; DISC
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    SANDBOX --&gt;|HTTPS, scoped creds| STORE
+</code></pre></div>
+<h3 id="request-lifecycle-happy-path">Request lifecycle (happy path)<a class="headerlink" href="#request-lifecycle-happy-path" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sequenceDiagram
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    participant R as Requester
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    participant D as Discovery (DHT/gossip)
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    participant W1 as Worker A
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    participant W2 as Worker B
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    participant W3 as Worker C
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    participant S as Object storage
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>    R-&gt;&gt;D: find candidates (capacity, trust, attestation)
+<a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    R-&gt;&gt;W1: Offer(query_hash, cost hint, nonce)
+<a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    R-&gt;&gt;W2: Offer(...)
+<a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    R-&gt;&gt;W3: Offer(...)
+<a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>    W1--&gt;&gt;R: Bid(accept, ETA, attestation, receipts)
+<a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    W2--&gt;&gt;R: Bid(accept, ...)
+<a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>    W3--&gt;&gt;R: Reject(at capacity)
+<a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>    Note over R: pick top-k by trust + ETA (e.g. k=2 or quorum=2)
+<a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>    R-&gt;&gt;W1: Dispatch(full query, scoped credential, encrypted to node key)
+<a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>    R-&gt;&gt;W2: Dispatch(...)
+<a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>    W1-&gt;&gt;S: read encrypted Parquet (HTTPS)
+<a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>    W2-&gt;&gt;S: read encrypted Parquet (HTTPS)
+<a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>    W1--&gt;&gt;R: result_hash (commit, sent first)
+<a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    W2--&gt;&gt;R: result_hash
+<a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>    Note over R: hashes agree =&gt; verified
+<a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>    R-&gt;&gt;W1: send full result (fastest agreeing worker)
+<a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>    R--&gt;&gt;W2: RESET stream (cancel loser)
+<a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>    R-&gt;&gt;R: emit signed Receipts (correct/correct), update reputation
+</code></pre></div>
+<hr />
+<h2 id="4-data-plane">4. Data plane<a class="headerlink" href="#4-data-plane" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Data is <strong>not</strong> owned by hosts. Queries reference cloud object storage: <code>s3://…</code>, <code>az://…</code>/<code>abfss://…</code>, <code>gcs://…</code>, read via DuckDB's <code>httpfs</code>/<code>azure</code>/cloud secrets.</li>
+<li>Because every host sees identical input, <strong>redundant execution and result-hash comparison work cleanly</strong> (same input + same SQL ⇒ same canonical output).</li>
+<li>Data <strong>at rest</strong> should be <strong>encrypted</strong> (see §9.2, Parquet Modular Encryption) so the storage bytes are meaningless without the key, which is delivered per-job.</li>
+</ul>
+<h3 id="41-data-sources-formats-implemented">4.1 Data sources &amp; formats (implemented)<a class="headerlink" href="#41-data-sources-formats-implemented" title="Permanent link">&para;</a></h3>
+<p>Workers read cloud object storage through DuckDB's native extensions. Both the
+<strong>formats</strong> and the <strong>providers</strong> are pluggable and fully configurable (no
+hard-coding) under the <code>[storage]</code> config section.</p>
+<table>
+<thead>
+<tr>
+<th>Concern</th>
+<th>Supported</th>
+<th>DuckDB mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Formats</strong></td>
+<td>Parquet, CSV, JSON, Delta Lake, Apache Iceberg (extensible)</td>
+<td><code>parquet</code>, <code>json</code> (core/bundled), <code>delta</code>, <code>iceberg</code> extensions; CSV is core</td>
+</tr>
+<tr>
+<td><strong>Providers</strong></td>
+<td>AWS S3, <strong>self-hosted MinIO / S3-compatible</strong>, Azure ADLS (<code>abfss://</code>/<code>az://</code>), Google Cloud Storage, generic HTTPS, local</td>
+<td><code>httpfs</code>(+<code>aws</code>), <code>azure</code>, <code>httpfs</code>/<code>gcs</code> (S3-interop), <code>httpfs</code></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Self-hosted MinIO / S3-compatible endpoints.</strong> The <code>s3</code> provider works against
+any S3-compatible store, not just AWS. Per-provider options
+(<code>[storage.provider_options.s3]</code>, layered under the top-level <code>[storage]</code>
+defaults and <code>P2P_STORAGE_*</code> env) map to the DuckDB s3 secret: <code>endpoint</code>
+(e.g. <code>minio.local:9000</code>), <code>url_style</code> (<code>path</code> for MinIO, <code>vhost</code> for AWS),
+<code>use_ssl</code> (TLS on/off), and <code>region</code>. The worker mints
+<code>CREATE SECRET (TYPE s3, KEY_ID …, SECRET …, ENDPOINT 'minio.local:9000',
+URL_STYLE 'path', USE_SSL false, REGION …, SCOPE 's3://bucket/prefix/')</code> so
+<code>s3://bucket/…</code> reads from MinIO (Delta needs the <code>delta</code> + <code>httpfs</code>
+extensions). These options are <strong>non-secret connection knobs only</strong> — the access
+key / secret are never stored in config; they arrive per job, encrypted (below).</p>
+<p><strong>Pluggable abstraction</strong> (<code>crates/node/src/datasource.rs</code>, mirrors the project's
+trait pattern):
+- <code>DataFormat</code> — a format plus the DuckDB extensions it requires.
+- <code>StorageProvider</code> trait — turns a per-job <code>ScopedCredential</code> into a
+  <code>CREATE SECRET</code> statement; impls <code>S3Provider</code>, <code>AzureProvider</code>, <code>GcsProvider</code>,
+  <code>HttpsProvider</code>, <code>LocalFileProvider</code>. New clouds slot in behind the trait.
+- <code>ProviderRegistry</code> / <code>StorageSetup</code> — resolved <strong>once at engine init</strong> from
+  config (enabled providers + options, the explicit extension pre-load list,
+  allowed local dirs, the remote-access switch). The untrusted query text never
+  influences these.</p>
+<p><strong>Secure-read boundary</strong> (reconciling remote reads with the §9.4 lockdown). The
+real engine sets up each fresh, per-job connection in a strict order <em>before</em>
+the untrusted query runs:</p>
+<ol>
+<li>budget (<code>memory_limit</code>/<code>threads</code>) + ephemeral <code>temp_directory</code>;</li>
+<li>disable extension auto-install/auto-load + unsigned extensions;</li>
+<li><code>LOAD</code> the <strong>pre-resolved</strong> extension set (chosen at init from config — never
+   <code>INSTALL</code>/<code>LOAD</code> at query time);</li>
+<li><code>SET allowed_directories=[…]</code> for any configured local fixtures (must precede
+   locking external access);</li>
+<li>per-job <code>add_parquet_key</code> (at-rest) + a <strong>scoped, short-lived</strong>
+   <code>CREATE SECRET</code> (S3 STS session token / Azure user-delegation SAS / GCS
+   downscoped/HMAC — never long-lived keys), scoped read-only to the object
+   prefix;</li>
+<li><code>SET enable_external_access</code> — <code>true</code> <strong>only</strong> in the remote profile;</li>
+<li><code>SET lock_configuration=true</code> — the query can no longer widen anything.</li>
+</ol>
+<p><strong>What DuckDB can vs. cannot restrict natively (honest):</strong>
+- <strong>Local files — restrictable.</strong> <code>allowed_directories</code>/<code>allowed_paths</code> give
+  fine-grained control even with <code>enable_external_access=false</code>. The strict
+  engine allows none; the local-scoped engine allows only the configured fixture
+  dirs; <code>/etc/passwd</code> and friends stay blocked.
+- <strong>Network — all-or-nothing.</strong> <code>enable_external_access</code> is a single global
+  flag; DuckDB <strong>cannot</strong> restrict egress to specific storage endpoints. So the
+  remote profile shrinks blast radius via <strong>scoped, short-lived secrets</strong> (a
+  stolen credential reads only its prefix, read-only, for minutes) and relies on
+  <strong>OS-level egress filtering</strong> to the configured endpoints as the complementary
+  control. <strong>That OS sandbox / egress filter is separately deferred (§9.4,
+  §19)</strong> — until it lands, a worker with remote access enabled can, in
+  principle, reach arbitrary hosts and read local files, so enable remote access
+  only on workers whose OS-level egress + filesystem are externally constrained.
+- <strong>At rest — supported.</strong> Parquet Modular Encryption keys are delivered per job
+  via Secrets/<code>add_parquet_key</code>; DuckDB currently encrypts footer + all columns
+  with one <code>footer_key</code> (per-column keys not yet implemented upstream).</p>
+<p>Config knobs (<code>[storage]</code>): <code>enable_remote_access</code>, <code>require_extensions</code>,
+<code>preload_extensions</code>, <code>enabled_formats</code>, <code>enabled_providers</code>,
+<code>allowed_local_paths</code>, <code>[storage.provider_options.*]</code>, <code>[storage.format_options.*]</code>,
+plus the existing <code>provider</code>/<code>endpoint</code>/<code>region</code>/<code>url_style</code>/<code>use_ssl</code>/<code>*_ttl_secs</code>.
+All layer through defaults → TOML → <code>P2P_STORAGE_*</code> env → per-call params
+(<code>P2P_STORAGE_URL_STYLE</code>, <code>P2P_STORAGE_USE_SSL</code>, …). All are surfaced (secrets
+redacted) via <code>p2p_config()</code> / <code>p2p_settings()</code>.</p>
+<p><strong>Encrypted credentials for MinIO / S3-compatible (and any provider).</strong> The
+access key / secret are <strong>never</strong> in plaintext config, logs, or <code>p2p_config()</code>.
+They are delivered per job through the existing <strong>sealed credential</strong> path
+(architecture §9.2/§9.3): the requester puts the key material in a
+<code>CloudCredential</code> (alongside <code>endpoint</code>/<code>url_style</code>/<code>use_ssl</code>/<code>region</code>) and seals
+it (X25519 + ChaCha20-Poly1305, <code>seal_to</code>) to the <strong>selected</strong> worker's sealing
+public key — learned from that worker's attestation quote (<code>Enclave::attest</code>
+binds the key) or its signed capability record — via
+<code>p2p_node::sealed_credential("s3", worker_pub, &amp;cred, "bucket/prefix/", ttl)</code>.
+The opaque <code>ScopedCredential.token</code> becomes <code>sealed:v1:&lt;hex(SealedBlob)&gt;</code> —
+ciphertext only. The worker, holding its sealing keypair
+(<code>StorageSetup::with_sealing</code>), opens it <strong>just-in-time</strong> at engine setup
+(<code>StorageSetup::resolve_credential</code>), mints the prefix-scoped <code>CREATE SECRET</code>,
+then locks the configuration. Plaintext key material exists only transiently in
+the engine connection; at rest it lives only as 0600 config/secret files
+(<code>ConfigStore</code>, outside the repo) or as blobs sealed to the worker. A worker
+that receives a sealed token but has no sealing key fails closed
+(<code>SealingKeyUnavailable</code>) rather than silently minting an empty secret.</p>
+<blockquote>
+<p><strong>Honest status:</strong> this sealed/scoped-credential path is implemented and
+unit-tested (sealing, just-in-time open, prefix-scoped secret, fail-closed), but
+the <strong>coordinator does not yet attach a per-job credential</strong> to a <code>Dispatch</code>
+(<code>credential: None</code>), so the cloud object-store read path is <strong>not exercised
+end-to-end</strong> in the live grid. Wiring the requester to seal + attach a credential
+to the chosen worker is the remaining step.</p>
+</blockquote>
+<hr />
+<h2 id="5-transport-quic-implementation-choice">5. Transport: QUIC implementation choice<a class="headerlink" href="#5-transport-quic-implementation-choice" title="Permanent link">&para;</a></h2>
+<p>The extension is best written in <strong>Rust</strong> against DuckDB's <strong>C Extension API</strong> (stable ABI, tiny binaries, no need to link the whole engine, first-class async ecosystem). Given a Rust core, the QUIC options:</p>
+<table>
+<thead>
+<tr>
+<th>Library</th>
+<th>Lang</th>
+<th>TLS</th>
+<th>Notes</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Quinn</strong></td>
+<td>Rust</td>
+<td>rustls (TLS 1.3)</td>
+<td>Most mature async Rust QUIC; tokio-native; pluggable cert verifiers (easy self-signed pinning + mTLS); datagrams; stable Rust; Linux/macOS/Windows</td>
+<td><strong>Chosen</strong></td>
+</tr>
+<tr>
+<td>s2n-quic</td>
+<td>Rust</td>
+<td>rustls/s2n-tls</td>
+<td>AWS-backed, clean API, smaller ecosystem/examples</td>
+<td>Strong alternative</td>
+</tr>
+<tr>
+<td>msquic</td>
+<td>C</td>
+<td>Schannel/OpenSSL</td>
+<td>MS, very fast, C ABI; best if writing the extension in C/C++ or needing Windows-native perf</td>
+<td>Use only if going C/C++</td>
+</tr>
+<tr>
+<td>quiche</td>
+<td>Rust core + C API</td>
+<td>BoringSSL</td>
+<td>Cloudflare, production-grade; lower-level (you drive the event loop)</td>
+<td>More plumbing</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Decision: Quinn + rustls.</strong> Rationale:
+1. Pure Rust, async (tokio) — composes with the rest of the node (discovery, reputation, scheduler).
+2. <strong>rustls supports mutual TLS and custom certificate verification</strong>, which is exactly what we need to pin self-signed, identity-bearing certificates (no certificate authority, no middleman).
+3. First-class <strong>stream multiplexing</strong> (separate control vs. bulk-result streams ⇒ no head-of-line blocking) and <strong>datagrams</strong> (for cheap gossip/heartbeats).
+4. <strong>Cheap cancellation</strong>: <code>reset()</code> on losing workers propagates immediately — the mechanism that makes "first result wins" efficient.</p>
+<blockquote>
+<p>QUIC gives us <strong>TLS 1.3 by default and mandatory</strong> — there is no unencrypted mode. Forward secrecy and authenticated encryption come for free on every hop.</p>
+</blockquote>
+<hr />
+<h2 id="6-identity-cryptography">6. Identity &amp; cryptography<a class="headerlink" href="#6-identity-cryptography" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Node identity = an Ed25519 keypair.</strong> <code>node_id = multibase(BLAKE3(public_key))</code>. Self-sovereign; no CA.</li>
+<li><strong>Transport auth = mTLS</strong> where each side presents a certificate <strong>bound to its node key</strong>. The connection verifier checks that the presented cert matches the expected/pinned <code>node_id</code> (TOFU + allowlist, like Quinn's self-signed example flow).</li>
+<li><strong>Authorization = capability tokens.</strong> A requester presents a signed, short-lived token describing what it is allowed to ask for (a macaroon/biscuit-style attenuable token). Workers verify the signature offline — no central auth server.</li>
+<li><strong>Per-job secrets are encrypted to the worker's key</strong> (or to its enclave key in the confidential tier, §9.3), so secrets are never exposed to intermediaries.</li>
+</ul>
+<hr />
+<h2 id="7-trustworthiness-mechanism-core-of-the-design">7. Trustworthiness mechanism (core of the design)<a class="headerlink" href="#7-trustworthiness-mechanism-core-of-the-design" title="Permanent link">&para;</a></h2>
+<p>"Identify how trustworthy a host is" is decomposed into four independent, composable signals. A requester combines them into a <strong>trust score</strong> and gates jobs with a <strong>policy</strong>.</p>
+<h3 id="71-identity-sybil-resistance">7.1 Identity &amp; Sybil resistance<a class="headerlink" href="#71-identity-sybil-resistance" title="Permanent link">&para;</a></h3>
+<p>With "thousands of hosts", a cheap attack is to spin up many fake identities. Mitigations (configurable, stackable):
+- <strong>Costly identity minting</strong>: a new <code>node_id</code> must solve a small <strong>proof-of-work</strong> puzzle bound to its public key, or post a <strong>stake/deposit</strong>. Raises the cost of mass-producing identities.
+- <strong>Vouching / web-of-trust</strong>: existing trusted nodes can sign a <code>Vouch{node_id, weight}</code>. New nodes inherit a small bootstrap trust from vouchers.
+- <strong>Age</strong>: trust accrues slowly with verified history; brand-new identities start near zero and are only used with high redundancy.</p>
+<h3 id="72-attestation-tiers-what-the-hardware-can-prove">7.2 Attestation tiers (what the hardware can prove)<a class="headerlink" href="#72-attestation-tiers-what-the-hardware-can-prove" title="Permanent link">&para;</a></h3>
+<p>Each worker advertises an <strong>attestation level</strong> in its bid. Requester selection
+does <strong>not</strong> trust the self-reported integer: a bid claiming <strong>&gt; L0</strong> is honored
+only when its evidence verifies against a wired <code>AttestationVerifier</code>
+(trusted-authority signature over an allowlisted measurement + the offer nonce);
+absent/invalid evidence is treated as <strong>L0</strong>, so the <code>&gt; L0</code> gate fails closed and a
+spoofed level can't reach sensitive data.</p>
+<blockquote>
+<p><strong>Honest status (be precise):</strong> the full honor-path is implemented — a worker
+wired with <code>Worker::with_attestor(...)</code> produces <strong>per-offer, nonce-bound</strong>
+evidence, and a coordinator wired with <code>Coordinator::with_attestation_verifier(...)</code>
+(an <code>AllowlistVerifier</code>) honors a verified <code>&gt; L0</code> level. <strong>Production <code>Node</code>s ship
+NO attestor and NO verifier by default</strong> (the honest default): a production host
+emits L0, so an L2 (sensitive) policy admits <em>nobody</em> until real TPM/TEE hardware
+lands. The <strong><code>console-server</code> demo</strong> wires a software <code>MockAttestor</code> on its L1/L2
+hosts + the matching <code>AllowlistVerifier</code> on the coordinator, so the demo's
+Internal/Sensitive jobs are gated by <strong>genuine</strong> per-offer attestation
+verification (not a spoofable integer compare) — demo-only, never on a production
+node. What still requires hardware: a real TEE quote (Intel TDX / AMD SEV-SNP /
+AWS Nitro) verified against vendor certificate chains, and binding the attested
+key to the host's <strong>network identity</strong> (the transport exposes only the node-id
+hash today). Both plug in behind the same <code>Attestor</code>/<code>AttestationVerifier</code> traits.</p>
+</blockquote>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Evidence</th>
+<th>What it proves</th>
+<th>Typical hardware</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>L0 — Anonymous</strong></td>
+<td>Just the pinned node key</td>
+<td>Identity continuity only</td>
+<td>Any laptop</td>
+</tr>
+<tr>
+<td><strong>L1 — Measured boot</strong></td>
+<td>TPM quote (PCRs) + signed event log</td>
+<td>Machine booted a known-good OS/agent image; raises the bar against tampering</td>
+<td>Most modern laptops (TPM 2.0)</td>
+</tr>
+<tr>
+<td><strong>L2 — Confidential (TEE)</strong></td>
+<td>Hardware attestation quote (Intel TDX / AMD SEV-SNP / AWS Nitro), verified against an <strong>allowlisted enclave measurement</strong></td>
+<td>DuckDB is running unmodified <strong>inside hardware-encrypted memory</strong>; even host root cannot read plaintext</td>
+<td>Server/cloud confidential VMs (not commodity laptops)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>On commodity <strong>laptops</strong>, L0/L1 are the realistic ceiling. True "operator can't read RAM" requires <strong>L2 hardware</strong> (see §9.3). The trust engine treats attestation level as a hard gate, not just a score input.</p>
+</blockquote>
+<h3 id="73-reputation-from-signed-receipts">7.3 Reputation from signed receipts<a class="headerlink" href="#73-reputation-from-signed-receipts" title="Permanent link">&para;</a></h3>
+<p>After each job, the requester (and any verifier) emits a <strong>signed receipt</strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Receipt {
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  job_id, worker_id, requester_id,
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  query_hash, result_hash,
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  verdict: Correct | Incorrect | Timeout | Malformed,
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>  latency_ms, ts,
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>  sig_requester            // Ed25519 over the above
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>}
+</code></pre></div>
+<ul>
+<li>Receipts are <strong>gossiped</strong> and/or stored under the worker's key in the <strong>DHT</strong>, forming a portable, append-only-ish reputation trail.</li>
+<li>A worker presents a <strong>bundle of recent receipts</strong> in its bid; the requester verifies the signatures.</li>
+<li><strong>Anti-omission</strong>: because receipts are also gossiped/DHT-stored independently of the worker, a worker that hides its bad receipts can be caught when the requester cross-checks the gossip layer. Hiding ⇒ treat as unknown/low trust.</li>
+</ul>
+<p><strong>Reputation score</strong> <code>R ∈ [0,1]</code> is a recency-weighted correctness rate:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>R = Σ wᵢ·correctᵢ / Σ wᵢ ,   wᵢ = decayᵗ · job_weightᵢ
+</code></pre></div>
+<p>where <code>correctᵢ ∈ {0,1}</code>, <code>decay</code> down-weights old history, and <code>job_weight</code> scales by job size. Reliability (completion/uptime/latency variance) is tracked as a secondary factor.</p>
+<h3 id="74-verification-how-a-result-is-judged-correct-without-trusting-the-worker">7.4 Verification (how a result is judged "correct" without trusting the worker)<a class="headerlink" href="#74-verification-how-a-result-is-judged-correct-without-trusting-the-worker" title="Permanent link">&para;</a></h3>
+<p>This is what feeds <code>verdict</code> and makes the whole loop honest:</p>
+<ol>
+<li><strong>Deterministic canonical result hash.</strong> DuckDB output is <strong>not</strong> byte-stable (parallel row order, float formatting). Canonicalize: sort by all columns (or use an order-independent/commutative per-row hash for huge results), normalize numeric/NULL encoding, then <strong>BLAKE3</strong>.</li>
+<li><strong>Commit-first.</strong> Workers send the <strong><code>result_hash</code> before</strong> streaming the full result. Cheap to compare; prevents a worker from adapting its answer to others.</li>
+<li><strong>Quorum / redundant execution.</strong> Run on <code>k</code> workers; require ≥<code>q</code> matching hashes before accepting. The fastest <em>agreeing</em> worker streams the actual data; losers get <code>RESET</code>. (Latency racing + trust verification combined.)</li>
+<li><strong>Canary auditing.</strong> The requester periodically injects queries whose answer it already knows (computed locally or on a trusted/L2 node). A worker that fails a canary is marked <code>Incorrect</code> and slashed — cheap, randomized policing that works even for non-redundant jobs.</li>
+</ol>
+<blockquote>
+<p><strong>Honest limit:</strong> quorum assumes an <strong>honest majority</strong> among the chosen <code>k</code>. Colluding majorities can agree on a wrong answer. That is why quorum is combined with reputation, attestation gating, Sybil cost, and canaries — and why <strong>sensitive</strong> data should require <strong>L2 attestation</strong> or a <strong>permissioned</strong> worker set.</p>
+</blockquote>
+<h3 id="75-trust-score-policy">7.5 Trust score &amp; policy<a class="headerlink" href="#75-trust-score-policy" title="Permanent link">&para;</a></h3>
+<p>The requester computes, per candidate:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>effective_trust(worker) =
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    gate(attestation_level ≥ policy.min_level)         // hard gate (boolean)
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>  · clamp( α·R + β·age_factor + γ·voucher_trust
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>           + δ·stake_factor − penalties )               // soft score ∈ [0,1]
+</code></pre></div>
+<p>and selects workers via a <strong>policy</strong> chosen by data sensitivity:</p>
+<table>
+<thead>
+<tr>
+<th>Data class</th>
+<th>Policy</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Public / non-sensitive</strong></td>
+<td><code>min_level = L0</code>, <code>min_trust = 0.7</code>, <code>quorum = 2..3</code>, canary rate moderate</td>
+</tr>
+<tr>
+<td><strong>Internal / low-sensitivity</strong></td>
+<td><code>min_level = L1</code>, <code>min_trust = 0.85</code>, <code>quorum = 3</code>, scoped creds mandatory</td>
+</tr>
+<tr>
+<td><strong>Sensitive / regulated</strong></td>
+<td><code>min_level = L2</code> (attested enclave) <strong>or</strong> permissioned allowlist; quorum optional since hardware enforces confidentiality</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-discovery-thousands-of-hosts-no-middleman">8. Discovery ("thousands of hosts, no middleman")<a class="headerlink" href="#8-discovery-thousands-of-hosts-no-middleman" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Kademlia DHT</strong> for scalable peer lookup + a <strong>gossip/pubsub</strong> topic where workers periodically publish a signed <strong>capability record</strong>:
+  <code>{node_id, free_mem, free_cores, max_jobs, attestation_level, price, recent_receipts_root}</code>.</li>
+<li>Requesters subscribe, filter locally by capacity + trust + attestation, and pick candidates.</li>
+<li><strong>Bootstrap peers</strong> are needed only to <em>enter</em> the swarm; they hold no job state and are never in the data path, preserving "no middleman" for queries.</li>
+<li>Recommended implementation: <strong>libp2p</strong> (Kademlia + gossipsub + Noise/QUIC transport) for Phase 2; a static seed list suffices for the MVP.</li>
+</ul>
+<h3 id="81-networking-global-nat-traversal-works-behind-homeoffice-nats-no-central-server">8.1 Networking &amp; global NAT traversal ("works behind home/office NATs, no central server")<a class="headerlink" href="#81-networking-global-nat-traversal-works-behind-homeoffice-nats-no-central-server" title="Permanent link">&para;</a></h3>
+<p>The grid must let nodes behind ordinary home/office NATs on <strong>different networks worldwide</strong> connect <strong>directly</strong>, with <strong>no central server and no fixed IP/URL</strong>. The discovery overlay (<code>crates/node/src/libp2p_discovery.rs</code>) layers the standard libp2p NAT-traversal stack on top of the Kademlia + gossipsub overlay. Every piece is configuration-driven under <code>[discovery.nat]</code> (defaults → TOML → <code>P2P_DISCOVERY_NAT_*</code> env → per-call); nothing is hard-coded.</p>
+<ul>
+<li><strong>identify</strong> (always on) — peers exchange their observed/listen addresses and supported protocols. This is what lets AutoNAT, AutoRelay and Kademlia learn how to reach each other.</li>
+<li><strong>AutoNAT</strong> — peers probe each other to determine whether <em>we</em> are publicly reachable and to learn our <strong>external address</strong>. A discovered public address is advertised to the swarm, so a node with a port-forward / public IP needs no manual <code>advertised_addr</code>.</li>
+<li><strong>DCUtR hole punching</strong> — for the common case (cone NATs), two nodes coordinate a simultaneous dial ("hole punch") to establish a <strong>direct</strong> connection through their NATs. This runs over <strong>QUIC/UDP</strong> (the transport now includes a QUIC listener alongside TCP), upgrading an initial relay-assisted connection into a direct one. Requires the relay client.</li>
+<li><strong>Circuit Relay v2 + AutoRelay</strong> — when hole punching cannot succeed (e.g. <strong>symmetric NAT</strong>), traffic is routed through <strong>volunteer relay peers</strong> — ordinary nodes that opt in with <code>act_as_relay = true</code> — never a central server. A relay client <strong>auto-selects</strong> relays discovered from the network (any peer advertising the relay hop protocol), reserving a bounded number of circuits (<code>max_relays</code>). Explicit relays may also be pinned via <code>relays</code>. A volunteer relay bounds its exposure with <code>relay_limits</code> (max reservations/circuits, durations, bytes).</li>
+<li><strong>mDNS</strong> — zero-config discovery of peers on the <strong>same LAN</strong> (no bootstrap needed locally).</li>
+<li><strong>DHT peer routing / rendezvous</strong> — peers remain addressable by <code>PeerId</code> and are found via the DHT even as their addresses change freely; there is no central directory.</li>
+</ul>
+<p><strong>The bootstrap caveat (law of distributed systems).</strong> To <em>join</em> a swarm a node needs <strong>at least one reachable entry point</strong> — a bootstrap seed (<code>discovery.bootstrap</code>) and/or a relay. This is unavoidable for any distributed system: a brand-new node must learn of <em>someone</em> to talk to. Crucially, that entry point is <strong>not a central server</strong>: it is an ordinary peer (or a community bootstrap node / volunteer relay), it <strong>owns nothing</strong>, holds no job state, is <strong>never in the query data path</strong>, and is <strong>freely replaceable</strong> — any reachable peer can serve the role. Once a node is in the swarm, discovery, hole punching and relaying proceed peer-to-peer.</p>
+<p><strong>Config surface (<code>[discovery.nat]</code>):</strong> <code>autonat</code>, <code>dcutr</code>, <code>relay_client</code>, <code>act_as_relay</code>, <code>mdns</code> (+ <code>mdns_query_interval_secs</code>), <code>external_addresses</code> (manual overrides for the "no fixed IP/URL" case), <code>relays</code> (pinned relays; empty ⇒ AutoRelay), <code>max_relays</code>, and <code>relay_limits.{max_reservations,max_reservations_per_peer,reservation_duration_secs,max_circuits,max_circuits_per_peer,max_circuit_duration_secs,max_circuit_bytes}</code>. Validation enforces that <code>dcutr</code> requires <code>relay_client</code>, and that a volunteer relay has sane limits.</p>
+<p><strong>Honest testing boundary.</strong> The protocol <em>wiring</em> is tested in-process on loopback: the swarm builds with the full NAT stack, the behaviours toggle on/off from config, config plumbs end-to-end into the overlay, relay-capable nodes build and peer, and gossip still propagates. mDNS LAN discovery is validated when the host delivers multicast (skipped, not failed, in sandboxes without it). <strong>True cross-NAT/WAN hole punching, AutoNAT reachability detection, and relayed connectivity between genuinely NAT'd hosts cannot be simulated in a single process</strong> — they require a real <strong>multi-host deployment</strong> across separate networks (e.g. two machines behind different home routers plus a third volunteer relay) to fully validate.</p>
+<hr />
+<h2 id="9-security-model">9. Security model<a class="headerlink" href="#9-security-model" title="Permanent link">&para;</a></h2>
+<h3 id="91-in-transit-solved">9.1 In transit — solved<a class="headerlink" href="#91-in-transit-solved" title="Permanent link">&para;</a></h3>
+<p>QUIC ⇒ <strong>TLS 1.3 mandatory</strong>, mutual auth via pinned node certs, forward secrecy. The worker→storage leg is HTTPS. <strong>No byte is readable on any wire.</strong></p>
+<h3 id="92-at-rest-encrypt-the-data-deliver-the-key-per-job">9.2 At rest — encrypt the data, deliver the key per job<a class="headerlink" href="#92-at-rest-encrypt-the-data-deliver-the-key-per-job" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Store <strong>Parquet with Parquet Modular Encryption</strong> (per-column AES keys) in object storage. The stored bytes are useless without the key.</li>
+<li>The requester delivers the <strong>data key and/or a scoped, short-lived storage credential</strong> inside the encrypted Dispatch, <strong>only to selected workers</strong>:</li>
+<li><strong>AWS</strong>: STS <code>AssumeRole</code> + session policy (this prefix, read-only, ~15 min TTL).</li>
+<li><strong>Azure</strong>: user-delegation <strong>SAS</strong> token (path-scoped, read-only, short expiry).</li>
+<li><strong>GCS</strong>: downscoped token (Credential Access Boundary) or signed URLs.</li>
+<li>Effect: a malicious worker can read only the exact objects the query needed, read-only, for minutes — then the credential dies.</li>
+</ul>
+<h3 id="93-in-use-the-hard-part-and-the-honest-answer">9.3 In use — the hard part, and the honest answer<a class="headerlink" href="#93-in-use-the-hard-part-and-the-honest-answer" title="Permanent link">&para;</a></h3>
+<p>A worker must process <strong>plaintext</strong> in RAM to run SQL. Therefore:
+- On <strong>commodity laptops (L0/L1)</strong>, a determined operator with kernel access <strong>can</strong> read query memory. We do <strong>not</strong> claim otherwise. We shrink blast radius (scoped creds, no-spill/encrypted-temp, locked-down DuckDB) and rely on trust/quorum/reputation.
+- For <strong>true confidentiality from the operator (L2)</strong>, run the worker's DuckDB inside a <strong>hardware TEE</strong> (Intel TDX / AMD SEV-SNP / AWS Nitro) and use <strong>attestation-gated key release</strong>: the data key is encrypted to the enclave's key and released <strong>only after</strong> the enclave proves (remote attestation) it runs an allowlisted, unmodified DuckDB image in genuine hardware-encrypted memory. This pattern is proven on DuckDB (CWI's <strong>DuckDB-SGX2</strong> ran TPC-H SF30 at <strong>&lt;2× overhead</strong> over encrypted Parquet). Route <strong>sensitive</strong> workloads to the L2 tier only.</p>
+<h4 id="931-confidential-tier-tee-flow">9.3.1 Confidential tier (TEE) flow<a class="headerlink" href="#931-confidential-tier-tee-flow" title="Permanent link">&para;</a></h4>
+<p>When <strong>sensitive</strong> data must be hidden even from the host operator, the job runs on
+an <strong>L2 / TEE</strong> worker under attestation-gated key release. The end-to-end flow
+(types in <code>p2p-node::storage</code> + <code>p2p-trust::attestation</code>):</p>
+<ol>
+<li><strong>Enclave sealing keypair.</strong> The worker generates an X25519 <strong>sealing keypair
+   <em>inside</em> the enclave</strong> (<code>Enclave::new</code> → <code>SealingKeypair</code>); the private half
+   never leaves hardware-encrypted memory. <code>Enclave::sealing_pubkey()</code> exposes only
+   the public half.</li>
+<li><strong>Attestation quote (binding).</strong> On an offer the enclave produces a quote
+   binding <code>(enclave measurement ‖ sealing pubkey ‖ offer nonce)</code>
+   (<code>Enclave::attest(nonce)</code> → <code>Attestor::produce</code>). Binding the sealing pubkey
+   into the quote is what stops a man-in-the-middle from substituting its own key;
+   the fresh per-offer <strong>nonce</strong> stops replay.</li>
+<li><strong>Requester verification.</strong> The requester verifies the quote before releasing
+   anything (<code>AttestationVerifier::verify</code>, e.g. <code>AllowlistVerifier</code>): the <strong>vendor
+   certificate chain</strong>, an <strong>allowlisted enclave measurement</strong> (the exact, audited
+   DuckDB image), the required <strong>attestation level</strong> (≥ L2), and that the <strong>nonce</strong>
+   and <strong>bound sealing key</strong> match this exchange. Any mismatch ⇒ fail closed, no
+   key is released.</li>
+<li><strong>Seal the secret to the enclave key.</strong> Only on a passing quote does the
+   requester seal the <strong>scoped storage credential / data key</strong> to the enclave's
+   sealing pubkey (X25519 + ChaCha20-Poly1305, <code>seal_to</code> / <code>CloudCredential::seal_token</code>
+   / <code>KeyRelease::release</code>). The plaintext key material never travels and never
+   persists; the opaque token is ciphertext only (<code>sealed:v1:…</code>).</li>
+<li><strong>Decrypt + execute in encrypted RAM.</strong> The enclave opens the sealed blob
+   just-in-time with its private sealing key (<code>Enclave::open_key</code> /
+   <code>StorageSetup::resolve_credential</code>) and runs unmodified DuckDB over the
+   encrypted-at-rest Parquet <strong>inside hardware-encrypted memory</strong> — host root
+   cannot read the plaintext.</li>
+<li><strong>Quorum-verified result.</strong> The result is still hash-committed and
+   quorum-verified like any other job (§11), so the L2 tier adds <strong>confidentiality</strong>
+   on top of the grid's existing <strong>verified correctness</strong>.</li>
+</ol>
+<p><strong>Routing &amp; honest scope.</strong> <strong>Sensitive</strong> data routes <strong>only</strong> to L2/TEE workers
+(the <code>min_level = L2</code> hard gate, §7.5); commodity (L0/L1) nodes give
+<strong>verified-correctness, not confidentiality</strong> — a determined operator there can
+read query RAM, which we do not hide. <strong>Current status:</strong> the protocol, the
+sealing crypto (X25519 + ChaCha20-Poly1305), attestation binding/verification,
+allowlist + nonce + level checks, and encrypted-at-rest are implemented and
+unit-tested behind a <strong>software mock attestor</strong> (<code>MockAttestor</code>); a <strong>genuine TEE
+quote</strong> (Intel TDX / AMD SEV-SNP / AWS Nitro) and the vendor cert-chain verifier
+plug in behind the same <code>Attestor</code> / <code>AttestationVerifier</code> traits and require real
+TEE <strong>hardware</strong>, which is pending (Phase 4, §19).</p>
+<h3 id="94-protecting-the-worker-from-a-malicious-query">9.4 Protecting the worker from a malicious query<a class="headerlink" href="#94-protecting-the-worker-from-a-malicious-query" title="Permanent link">&para;</a></h3>
+<p>Running arbitrary SQL from strangers is dangerous. The execution DuckDB is locked down:
+- <code>SET enable_external_access = false</code> except the scoped storage endpoint.
+- No <code>INSTALL</code> / <code>LOAD</code>; <code>SET lock_configuration = true</code>.
+- No local-file <code>COPY</code>/read; read-only attach.
+- Disable httpfs disk caching; pin <code>temp_directory</code> to ephemeral/tmpfs and wipe on completion.
+- OS sandbox enforcing the donated budget: <strong>cgroups v2 + seccomp</strong> (Linux), <strong>sandbox-exec / microVM</strong> (macOS), so a hostile query cannot exceed RAM/CPU or reach the network/disk beyond storage.</p>
+<blockquote>
+<p><strong>Honest status:</strong> the DuckDB-flag lockdown above is the <strong>default, always-on</strong>
+protection. The host now also wires the configured <code>[sandbox]</code> policy + egress
+allow-list into the live worker, <strong>but the default sandbox backend is <code>noop</code></strong>
+(in-process; the OS caps are not applied). Real OS enforcement is <strong>opt-in</strong> via
+<code>[sandbox].process_per_job</code> + the <code>p2p-job-exec</code> child binary, which runs each
+job in a <code>Sandbox::command</code>-wrapped subprocess (rlimits / Seatbelt / cgroups /
+Job Object, killed on drop). Until that flag is set, jobs run in-process under
+the DuckDB lockdown only.</p>
+</blockquote>
+<hr />
+<h2 id="10-resource-sharing-admission-control">10. Resource sharing &amp; admission control<a class="headerlink" href="#10-resource-sharing-admission-control" title="Permanent link">&para;</a></h2>
+<p>A host configures its donation (config file or <code>p2p_share</code> call):
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>budget: { memory: &quot;4GB&quot;, threads: 2, max_jobs: 3, allow: read_only, data_classes: [public] }
+</code></pre></div>
+On an incoming <code>Offer</code>, the worker checks current usage vs. budget + policy and replies <code>Bid(accept, eta, price, attestation)</code> or <code>Reject</code>. Accepted jobs run on a dedicated DuckDB connection with <code>SET memory_limit</code> / <code>SET threads</code> matching the lease, backed by OS-level limits.</p>
+<hr />
+<h2 id="11-hedged-execution-scheduling-requester-side">11. Hedged execution &amp; scheduling (requester side)<a class="headerlink" href="#11-hedged-execution-scheduling-requester-side" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Discover candidates; filter by trust/attestation/capacity.</li>
+<li>Send <code>Offer</code> to a candidate set; collect <code>Bid</code>s.</li>
+<li>Pick top-<code>k</code> by <code>effective_trust</code> and ETA (k ≥ quorum).</li>
+<li><code>Dispatch</code> to all <code>k</code>; collect commit <code>result_hash</code>es.</li>
+<li>Accept first result whose hash reaches <strong>quorum</strong>; <code>RESET</code> the losers.</li>
+<li>Emit signed <strong>receipts</strong>; update reputation. Timeouts/failures are covered by redundancy (fault tolerance falls out for free).</li>
+</ol>
+<p>Two exposed knobs: <code>verify = fast</code> (return fastest, verify hashes in background, flag mismatches) vs. <code>verify = quorum</code> (wait for <code>q</code> matching hashes before returning).</p>
+<hr />
+<h2 id="12-sql-surface-extension-api">12. SQL surface (extension API)<a class="headerlink" href="#12-sql-surface-extension-api" title="Permanent link">&para;</a></h2>
+<h3 id="120-zero-config-quickstart-the-frictionless-default">12.0 Zero-config quickstart — the frictionless default<a class="headerlink" href="#120-zero-config-quickstart-the-frictionless-default" title="Permanent link">&para;</a></h3>
+<p>The end-user query path is designed for <strong>effectively zero setup</strong>. After
+loading the extension, a user runs a query with <strong>no prior <code>p2p_join</code> /
+<code>p2p_share</code>, no config file, and no environment variables</strong>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">INSTALL</span><span class="w"> </span><span class="n">duckton</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">community</span><span class="p">;</span><span class="w"> </span><span class="k">LOAD</span><span class="w"> </span><span class="n">duckton</span><span class="p">;</span><span class="w">   </span><span class="c1">-- or autoload</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1">-- That&#39;s the whole setup. Just query:</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_query</span><span class="p">(</span><span class="s1">&#39;SELECT region, count(*) FROM &#39;&#39;s3://bucket/events/*.parquet&#39;&#39; GROUP BY region&#39;</span><span class="p">);</span>
+</code></pre></div>
+<p><code>p2p_query</code> <strong>lazily auto-initializes</strong> the node on first use from the built-in
+[<code>GridConfig::default()</code>] layering (<code>crates/config</code>) — embedded in code, so <strong>no
+file/env is required</strong>. The defaults are deliberately safe and frictionless:</p>
+<ul>
+<li><strong>Free / no-chain by default</strong> (<code>economics.enabled = false</code>) → no wallet or
+  payment friction; jobs are still scored (quorum/canary + receipts + reputation).</li>
+<li><strong>Planner <code>prefer = auto</code></strong> → small queries run <strong>locally for free</strong> in the
+  node's own locked-down DuckDB; large ones fan out to the grid.</li>
+<li><strong>Graceful local-first fallback</strong>: with <strong>no bootstrap seeds</strong> configured (or
+  when a configured grid is unreachable), an <code>auto</code> query runs locally rather
+  than failing. Configure seeds (<code>p2p_join</code>) to fan out to a real swarm.</li>
+<li>Sensible <code>replicas=3</code> / <code>quorum=2</code> / <code>min_trust</code> / <code>min_attestation=L0</code> /
+  <code>verify=quorum</code> defaults.</li>
+</ul>
+<p>The lazy auto-init is implemented by <code>p2p_node::Node</code> (<code>Node::auto(engine)</code> →
+<code>Node::query(sql, overrides)</code>), which assembles transport + discovery + trust +
+the free local-execution path + planner from defaults.</p>
+<p><strong>Customization is a one-liner</strong> — per-call named params on <code>p2p_query</code> override
+config for that call only; you only touch them when you <em>want</em> to:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_query</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="s1">&#39;SELECT region, count(*) FROM &#39;&#39;s3://bucket/events/*.parquet&#39;&#39; GROUP BY region&#39;</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="n">replicas</span><span class="w">    </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w">          </span><span class="c1">-- how many workers to race</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="n">quorum</span><span class="w">      </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w">          </span><span class="c1">-- matching hashes required</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="n">verify</span><span class="w">      </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;quorum&#39;</span><span class="p">,</span><span class="w">   </span><span class="c1">-- &#39;quorum&#39; | &#39;fast&#39;</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="n">prefer</span><span class="w">      </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;auto&#39;</span><span class="p">,</span><span class="w">     </span><span class="c1">-- &#39;local&#39; | &#39;remote&#39; | &#39;auto&#39;</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="n">payment</span><span class="w">     </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;free&#39;</span><span class="p">,</span><span class="w">     </span><span class="c1">-- &#39;free&#39; | &#39;paid&#39; | &#39;auto&#39;</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="w">  </span><span class="n">min_trust</span><span class="w">   </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">8</span><span class="p">,</span>
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span><span class="n">min_attest</span><span class="w">  </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;L1&#39;</span>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="p">);</span>
+</code></pre></div>
+<p>Being a host/provider stays <strong>opt-in</strong> (<code>p2p_share</code>) and joining a specific
+network stays available (<code>p2p_join</code>), but <strong>neither is required just to run a
+query</strong>. Friendly, actionable errors point at the relevant override only when
+something genuinely needs it (e.g. <code>payment =&gt; 'paid'</code> with no wallet configured
+returns a message telling you to pass <code>payment =&gt; 'free'</code> or configure a wallet).</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1">-- Become a host and donate resources (opt-in)</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_share</span><span class="p">(</span><span class="n">memory</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;4GB&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">threads</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="n">max_jobs</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="n">data_classes</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;public&#39;</span><span class="p">]);</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1">-- Join a specific swarm (optional; otherwise local-first)</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_join</span><span class="p">(</span><span class="n">bootstrap</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="p">[</span><span class="s1">&#39;quic://seed1.example:9494&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;quic://seed2.example:9494&#39;</span><span class="p">]);</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="c1">-- Inspect peers and their trust</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="k">SELECT</span><span class="w"> </span><span class="n">node_id</span><span class="p">,</span><span class="w"> </span><span class="n">free_mem</span><span class="p">,</span><span class="w"> </span><span class="n">attestation_level</span><span class="p">,</span><span class="w"> </span><span class="n">trust_score</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_peers</span><span class="p">();</span>
+</code></pre></div>
+<h3 id="121-sql-admin-configuration-surface-business-user-friendly">12.1 SQL admin / configuration surface (business-user friendly)<a class="headerlink" href="#121-sql-admin-configuration-surface-business-user-friendly" title="Permanent link">&para;</a></h3>
+<p>A <strong>non-technical user</strong> can set up and manage everything — blockchain on/off,
+network mode, wallet, pricing, bidding, stake, fees, trust/selection, contract
+addresses — entirely via SQL <code>CALL</code>s, <strong>without ever editing TOML/env or
+touching contracts</strong>. All logic, validation, persistence and secret redaction
+live in the typed <code>p2p_config::ConfigStore</code>; the extension functions are a thin
+binding. Zero-config defaults apply until something is set. Both <code>name =&gt; value</code>
+and <code>name = value</code> argument syntaxes work, via <code>CALL</code> or <code>SELECT * FROM</code>.</p>
+<p><strong>Inspect (read-only, secrets redacted):</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_config</span><span class="p">();</span><span class="w">    </span><span class="c1">-- effective settings, grouped (alias: p2p_settings)</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">SELECT</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_status</span><span class="p">();</span><span class="w">    </span><span class="c1">-- node/wallet/network/economics state; shows ACTIVE network</span>
+</code></pre></div>
+<p><strong>Set (grouped, validated, friendly errors):</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_economics</span><span class="p">(</span><span class="n">enabled</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">true</span><span class="p">,</span><span class="w"> </span><span class="n">settlement</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;ton&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">network</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;testnet&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">fee_recipient</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;kQ...&#39;</span><span class="p">);</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_pricing</span><span class="p">(</span><span class="n">unit_price</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="n">max_bid</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">100</span><span class="p">);</span><span class="w">          </span><span class="c1">-- whole TON</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_bidding</span><span class="p">(</span><span class="n">w_quality</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">6</span><span class="p">,</span><span class="w"> </span><span class="n">w_stake</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">15</span><span class="p">,</span><span class="w"> </span><span class="n">w_price</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">25</span><span class="p">);</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_selection</span><span class="p">(</span><span class="n">replicas</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="n">quorum</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span><span class="w"> </span><span class="n">checksum_min</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">3</span><span class="p">);</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_fees</span><span class="p">(</span><span class="n">platform_fee_pct</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">02</span><span class="p">,</span><span class="w"> </span><span class="n">participation_commission_frac</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">02</span><span class="p">);</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_trust</span><span class="p">(</span><span class="n">min_trust</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">8</span><span class="p">,</span><span class="w"> </span><span class="n">min_attest</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;L1&#39;</span><span class="p">);</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_contracts</span><span class="p">(</span><span class="n">stake_vault</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;kQ...&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">job_escrow</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;kQ...&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">record_anchor</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;kQ...&#39;</span><span class="p">);</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_planner</span><span class="p">(</span><span class="n">prefer</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;remote&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">local_execution</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">false</span><span class="p">);</span><span class="w">  </span><span class="c1">-- remote-only mode</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_set</span><span class="p">(</span><span class="s1">&#39;economics.fees.platform_fee_pct&#39;</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">.</span><span class="mi">02</span><span class="p">);</span><span class="w">      </span><span class="c1">-- generic escape hatch to ANY key</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_config_reset</span><span class="p">();</span><span class="w">                                    </span><span class="c1">-- restore defaults</span>
+</code></pre></div>
+<h4 id="remote-only-mode-route-everything-to-the-hosts-never-execute-locally">Remote-only mode ("route everything to the hosts; never execute locally")<a class="headerlink" href="#remote-only-mode-route-everything-to-the-hosts-never-execute-locally" title="Permanent link">&para;</a></h4>
+<p>By default a node is <strong>local-first</strong>: the planner (§12.0, §11) runs small/cheap
+queries for free in its own locked-down in-process DuckDB and only fans out to
+the grid when a query is too big, the node is locally saturated, or the caller
+asks for it. A requester (e.g. a <strong>low-power / mobile / thin client</strong>) can opt
+out of running <em>anything</em> on its own machine and route <strong>100 % of execution to
+remote hosts</strong> via a single planner knob, <code>planner.local_execution_enabled</code>
+(default <code>true</code>):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1">-- Persistent remote-only mode (survives restart; sits in the runtime layer):</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_planner</span><span class="p">(</span><span class="n">local_execution</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">false</span><span class="p">);</span><span class="w">                 </span><span class="c1">-- never run locally</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_planner</span><span class="p">(</span><span class="n">prefer</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;remote&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">local_execution</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">false</span><span class="p">);</span><span class="w"> </span><span class="c1">-- + sticky remote default</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1">-- equivalently via the generic escape hatch:</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_set</span><span class="p">(</span><span class="s1">&#39;planner.local_execution_enabled&#39;</span><span class="p">,</span><span class="w"> </span><span class="k">false</span><span class="p">);</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_set</span><span class="p">(</span><span class="s1">&#39;planner.prefer&#39;</span><span class="p">,</span><span class="w"> </span><span class="s1">&#39;remote&#39;</span><span class="p">);</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="c1">-- Per-call (highest precedence), unchanged:</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="k">FROM</span><span class="w"> </span><span class="n">p2p_query</span><span class="p">(</span><span class="s1">&#39;SELECT ...&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">prefer</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;remote&#39;</span><span class="p">);</span><span class="w">           </span><span class="c1">-- this query only</span>
+</code></pre></div>
+<p>Semantics:</p>
+<ul>
+<li><strong>Hard gate.</strong> When <code>local_execution_enabled = false</code> the node <strong>never</strong> runs a
+  query locally — not even a tiny one that would fit, and <strong>not even a per-call
+  <code>prefer =&gt; 'local'</code></strong> (the gate overrides preference). The planner returns
+  <code>Remote</code> with reason <code>LocalDisabled</code> and the coordinator's adaptive fail-over
+  <strong>"start local" path is skipped entirely</strong> (no local slot is ever reserved).</li>
+<li><strong><code>prefer = 'remote'</code></strong> is a softer, sticky default: it routes to the grid by
+  default but a per-call <code>prefer =&gt; 'local'</code> still wins. Use
+  <code>local_execution_enabled = false</code> for a guarantee, <code>prefer = 'remote'</code> for a
+  default.</li>
+<li><strong>Thin-client / requester-only.</strong> A node that never called <code>p2p_share</code> (is not
+  a host) and has local execution disabled works as a <strong>pure requester</strong>:
+  <code>p2p_query</code> dispatches to hosts with no dependency on a local execution
+  engine.</li>
+<li><strong>Friendly failure.</strong> In remote-only mode with <strong>no reachable hosts</strong>, a query
+  returns a clear, actionable <code>NoCandidates</code> error ("no hosts available; join a
+  network with <code>p2p_join</code> or add bootstrap seeds") instead of silently falling
+  back to local. <code>p2p_status()</code> shows <code>execution_mode = remote-only</code>.</li>
+</ul>
+<p>Precedence (lowest → highest), as everywhere else (§17): <strong>built-in defaults &lt;
+config file (<code>[planner]</code>) &lt; <code>P2P_PLANNER_*</code> env &lt; SQL/runtime (<code>p2p_planner</code> /
+<code>p2p_set</code>) &lt; per-call (<code>prefer =&gt;</code>)</strong> — except the <code>local_execution_enabled</code>
+hard gate, which, once set, is not undone by a per-call <code>prefer =&gt; 'local'</code>.</p>
+<p><strong>Wallet (secrets handled carefully):</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="c1">-- Prefer FILE/ENV references over pasting secrets into SQL (which would land in logs):</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_wallet</span><span class="p">(</span><span class="n">rpc</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;https://...&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">mnemonic_file</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;/path/outside/repo/wallet.mnemonic&#39;</span><span class="p">,</span>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="w">                </span><span class="n">api_key_file</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;/path/outside/repo/toncenter.key&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">address</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;kQ...&#39;</span><span class="p">);</span>
+</code></pre></div>
+<p>If a raw inline <code>mnemonic</code>/<code>api_key</code> is supplied, it is written to a <code>0600</code> file
+<strong>outside the repo</strong> (under the config dir's <code>secrets/</code>) and only the <strong>path
+reference</strong> is persisted — the raw secret is <strong>never</strong> written to the config
+file and <strong>never</strong> echoed; <code>p2p_config()</code> redacts it everywhere.</p>
+<p><strong>Provider stake actions:</strong></p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_stake</span><span class="p">(</span><span class="n">amount</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">100</span><span class="p">);</span><span class="w">     </span><span class="c1">-- drives the on-chain stake flow (or says what&#39;s needed)</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_unstake</span><span class="p">(</span><span class="n">amount</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="mi">100</span><span class="p">);</span>
+</code></pre></div>
+<p><strong>Persistence &amp; layering.</strong> SQL settings are a <strong>persisted runtime layer</strong> that
+sits <em>above</em> env in the precedence chain — defaults → config file (<code>P2P_CONFIG</code>)
+→ <code>P2P_*</code> env → <strong>SQL/runtime</strong> → per-call — written to a sparse runtime
+overrides file (default <code>&lt;config-dir&gt;/runtime.toml</code>, override with
+<code>P2P_RUNTIME_CONFIG</code>) so they <strong>survive restart</strong>. The base hand-edited file is
+never rewritten, and <strong>secrets are excluded</strong> (kept in the separate <code>0600</code>
+secret files). Every setter validates through the typed <code>GridConfig</code> and returns
+a friendly, actionable message on bad input — never a panic/stack trace.</p>
+<h3 id="122-network-mode-testnet-mainnet-real-funds-safety">12.2 Network mode: testnet / mainnet (real-funds safety)<a class="headerlink" href="#122-network-mode-testnet-mainnet-real-funds-safety" title="Permanent link">&para;</a></h3>
+<p><code>economics.network</code> is a first-class switchable mode, <strong>defaulting to <code>testnet</code></strong>
+(never silently mainnet). Per-network defaults are auto-applied (all overridable):</p>
+<table>
+<thead>
+<tr>
+<th>Network</th>
+<th>Default RPC</th>
+<th>Explorer</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>testnet</code> (default)</td>
+<td><code>https://testnet.toncenter.com/api/v2/</code></td>
+<td><code>testnet.tonviewer.com</code></td>
+</tr>
+<tr>
+<td><code>mainnet</code></td>
+<td><code>https://toncenter.com/api/v2/</code></td>
+<td><code>tonviewer.com</code></td>
+</tr>
+</tbody>
+</table>
+<p>Both networks can be configured <strong>simultaneously</strong> — contract addresses
+(<code>p2p_contracts</code>), wallet/API-key references (<code>p2p_wallet</code>) and RPC are stored
+<strong>per network</strong> under <code>[economics.testnet]</code> / <code>[economics.mainnet]</code>, so switching
+<code>network</code> flips to that network's addresses/endpoints without reconfiguring.</p>
+<p><strong>Mainnet safety guard (real funds).</strong> Switching to mainnet requires an explicit
+opt-in, and paid/on-chain actions on mainnet are blocked until confirmed:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_economics</span><span class="p">(</span><span class="n">network</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;mainnet&#39;</span><span class="p">);</span><span class="w">                 </span><span class="c1">-- ERROR: requires confirm (real TON)</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a><span class="k">CALL</span><span class="w"> </span><span class="n">p2p_economics</span><span class="p">(</span><span class="n">network</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="s1">&#39;mainnet&#39;</span><span class="p">,</span><span class="w"> </span><span class="n">confirm</span><span class="w"> </span><span class="o">=&gt;</span><span class="w"> </span><span class="k">true</span><span class="p">);</span><span class="c1">-- OK, with a clear warning</span>
+</code></pre></div>
+<p><code>p2p_status()</code> prominently shows the active network, its resolved RPC/explorer
+endpoints, and a WARNING when mainnet is active (or selected-but-unconfirmed).</p>
+<hr />
+<h2 id="13-roadmap-phasing">13. Roadmap / phasing<a class="headerlink" href="#13-roadmap-phasing" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Deliverable</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>0 — Walking skeleton</strong></td>
+<td>Rust DuckDB C-API extension; Quinn mTLS endpoint; two nodes; ship one query end-to-end; result streamed back. Attestation field stubbed into the bid.</td>
+<td>✅ Done — extension loads in the <code>duckdb</code> CLI; two-node query e2e over QUIC.</td>
+</tr>
+<tr>
+<td><strong>1 — Hedging + budgets</strong></td>
+<td>Static peer list; Offer/Bid/Dispatch; admission control with mem/thread budgets; race <code>k</code>, cancel losers.</td>
+<td>✅ Done.</td>
+</tr>
+<tr>
+<td><strong>2 — Trust v1</strong></td>
+<td>Canonical result hashing + quorum; signed receipts + reputation; canary auditing; lockdown sandbox.</td>
+<td>✅ Done (DuckDB-flag lockdown; OS sandbox pending — §19).</td>
+</tr>
+<tr>
+<td><strong>3 — Discovery + Sybil</strong></td>
+<td>libp2p Kademlia + gossip capability ads; PoW/stake/vouching; capability tokens.</td>
+<td>✅ Done — Sybil/tokens/signed-ads/bounded membership + real libp2p (Kademlia DHT + gossipsub) wire propagation, verified multi-node over loopback (§8, §19).</td>
+</tr>
+<tr>
+<td><strong>4 — Confidential tier</strong></td>
+<td>L2 TEE workers with attestation-gated key release + encrypted Parquet; sensitive-data routing.</td>
+<td>⚙️ Protocol + mock attestor + sealed key release + encrypted-at-rest done; real TEE hardware required for genuine L2 (§19).</td>
+</tr>
+<tr>
+<td><strong>5 — True distributed</strong></td>
+<td>Partition-aware scatter-gather (optional, only if real scale-out is needed).</td>
+<td>⛔ Scaffolded as future work.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="14-tech-stack-summary">14. Tech stack summary<a class="headerlink" href="#14-tech-stack-summary" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Engine binding:</strong> DuckDB <strong>C Extension API</strong> + <strong>Rust</strong> (<code>duckdb</code> / loadable-macros).</li>
+<li><strong>Transport:</strong> <strong>Quinn</strong> + <strong>rustls</strong> (mTLS, pinned self-signed identities), <strong>tokio</strong>.</li>
+<li><strong>Discovery:</strong> <strong>libp2p</strong> (Kademlia + gossipsub); static seeds for MVP.</li>
+<li><strong>Crypto:</strong> Ed25519 (identity/receipts), BLAKE3 (result/identity hashing), biscuit/macaroon (capability tokens).</li>
+<li><strong>Result framing:</strong> DuckDB-native chunk serialization (fast bulk transfer), Quack-style.</li>
+<li><strong>Confidential tier:</strong> Intel TDX / AMD SEV-SNP / AWS Nitro + remote attestation (RATS/EAT); Parquet Modular Encryption at rest.</li>
+<li><strong>Sandbox:</strong> DuckDB lockdown flags + cgroups/seccomp (Linux) / sandbox-exec or microVM (macOS).</li>
+</ul>
+<hr />
+<h2 id="141-economic-incentive-layer-ton-design-only">14.1 Economic / incentive layer (TON) — design only<a class="headerlink" href="#141-economic-incentive-layer-ton-design-only" title="Permanent link">&para;</a></h2>
+<p>A separate design doc, <a href="../BLOCKCHAIN_ECONOMICS/"><strong>BLOCKCHAIN_ECONOMICS.md</strong></a>,
+specifies an optional <strong>TON-based economic/incentive layer</strong> that <em>augments</em> the
+trust model in §7 (it is <strong>design + foundation only — not implemented</strong>). It covers
+wallet↔identity binding, a provider pricing/earnings formula, stake-weighted
+bidding/selection (adaptive <code>N</code>, who-gets-paid-when-N-ran), slashing, and
+<strong>off-chain receipts anchored on-chain via per-epoch Merkle roots</strong> (so per-job
+on-chain writes are avoided at scale). It plugs into the existing seams: the
+<code>TrustInputs.stake_factor</code> / <code>delta_stake</code> weight (currently <code>0.0</code> in the
+coordinator) is where staking first wires in, and proposed <code>Wallet</code> / <code>Settlement</code>
+/ <code>StakeRegistry</code> / <code>RecordAnchor</code> traits follow the pluggable-trait style of §18.</p>
+<h2 id="15-open-questions-risks">15. Open questions / risks<a class="headerlink" href="#15-open-questions-risks" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Honest-majority assumption</strong> for quorum: acceptable for public data; sensitive data must use L2 or permissioned sets.</li>
+<li><strong>Determinism</strong> of canonical hashing across DuckDB versions/build flags — pin versions per swarm and include the DuckDB version in <code>query_hash</code>.</li>
+<li><strong>Reputation bootstrapping &amp; Sybil economics</strong> — tune PoW/stake/vouch weights against real abuse.</li>
+<li><strong>Laptop confidentiality ceiling</strong> — communicate clearly to users that L0/L1 protect transport + at-rest + integrity, <strong>not</strong> operator-side RAM.</li>
+<li><strong>Result-hash false mismatches</strong> from nondeterministic SQL (e.g., <code>random()</code>, <code>now()</code>, unordered <code>LIMIT</code>) — detect and either reject or mark non-verifiable.</li>
+</ul>
+<hr />
+<h2 id="16-protocol-versioning-compatibility-implemented">16. Protocol versioning &amp; compatibility (implemented)<a class="headerlink" href="#16-protocol-versioning-compatibility-implemented" title="Permanent link">&para;</a></h2>
+<p>The protocol <strong>will</strong> evolve; incompatible peers must be rejected cleanly rather
+than misbehave. Versioning is centralized in the <code>p2p-proto</code> crate
+(<code>version.rs</code>) and everything derives from it.</p>
+<ul>
+<li><strong>Semantic version</strong> <code>major.minor.patch</code> (<code>PROTOCOL_VERSION</code>), a wire
+  <code>SCHEMA_VERSION</code> tag prefixed to <strong>every</strong> framed message, and a versioned
+  gossip capability record (<code>CapabilityAd { schema_version, protocol_version, … }</code>).</li>
+<li><strong>ALPN encodes the major</strong>: <code>duckdb-p2p/&lt;major&gt;</code>. Cross-major peers cannot even
+  share a protocol at the TLS layer.</li>
+<li><strong>Handshake</strong>: immediately after the QUIC/mTLS connection, peers exchange a
+  <code>Hello { protocol_version, min_supported, engine_version, extension_version }</code>
+  on a dedicated stream. The transport runs this in <code>connect()</code>/<code>accept()</code> and
+  exposes the <code>Negotiated { version, peer_engine_version }</code> on the <code>Conn</code>.</li>
+<li><strong>Policy</strong> (<code>VersionInfo::negotiate</code>): same MAJOR required; the newer side
+  downgrades to the negotiated common (lower) version; a peer below
+  <code>min_supported</code> (or if we are below the peer's min) is rejected. Optional
+  <code>require_matching_engine_version</code> gates quorum participation on identical
+  DuckDB engine versions (result-determinism, §15).</li>
+<li><strong>Clean rejection</strong>: the server sends a typed <code>VersionReject</code> and closes the
+  connection with application code <code>2</code>; the client surfaces
+  <code>TransportError::IncompatibleVersion</code> (mapped from the reject message or the
+  close code, whichever wins the race).</li>
+<li><strong>Forward/back-compat hygiene</strong>: the JSON wire form tolerates unknown fields,
+  so a minor that adds fields is still parsed by an older minor; the
+  <code>SCHEMA_VERSION</code> framing check hard-fails a genuinely incompatible schema.</li>
+<li>All of <code>version</code>, <code>min_supported_version</code>, and the engine-matching policy are
+  <strong>configurable</strong> (<code>[protocol]</code> in config), not magic constants.</li>
+</ul>
+<h2 id="17-configuration-system-implemented">17. Configuration system (implemented)<a class="headerlink" href="#17-configuration-system-implemented" title="Permanent link">&para;</a></h2>
+<p>No operational value is hard-coded. The <code>p2p-config</code> crate provides a typed,
+validated <code>GridConfig</code> with five layers, lowest → highest precedence:</p>
+<ol>
+<li><strong>Built-in defaults</strong> (documented <code>Default</code> impls) — the zero-config path
+   (§12.0) runs entirely on these.</li>
+<li><strong>Config file</strong> (TOML; <code>P2P_CONFIG</code> env var or explicit path).</li>
+<li><strong>Environment variables</strong> (<code>P2P_*</code>).</li>
+<li><strong>SQL / runtime layer</strong> — settings applied via the SQL admin surface (§12.1,
+   <code>CALL p2p_economics(...)</code>, <code>p2p_set(...)</code>, …) are validated and <strong>persisted</strong>
+   to a sparse runtime overrides file (default <code>&lt;config-dir&gt;/runtime.toml</code>,
+   override with <code>P2P_RUNTIME_CONFIG</code>) so they survive restart. Managed by
+   <code>p2p_config::ConfigStore</code>. Secrets are <strong>never</strong> persisted here (kept in
+   separate <code>0600</code> files, redacted in all output).</li>
+<li><strong>Per-call SQL parameters</strong> (<code>QueryOverrides</code>/<code>ShareOverrides</code>/<code>JoinOverrides</code>
+   ⇔ args to <code>p2p_query</code>/<code>p2p_share</code>/<code>p2p_join</code>).</li>
+</ol>
+<p><code>GridConfig::validate()</code> enforces cross-field invariants (e.g.
+<code>quorum ≤ replicas</code>, thresholds in <code>[0,1]</code>, <code>keepalive &lt; idle_timeout</code>). A
+documented example lives at <code>config/p2p.example.toml</code> and a test asserts it
+matches the defaults. <code>deny_unknown_fields</code> fails fast on operator typos.</p>
+<h2 id="18-pluggability-scalability-implemented">18. Pluggability &amp; scalability (implemented)<a class="headerlink" href="#18-pluggability-scalability-implemented" title="Permanent link">&para;</a></h2>
+<p>Every major collaborator is a trait so implementations can be swapped/scaled:
+- <strong><code>Transport</code></strong> (concrete <code>QuicTransport</code>) — QUIC/mTLS.
+- <strong><code>Discovery</code></strong> — <code>StaticDiscovery</code> (seed list), <code>MembershipTable</code> (bounded,
+  LRU-evicted, signature+PoW-verified capability-ad cache), and the real
+  <code>Libp2pDiscovery</code> (feature <code>discovery-libp2p</code>, on by default): libp2p
+  <strong>Kademlia DHT + gossipsub</strong> that disseminates signed ads across the swarm and
+  feeds the bounded membership cache. All return a <strong>bounded candidate sample</strong>
+  (<code>candidate_sample_size</code>), never the whole swarm — fan-out stays sub-linear at
+  thousands of hosts.
+- <strong><code>TrustStore</code></strong> — <code>InMemoryTrustStore</code> (bounded per-worker history + LRU
+  worker eviction) and the persistent embedded <code>RedbTrustStore</code> (durable across
+  restarts; configurable <code>[trust].store_path</code>), both behind the same trait with
+  identical bounded-cache semantics.
+- <strong><code>QueryEngine</code></strong> — <code>MockEngine</code> (deterministic, fast tests) and the real
+  locked-down <code>DuckDbEngine</code> (feature <code>duckdb-engine</code>).
+- <strong><code>Attestor</code>/<code>AttestationVerifier</code></strong> and <strong><code>StorageCredentialProvider</code></strong> —
+  mock/local-fake implementations with the real-hardware/cloud variants behind
+  the same interfaces.</p>
+<p>Scalability: everything is async on tokio; worker job concurrency is bounded by
+a semaphore (<code>max_jobs</code>); bulk results stream in configurable chunks so QUIC
+flow control applies backpressure; caches are bounded with eviction.</p>
+<h2 id="19-implementation-status-honest-deviations">19. Implementation status &amp; honest deviations<a class="headerlink" href="#19-implementation-status-honest-deviations" title="Permanent link">&para;</a></h2>
+<p>Phases 0–4 are implemented and tested; Phase 5 is scaffolded. Notable
+deviations / environment limits (do <strong>not</strong> assume otherwise):</p>
+<ul>
+<li><strong>Hedging</strong>: the requester currently collects all <code>k</code> commit hashes (each with
+  its own dispatch timeout) and then streams from the fastest <em>agreeing</em> worker,
+  RESETting losers. A future refinement returns as soon as quorum is reached
+  rather than waiting for the slowest non-timed-out worker.</li>
+<li><strong>Connection-acceptance handshake</strong> is performed inline per connection, so a
+  large burst of brand-new connections is accepted somewhat serially. Pipelining
+  the handshake is a noted scalability refinement.</li>
+<li><strong>Discovery wire propagation</strong>: now implemented. <code>Libp2pDiscovery</code> (feature
+  <code>discovery-libp2p</code>, on by default) runs a libp2p <strong>Kademlia DHT + gossipsub</strong>
+  overlay (TCP + Noise + Yamux) that bootstraps from configurable seeds and
+  disseminates signed capability ads across the swarm; each received ad is
+  verified (schema/protocol-major compatibility + freshness/TTL + signature +
+  node-id binding + PoW) before landing in the bounded, LRU-evicted membership
+  cache, preserving bounded candidate sampling and sub-linear fan-out. <strong>Tested
+  multi-node in-process over loopback</strong>: 2/3-node bootstrap + gossip
+  propagation, gossip-relayed discovery beyond direct links, churn aging a left
+  node out of the bounded view, malformed/expired/wrong-version/bad-signature
+  rejection, and a full loop where a <code>Coordinator</code> discovers a real QUIC worker
+  purely via gossip and runs a query against it. <strong>Caveat:</strong> loopback exercises
+  the protocol/mesh logic but not real-network conditions (NAT traversal, WAN
+  churn, large-swarm DHT convergence) — those need a real multi-host deployment.
+  The discovery overlay runs its own libp2p identity/TCP transport, separate
+  from the QUIC data plane; the authenticated <code>node_id</code> that gates trust travels
+  inside the signed ad.</li>
+<li><strong>Confidential tier (L2)</strong>: the attestation protocol, allowlist verification,
+  nonce/bound-key binding, and X25519+ChaCha20-Poly1305 sealed key release are
+  implemented with a <strong>software mock attestor</strong>. Genuine TEE quotes
+  (Intel TDX / AMD SEV-SNP / AWS Nitro) verified against vendor certificate
+  chains <strong>require real hardware</strong> and plug in behind the same traits.</li>
+<li><strong>Object storage</strong>: the pluggable data-source layer (§4.1) — formats
+  (Parquet/CSV/JSON/Delta/Iceberg) + providers (S3/Azure/GCS/HTTPS) + per-job
+  scoped <code>CREATE SECRET</code> + Parquet Modular Encryption + the secure-read engine
+  profiles — is implemented. <strong>Tested locally:</strong> CSV/JSON/Parquet reads through
+  the real engine (local-scoped <code>allowed_directories</code>), the sandbox still
+  blocking out-of-allowlist paths + <code>INSTALL</code>, and Parquet at-rest
+  encrypt/decrypt round-trip. <strong>Mocked/unit-tested:</strong> the <code>CREATE SECRET</code> SQL
+  for S3/Azure/GCS and the scoped-credential issuance (STS/SAS/downscoped fakes)
+  — the secret installation assertion runs only if <code>httpfs</code> is present.
+  <strong>Requires live cloud (not fabricated):</strong> actual S3/ADLS/GCS reads need the
+  <code>httpfs</code>/<code>aws</code>/<code>azure</code>/<code>delta</code>/<code>iceberg</code> extensions installed in the worker
+  image <strong>and</strong> real cloud credentials; Delta/Iceberg likewise need those
+  extensions (absent from the offline bundled build). The earlier local fake
+  (<code>LocalFakeStorage</code>, ChaCha20-Poly1305 at-rest files) remains for the
+  protocol/trust tests.</li>
+<li><strong>Real DuckDB engine</strong> builds DuckDB from source (<code>bundled</code>); on macOS it
+  needs the C++ SDK on the include path: <code>export SDKROOT=$(xcrun --show-sdk-path)</code>.</li>
+<li><strong>OS sandbox</strong> from §9.4: the host now <strong>wires the configured <code>[sandbox]</code> policy
+  into the live worker</strong>, but the <strong>default backend is <code>noop</code></strong> (no OS caps). The
+  always-on protection is DuckDB's own lockdown flags (<code>enable_external_access=false</code>,
+  <code>lock_configuration=true</code>, ephemeral <code>temp_directory</code>, budgeted
+  <code>memory_limit</code>/<code>threads</code>), verified to block local file reads and <code>INSTALL</code>. Real
+  OS enforcement (cgroups/seccomp/Seatbelt/Job Object) is <strong>opt-in</strong> via
+  <code>[sandbox].process_per_job</code> + the <code>p2p-job-exec</code> child binary (process-per-job).</li>
+<li><strong>Attestation:</strong> the requester verifies <code>&gt; L0</code> evidence via a wired
+  <code>AttestationVerifier</code> (else treats the host as L0, fail-closed); no production
+  verifier is installed by default and all shipped hosts emit L0, so an L2 policy
+  currently admits nobody. See §7.2.</li>
+<li><strong>Per-job sealed credentials:</strong> the sealed/scoped-credential read path is built +
+  unit-tested but the coordinator does not yet attach a per-job credential
+  (<code>credential: None</code>), so the cloud read path is not exercised end-to-end (§4/§9.2).</li>
+<li><strong>Liveness detector</strong> (phi-accrual + SWIM) exists and is unit-tested but is <strong>not
+  wired into the default host</strong> selection path; convicted-peer exclusion is opt-in.</li>
+</ul>
+<h2 id="20-abuse-resistance-anti-griefing-robustness-implemented">20. Abuse resistance (anti-griefing &amp; robustness) — implemented<a class="headerlink" href="#20-abuse-resistance-anti-griefing-robustness-implemented" title="Permanent link">&para;</a></h2>
+<p>A trust/quorum/reputation system is only as good as its resistance to <em>abuse of
+the scoring itself</em>. The headline threat is <strong>reputation-griefing</strong>: an attacker
+spins up a cheap requester identity and fires <strong>heavy / infeasible / non-verifiable</strong>
+queries at an honest provider so the provider "fails" and loses reputation —
+even though nothing was the provider's fault. This layer defends against that and
+related abuse. Everything is behind <strong>configurable knobs</strong> under <code>[antiabuse]</code>
+(layered defaults → TOML → <code>P2P_ANTIABUSE_*</code> env → per-call), and <strong>defaults
+preserve today's behavior where a change would be observable</strong>: the always-safe
+pieces (fault attribution, non-determinism detection — which never <em>add</em> a
+penalty) default <strong>on</strong>; the scoring-altering pieces (requester-trust weighting,
+cost gating, free-mode rate limiting, auto-blocking, gossip peer scoring) default
+<strong>off</strong>. Code: <code>crates/trust/src/antiabuse.rs</code> (pure primitives),
+<code>crates/node/src/antiabuse.rs</code> (deny-list + rate limiter), and the wiring in
+<code>coordinator.rs</code> / <code>worker.rs</code> / <code>libp2p_discovery.rs</code>.</p>
+<blockquote>
+<p><strong>Wiring status:</strong> the <strong>worker-side</strong> mechanisms (refuse a blocklisted
+requester, pre-flight cost-gate, free-job rate-limit) are now wired into the live
+host via <code>Node::spawn_host</code> (they respect <code>[antiabuse]</code>, so a zero-config host is
+unaffected — empty deny-list, cost-gate/rate-limit default off). Previously they
+were implemented (<code>Worker::with_antiabuse</code>) but never called on the live host.</p>
+</blockquote>
+<h3 id="1-failure-fault-attribution-the-core-fix">1. Failure fault attribution (the core fix)<a class="headerlink" href="#1-failure-fault-attribution-the-core-fix" title="Permanent link">&para;</a></h3>
+<p>A provider is penalized <strong>only for provable PROVIDER fault</strong>. Verdicts now carry
+a fault class (<code>p2p_proto::Verdict</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Class</th>
+<th>Verdicts</th>
+<th>Score effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Provider fault</strong></td>
+<td><code>Incorrect</code> (hash ≠ verified quorum), <code>Timeout</code>, <code>Malformed</code></td>
+<td>counts against reputation; may incur a penalty</td>
+</tr>
+<tr>
+<td><strong>Requester / job fault</strong></td>
+<td><code>ResourceExceeded</code> (OOM / too expensive), <code>Infeasible</code> (missing data / unsatisfiable)</td>
+<td><strong>zero</strong> provider penalty</td>
+</tr>
+<tr>
+<td><strong>Non-attributable</strong></td>
+<td><code>Inconclusive</code> (non-verifiable query, job-consensus failure, admission rejection)</td>
+<td>neutral — no reputation effect at all</td>
+</tr>
+</tbody>
+</table>
+<p><code>Verdict::affects_reputation()</code> gates what the <code>TrustStore</code> even records:
+requester/job-caused and non-attributable verdicts are <strong>recorded as nothing</strong>,
+so a heavy/infeasible/non-verifiable job can never move a provider's score. A
+<strong>job-consensus</strong> signal (<code>is_job_consensus_failure</code>) handles the "everyone
+failed the same way" case: when ≥ <code>job_consensus_fraction</code> (default <code>0.67</code>, min 2
+nodes) of the selected providers fail identically and no quorum forms, the
+failure is attributed to the <strong>job</strong>, not the providers (the coordinator emits
+<code>Inconclusive</code>, not <code>Malformed</code>). A genuine minority cheater is still caught on
+the success path (it mismatches a <em>reached</em> quorum ⇒ <code>Incorrect</code> ⇒ penalized).</p>
+<h3 id="2-pre-flight-cost-gating-at-admission">2. Pre-flight cost gating at admission<a class="headerlink" href="#2-pre-flight-cost-gating-at-admission" title="Permanent link">&para;</a></h3>
+<p>The worker declines an <strong>over-budget</strong> query <em>before</em> executing it
+(<code>cost_gate_reason</code>): an offer whose advertised <code>cost_hint_rows</code> exceeds
+<code>max_cost_hint_rows</code>, or whose estimated peak working set exceeds
+<code>per_job_memory_bytes × max_working_set_factor</code>, gets a <code>Reject</code> bid. <strong>A
+rejection is not an execution failure</strong> — it produces no receipt and never
+affects a score. Heavy queries are <em>declined</em>, not <em>failed</em>. (Defaults off; when
+on, the gate reuses the requester's cost hint and the same metadata working-set
+estimator the local planner uses.)</p>
+<h3 id="3-requester-reputation-trust-weighted-score-impact-newer-sender-less-effect">3. Requester reputation + trust-weighted score impact ("newer sender → less effect")<a class="headerlink" href="#3-requester-reputation-trust-weighted-score-impact-newer-sender-less-effect" title="Permanent link">&para;</a></h3>
+<p>Requesters now have a reputation + age too (<code>TrustStore::record_requester</code> /
+<code>requester_reputation</code> / <code>requester_observation_count</code>). A job's effect on a
+provider's score is multiplied by</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>w(requester) = floor + (1 − floor) · clamp01( age_factor(obs, saturation) · reputation )
+</code></pre></div>
+<p>A brand-new requester (<code>obs = 0</code>) gets exactly <code>floor</code>; an established,
+good-reputation requester approaches <code>1</code>. The weighting is <strong>asymmetric</strong>: the
+<strong>negative</strong> floor (<code>negative_floor_weight</code>, default <code>0.0</code>) gates penalties
+hardest, while the <strong>positive</strong> floor (<code>positive_floor_weight</code>, default <code>0.5</code>)
+is more lenient about reputation credit. Concretely: <strong>a brand-new requester's
+incorrect/heavy outcome barely moves a provider's score (penalty × ≈ 0)</strong>, while
+an established requester's does (penalty × ≈ 1). This is the <strong>primary defense</strong>
+against the heavy-query griefing attack. Default <strong>off</strong> (when off, <code>w = 1.0</code> —
+today's behavior). <em>Honest note:</em> in a single process the requester is the local
+node, so this models "this node accrues requester standing over time"; the full
+cross-node defense (down-weighting a stranger's <strong>gossiped</strong> receipts by their
+standing in the receiver's store) shares the same primitive but needs a
+multi-host deployment to exercise end-to-end.</p>
+<h3 id="4-blocking-bad-players-local-deny-lists-no-central-authority">4. Blocking bad players (local deny-lists, no central authority)<a class="headerlink" href="#4-blocking-bad-players-local-deny-lists-no-central-authority" title="Permanent link">&para;</a></h3>
+<p>Local deny/allow lists keyed by <code>node_id</code> / <code>wallet</code>
+(<code>crates/config/src/blocklist.rs</code>, persisted to <code>blocklist.toml</code>), managed by new
+SQL admin calls: <code>CALL p2p_block(id =&gt; '…', reason =&gt; '…')</code>,
+<code>CALL p2p_unblock(id =&gt; '…')</code>, <code>SELECT * FROM p2p_blocklist()</code>. The coordinator
+excludes blocked candidates from selection; the worker refuses offers from
+blocked requesters. Triggers:
+- <strong>manual</strong> (the SQL calls above);
+- <strong>auto-block</strong> below a configurable trust floor (<code>auto_block_trust_floor</code>) —
+  also the natural hook for a slashing record;
+- <strong>signed, gossiped abuse signals</strong> (<code>p2p_proto::AbuseSignal</code>,
+  <code>sign_abuse_signal</code> / <code>verify_abuse_signal</code>): each node <em>independently</em> decides
+  whether to act on a verified signal (<code>honor_gossip_signals</code>) — no central
+  authority forces a refusal;
+- an optional <strong>on-chain governance blocklist</strong> in <code>GlobalParams</code>
+  (<code>SetBlocklisted</code>, admin-gated, <code>get_blocklisted</code>) for egregious provable cases
+  (<code>honor_global_params</code>).</p>
+<h3 id="5-non-determinism-handling">5. Non-determinism handling<a class="headerlink" href="#5-non-determinism-handling" title="Permanent link">&para;</a></h3>
+<p>Queries that cannot produce a stable canonical hash — <code>random()</code>,
+<code>now()</code>/<code>current_*</code>, <code>uuid()</code>/<code>gen_random_uuid()</code>, an unordered <code>LIMIT</code>, … —
+are detected (<code>is_nondeterministic</code>) and the job is marked <strong>non-verifiable</strong>:
+the coordinator returns the fastest result with <code>verified = false</code>, records
+<code>Inconclusive</code> verdicts, and applies <strong>no</strong> provider penalty. A divergent hash on
+such a query is <em>expected</em>, not provable fault. Default <strong>on</strong> (deterministic
+queries are unaffected; a false positive only costs a correct result being
+returned non-verified, which is the safe direction).</p>
+<h3 id="6-free-mode-anti-spam">6. Free-mode anti-spam<a class="headerlink" href="#6-free-mode-anti-spam" title="Permanent link">&para;</a></h3>
+<p>Per-requester-identity sliding-window rate limiting for <strong>free</strong> jobs
+(<code>RateLimiter</code>, bounded + LRU-evicted). Paid jobs are <strong>prioritized</strong> and bypass
+the free limiter (<code>prioritize_paid</code>). Over-rate free offers get a <code>Reject</code> bid.
+An optional small PoW for free requesters (<code>require_pow_bits</code>) is a configured
+knob (full wire enforcement needs the offer to carry a PoW stamp — a noted
+follow-up). Default off.</p>
+<h3 id="7-eclipse-gossip-hardening">7. Eclipse / gossip hardening<a class="headerlink" href="#7-eclipse-gossip-hardening" title="Permanent link">&para;</a></h3>
+<p>The libp2p discovery overlay can enable <strong>gossipsub peer scoring</strong>
+(<code>[antiabuse.gossip].peer_scoring</code>) so misbehaving mesh peers are penalized and
+pruned, and <strong>diverse bootstrap</strong> (<code>diverse_bootstrap</code>, default on) randomizes
+the bootstrap/relay dial order so a node does not deterministically favor a
+single entry point that could eclipse it. Peer scoring defaults <strong>off</strong> (lenient
+small-mesh loopback behavior) and uses the library's default score params when
+enabled.</p>
+<p><strong>Config knobs</strong> (all under <code>[antiabuse]</code>, see <code>config/p2p.example.toml</code>):
+<code>enabled</code>, <code>fault_attribution.{enabled,job_consensus_fraction}</code>,
+<code>requester_trust.{enabled,negative_floor_weight,positive_floor_weight,age_saturation}</code>,
+<code>cost_gate.{enabled,max_cost_hint_rows,max_working_set_factor}</code>,
+<code>nondeterminism.enabled</code>,
+<code>free_rate_limit.{enabled,max_free_per_window,window_secs,max_tracked_requesters,require_pow_bits,prioritize_paid}</code>,
+<code>blocklist.{auto_block_enabled,auto_block_trust_floor,honor_gossip_signals,honor_global_params}</code>,
+<code>gossip.{peer_scoring,diverse_bootstrap}</code>.</p>
+<p><strong>Honest limits.</strong> Requester-trust weighting and the gossiped-abuse-signal /
+on-chain-governance-blocklist paths are exercised by unit/integration tests and
+the Acton emulation, but their <em>full</em> cross-node value (down-weighting a
+stranger's gossiped receipts; propagating abuse signals across a real swarm;
+reading the on-chain blocklist over live RPC) requires a <strong>multi-host / live
+testnet</strong> deployment. The PoW-for-free-requesters knob is plumbed but its wire
+enforcement (a PoW stamp inside the <code>Offer</code>) is a follow-up. None of these weaken
+the always-on protections.</p>
+<h2 id="21-transport-performance-tuning-implemented">21. Transport performance tuning (implemented)<a class="headerlink" href="#21-transport-performance-tuning-implemented" title="Permanent link">&para;</a></h2>
+<p>QUIC is tuned for <strong>low latency + high throughput</strong>, with every knob
+<strong>configurable</strong> (no magic numbers) under a dedicated <code>[transport]</code> section of
+<code>GridConfig</code> — layered/validated like everything else (§17) and mirrored in
+<code>config/p2p.example.toml</code>. The transport layer reads these via
+<code>QuicTransport::bind_tuned(net, &amp;transport.quic, …)</code>; <code>build_transport_config</code>
+maps them onto Quinn's <code>TransportConfig</code>.</p>
+<ul>
+<li><strong>UDP offload (GSO/GRO)</strong> — <code>[transport.quic].gso</code> (default <code>true</code>) drives
+  Quinn's <code>enable_segmentation_offload</code>: the biggest CPU/throughput lever for
+  bulk sends. <code>quinn-udp</code> auto-disables GSO when the OS/NIC lacks it (safe to
+  leave on) and enables <strong>GRO</strong> on receive automatically; the pinned version
+  exposes no per-endpoint GRO toggle, so <code>gro</code> is advisory/observability only.</li>
+<li><strong>Flow-control windows</strong> — per-stream receive window, whole-connection
+  receive window, and the connection <strong>send window</strong> are all sized from config.
+  Precedence: an optional <strong>bandwidth-delay-product target</strong>
+  (<code>[transport.quic.bdp]</code>, <code>bandwidth_mbps × rtt_ms</code>) when enabled, else explicit
+  <code>*_window_bytes</code> overrides, else the <code>[network]</code> windows. This keeps a single
+  large result from being window-limited on a fat pipe. Values are validated
+  against the QUIC <code>VarInt</code> maximum.</li>
+<li><strong>Congestion control + pacing</strong> — <code>[transport.quic].congestion</code> selects
+  <code>bbr</code> | <code>cubic</code> | <code>newreno</code> via Quinn's <code>congestion_controller_factory</code>. <strong>BBR
+  is available</strong> in the pinned Quinn (<code>quinn-proto</code> 0.11.x). Pacing is applied
+  internally by Quinn for the chosen controller and has <strong>no public on/off
+  switch</strong> in this version, so <code>pacing</code> is an accepted, validated knob that is
+  currently advisory.</li>
+<li><strong>Result-stream parallelism</strong> — <code>[transport.result].parallelism</code> (overridable
+  per <code>p2p_query</code> call via <code>result_parallelism</code>) transfers one large result over
+  N concurrent <strong>unidirectional</strong> streams, bounded by
+  <code>[transport.quic].max_concurrent_uni_streams</code> (validated <code>parallelism ≤ cap</code>,
+  auto-widened on per-call override). The split is announced up-front in a
+  <code>ResultManifest</code>; each part is one <code>ResultPart</code> header followed by <strong>raw bytes</strong>
+  (un-framed, so it sidesteps the control-frame cap and the JSON byte-array
+  expansion of the inline path). <code>parallelism = 1</code> keeps the back-compatible
+  single-stream chunked path with QUIC backpressure. <code>parallel_min_bytes</code> avoids
+  fan-out for small results.</li>
+<li><strong>Wire compression</strong> — <code>[transport.compression].algorithm</code> = <code>none</code> | <code>lz4</code> |
+  <code>zstd</code> (overridable per call), with <code>level</code> (zstd 1..=22) and <code>min_size_bytes</code>.
+  The codec actually applied is carried in the <code>ResultManifest</code> so the receiver
+  always decodes correctly regardless of its own config. <strong>Default <code>none</code></strong>
+  (loopback/LAN is CPU-bound, not bandwidth-bound). <strong>WAN guidance:</strong> prefer
+  <code>lz4</code> (cheap, ~GB/s) for moderate links, <code>zstd</code> (higher ratio, tunable level)
+  for constrained/expensive links.</li>
+<li><strong>0-RTT / session resumption</strong> — <code>[transport.quic].enable_0rtt</code> (default
+  <code>false</code>) opts the rustls server into TLS 1.3 early data
+  (<code>max_early_data_size</code>) and the client into early data + its default in-memory
+  resumption cache; <code>session_ticket_lifetime_secs</code> documents the ticket
+  lifetime. <strong>Security caveat:</strong> 0-RTT early data is <strong>replayable</strong>; we never
+  place non-idempotent application bytes in early data (the version handshake
+  runs on a fresh stream), so enabling it primarily buys faster (resumed)
+  handshakes for repeat peers rather than 0-RTT request data.</li>
+<li><strong>Idle / keep-alive / stream caps</strong> — <code>[network]</code> idle-timeout + keep-alive
+  remain configurable (and cross-validated <code>keepalive &lt; idle</code>), joined by the new
+  <code>max_concurrent_uni_streams</code> cap alongside the existing
+  <code>max_concurrent_bidi_streams</code>.</li>
+</ul>
+<p><strong>Benchmark.</strong> <code>crates/node/tests/benches.rs</code> (<code>bench_throughput_and_latency_loopback</code>)
+runs two in-process nodes over loopback QUIC on the deterministic mock engine
+(so it measures the transport/result path, not SQL). It reports <strong>rows/sec +
+MB/s</strong> for one large result transfer and <strong>round-trip latency</strong> for a small
+query; row count, parallelism, compression, and latency-iteration count are
+env-configurable (<code>P2P_BENCH_ROWS</code>, <code>P2P_BENCH_PARALLELISM</code>,
+<code>P2P_BENCH_COMPRESSION</code>, <code>P2P_BENCH_LAT_ITERS</code>). Defaults are small so it is fast
+and deterministic in CI (assertions check only correctness). Indicative release
+numbers on a dev laptop, 200k-row result (~14.5 MB serialized): single stream
+≈ 20 MB/s; 4 parallel streams ≈ 44 MB/s; 4 streams + lz4/zstd ≈ 59–61 MB/s
+(logical); small-query round-trip p50 ≈ 1.0 ms.</p>
+<p><strong>Honest deviations.</strong> Pacing has no runtime toggle in the pinned Quinn (knob is
+advisory); GRO has no per-endpoint toggle (auto-enabled). 0-RTT request-data
+replay is intentionally avoided as above. The benchmark cannot be run against the
+real <code>duckdb-engine</code> in every environment because the bundled DuckDB build needs
+a working C++ standard library/SDK on the host (see §19); the transport tuning
+and result path themselves are engine-agnostic and exercised by the mock-engine
+scenarios + benchmark.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../operations/observability/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Observability &amp; troubleshooting">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Observability & troubleshooting
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../HOW_IT_WORKS/" class="md-footer__link md-footer__link--next" aria-label="Next: How it works (free vs paid)">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                How it works (free vs paid)
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 licensed.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tabs", "navigation.indexes", "navigation.footer", "toc.follow", "content.code.copy", "content.code.annotate", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

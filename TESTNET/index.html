@@ -1,0 +1,2575 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A peer-to-peer distributed DuckDB compute grid over QUIC, with a verifiable trust model and optional pay-per-query compute settled on TON.">
+      
+      
+      
+        <link rel="canonical" href="https://docs.duckton.com/TESTNET/">
+      
+      
+        <link rel="prev" href="../BLOCKCHAIN_ECONOMICS/">
+      
+      
+        <link rel="next" href="../IMPROVEMENT_ROADMAP/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>TON testnet runbook - Duckton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#duckton-ton-testnet-deploy-live-end-to-end-runbook" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Duckton" class="md-header__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Duckton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              TON testnet runbook
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../guides/running-queries/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/sql-functions/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../ARCHITECTURE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Deep dives
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../project/security/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Duckton" class="md-nav__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Duckton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running queries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/node-targeting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Node targeting & single-node routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/hosting-and-networks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting & joining a network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/paid-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paid queries (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PRIVATE_MODE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Private / enterprise mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/sql-functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deep dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & trust design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../HOW_IT_WORKS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works (free vs paid)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BLOCKCHAIN_ECONOMICS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blockchain economics (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TON testnet runbook
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TON testnet runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#verified-live-testnet-deployments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified live testnet deployments
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Verified live testnet deployments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#in-place-code-upgrades-setcode-verified-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In-place code upgrades (SETCODE) — verified live
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0-what-the-harness-does-the-live-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. What the harness does (the live loop)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#macos-the-engine-needs-the-sdk-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macOS: the engine needs the SDK path
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-create-fund-a-testnet-wallet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Create + fund a testnet wallet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-get-a-toncenter-testnet-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Get a Toncenter testnet API key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-inputs-the-harness-reads-env-vars-config-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Inputs the harness reads (env vars / config file)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Inputs the harness reads (env vars / config file)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optional-defaults-shown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional (defaults shown)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-run-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Run it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-pointing-the-node-config-at-the-deployed-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Pointing the node config at the deployed contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-the-ton-live-rust-integration-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. The ton-live Rust integration test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-confirm-on-the-explorer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Confirm on the explorer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-running-pieces-by-hand-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Running pieces by hand (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-cost-safety-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Cost &amp; safety notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../IMPROVEMENT_ROADMAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Improvement roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#verified-live-testnet-deployments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified live testnet deployments
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Verified live testnet deployments">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#in-place-code-upgrades-setcode-verified-live" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        In-place code upgrades (SETCODE) — verified live
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#0-what-the-harness-does-the-live-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. What the harness does (the live loop)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-prerequisites" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Prerequisites
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Prerequisites">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#macos-the-engine-needs-the-sdk-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macOS: the engine needs the SDK path
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-create-fund-a-testnet-wallet" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Create + fund a testnet wallet
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-get-a-toncenter-testnet-api-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Get a Toncenter testnet API key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-inputs-the-harness-reads-env-vars-config-file" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Inputs the harness reads (env vars / config file)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Inputs the harness reads (env vars / config file)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#optional-defaults-shown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional (defaults shown)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-run-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Run it
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-pointing-the-node-config-at-the-deployed-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Pointing the node config at the deployed contracts
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-the-ton-live-rust-integration-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. The ton-live Rust integration test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-confirm-on-the-explorer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Confirm on the explorer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-running-pieces-by-hand-optional" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Running pieces by hand (optional)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-cost-safety-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Cost &amp; safety notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="duckton-ton-testnet-deploy-live-end-to-end-runbook">Duckton — TON testnet deploy + live end-to-end runbook<a class="headerlink" href="#duckton-ton-testnet-deploy-live-end-to-end-runbook" title="Permanent link">&para;</a></h1>
+<p>This is a <strong>turnkey</strong> runbook for taking the on-chain economic/settlement layer
+of the P2P DuckDB-over-QUIC grid live on the <strong>TON testnet</strong>. The contracts
+(<code>StakeVault</code>, <code>StakeReceiptWallet</code>, <code>JobEscrow</code>, <code>RecordAnchor</code>, <code>GlobalParams</code>)
+live in <a href="../ton"><code>ton/</code></a> (Tolk, built/tested with Acton 1.1.0); the off-chain
+settlement logic (message ABI, <code>ton_proof</code> binding, Merkle proofs) lives in
+<a href="../crates/settlement"><code>crates/settlement</code></a>. See
+<a href="../BLOCKCHAIN_ECONOMICS/"><code>docs/BLOCKCHAIN_ECONOMICS.md</code></a> for the full design.</p>
+<p>A fresh run <strong>redeploys all four deployable contracts</strong> — <code>StakeVault</code> (+ its
+<code>StakeReceiptWallet</code> jetton master), <code>RecordAnchor</code>, <code>JobEscrow</code> and the
+platform-wide <code>GlobalParams</code> — and exercises the full scenario set against them.</p>
+<p>Everything is driven by <strong>one</strong> script — <a href="../scripts/testnet_e2e.sh"><code>scripts/testnet_e2e.sh</code></a> —
+which deploys, verifies, points config at the deployed addresses, and runs the
+full live scenario. <strong>You only need to supply a funded testnet wallet + a
+Toncenter testnet API key.</strong> Nothing here touches a network until you run the
+script with those inputs.</p>
+<h2 id="verified-live-testnet-deployments">Verified live testnet deployments<a class="headerlink" href="#verified-live-testnet-deployments" title="Permanent link">&para;</a></h2>
+<p>All four core contracts have been <strong>deployed and exercised on the live TON
+testnet</strong> (workchain 0). Explorer: <code>https://testnet.tonviewer.com/&lt;address&gt;</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Contract</th>
+<th>Testnet address</th>
+<th>Live checks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>GlobalParams</strong></td>
+<td><a href="https://testnet.tonviewer.com/kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna"><code>kQAagsi-ThkgbOxxVwXd0CHbSXpZwbLmdfjFAx76PL4bwOna</code></a></td>
+<td><code>get_params_version</code> → <code>1</code>; resilience fields present</td>
+</tr>
+<tr>
+<td><strong>StakeVault</strong> (Duckton master)</td>
+<td><a href="https://testnet.tonviewer.com/kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp"><code>kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp</code></a></td>
+<td>indexer renders <strong>Duckton / DUCKTON / 9</strong>; total_supply 0.2; mintable</td>
+</tr>
+<tr>
+<td><strong>Duckton holder</strong> (receipt wallet)</td>
+<td><a href="https://testnet.tonviewer.com/kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r"><code>kQBPNBIv2op4Qd_na03As9YEc8FX3-8ng-RVseTEO9jEXR6r</code></a></td>
+<td>balance <strong>0.2 Duckton</strong>, minted 1:1, transfer-locked</td>
+</tr>
+<tr>
+<td><strong>RecordAnchor</strong></td>
+<td><a href="https://testnet.tonviewer.com/kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3"><code>kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3</code></a></td>
+<td>single + 8-leaf inclusion proofs verified; tamper rejected; bonded dispute open+resolve</td>
+</tr>
+<tr>
+<td><strong>JobEscrow</strong> (per-job, Rust paid-flow)</td>
+<td><a href="https://testnet.tonviewer.com/0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23"><code>0:edbeca37fcf34549e5ffba5173bc7bbebce53f8089355e621b16e5ddddd4fe23</code></a></td>
+<td>open-escrow-per-job → settle; <code>params_version</code>=1 + quorum hash bound and verified on-chain</td>
+</tr>
+<tr>
+<td>Deployer / owner wallet</td>
+<td><a href="https://testnet.tonviewer.com/kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422"><code>kQCP7UqEfNwpaaNGDP3MihPPBb-Yd5ZYc0EU-VbXcmjpg422</code></a></td>
+<td>holds the Duckton receipt; funds the live runs</td>
+</tr>
+</tbody>
+</table>
+<p>Reproduce the two focused live demos any time (gas-light, idempotent — each
+deploys a fresh instance):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nb">cd</span><span class="w"> </span>ton
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>acton<span class="w"> </span>script<span class="w"> </span>scripts/show_duckton.tolk<span class="w"> </span>--net<span class="w"> </span>testnet<span class="w">   </span><span class="c1"># deploy vault + mint a visible Duckton</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>acton<span class="w"> </span>script<span class="w"> </span>scripts/show_anchor.tolk<span class="w">  </span>--net<span class="w"> </span>testnet<span class="w">    </span><span class="c1"># anchor roots + inclusion proofs + dispute</span>
+</code></pre></div>
+<p><strong>Address stability / pinning.</strong> A TON address is a pure function of
+<code>(code, initial data)</code> — deterministic, not random. To keep ONE canonical,
+stable instance across runs, pin its address (the scripts then <em>reuse</em> it
+instead of deploying a new one):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">VAULT_ADDR</span><span class="o">=</span>kQD90f-cm-a4EKkUFV1q7khQgsBbxZpQL6NySZjXAbIVrrkp<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/show_duckton.tolk<span class="w"> </span>--net<span class="w"> </span>testnet<span class="w">     </span><span class="c1"># mints into the SAME Duckton master</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="nv">ANCHOR_ADDR</span><span class="o">=</span>kQDhHXS08DLghUFm_ofEI_NWM--4ICUIVv5IV_VQjjH78RK3<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/show_anchor.tolk<span class="w">  </span>--net<span class="w"> </span>testnet<span class="w">     </span><span class="c1"># anchors the next epoch on the SAME contract</span>
+</code></pre></div>
+<p>The running grid pins the same way via <code>[economics.&lt;net&gt;.contracts]</code> (or
+<code>p2p_contracts(...)</code> from SQL), so the extension/coordinator always reference
+the deployed contracts. <strong><code>GlobalParams</code> is a singleton — deploy it once and
+edit it in place via <code>update_params</code> (its address is stable); redeploying it
+mints a brand-new instance with reset state.</strong> A per-job <code>JobEscrow</code> address is
+<em>intended</em> to differ per job (it deterministically commits to that job's
+<code>expected_hash</code> + <code>params_version</code> + bid); a per-node <code>StakeVault</code> is one per
+node owner.</p>
+<h3 id="in-place-code-upgrades-setcode-verified-live">In-place code upgrades (SETCODE) — verified live<a class="headerlink" href="#in-place-code-upgrades-setcode-verified-live" title="Permanent link">&para;</a></h3>
+<p>Beyond editing data, the long-lived contracts support <strong>in-place CODE upgrades</strong>
+via the TVM <code>SETCODE</code> primitive, so the logic can change WITHOUT moving the
+address or losing state (a monotonic <code>codeVersion</code> bumps on each upgrade):</p>
+<ul>
+<li><strong>GlobalParams</strong> — admin-gated <code>upgrade_code</code>.</li>
+<li><strong>RecordAnchor</strong> — verdict-authority-gated <code>upgrade_code</code>.</li>
+<li><strong>StakeVault</strong> — governance-gated <strong>timelocked</strong> upgrade (announce → apply only
+  after ≥ the unbonding/challenge window) so bonded stakers can exit first; this
+  preserves the non-custodial guarantee. <code>JobEscrow</code> is intentionally <em>not</em>
+  upgradable while live (it would break in-flight HTLC commitments); new jobs
+  pick up the current template code at deploy.</li>
+</ul>
+<p><strong>Verified live on testnet:</strong> a GlobalParams at
+<a href="https://testnet.tonviewer.com/kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF"><code>kQCyxFu9leXR4JqPQ56IcjmlUJMioNUM7f3B8wpyfXdkl7wF</code></a>
+had its code swapped to <code>GlobalParamsV2</code> in place — <strong>address unchanged</strong>,
+<code>codeVersion</code> bumped (1 → 2), <code>params_version</code>/fee/admin preserved, and a getter
+that exists only in v2 (<code>get_surcharge_bps</code> → 500) went live at the same address.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">cd</span><span class="w"> </span>ton
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># self-contained proof: deploy a fresh GlobalParams, then upgrade its code in place</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>acton<span class="w"> </span>script<span class="w"> </span>scripts/upgrade_global_params.tolk<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># or upgrade an already-deployed instance (admin-signed):</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nv">GLOBAL_PARAMS_ADDR</span><span class="o">=</span>kQ...<span class="w"> </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/upgrade_global_params.tolk<span class="w"> </span>--net<span class="w"> </span>testnet
+</code></pre></div>
+<blockquote>
+<p><strong>Coverage.</strong> Beyond the live runs above, the full scenario set is also
+validated in Acton's <strong>local emulator</strong> against the real compiled contracts —
+GlobalParams admin update/non-admin rejection/blocklist + monotonic version,
+stake deposit, 1:1 transfer-locked receipt + Duckton TEP-64 metadata, escrow
+settle, single- and multi-leaf anchor inclusion, and dispute (<strong>68</strong> emulator
+tests, including <code>tests/e2e_flow.test.tolk</code> mirroring the whole flow across all
+four contracts in one session). The harness is <code>bash -n</code>-clean and the
+<code>ton-live</code> Rust paid-flow test is a no-op without testnet env.</p>
+</blockquote>
+<hr />
+<h2 id="0-what-the-harness-does-the-live-loop">0. What the harness does (the live loop)<a class="headerlink" href="#0-what-the-harness-does-the-live-loop" title="Permanent link">&para;</a></h2>
+<p><code>scripts/testnet_e2e.sh</code>, against testnet:</p>
+<ol>
+<li><strong>imports</strong> your wallet (idempotent), <strong>builds</strong> the contracts (<code>acton build</code>)
+   and the loadable <strong>DuckDB extension</strong> (<code>scripts/build_extension.sh</code>);</li>
+<li>runs a <strong>real DuckDB query through the loaded extension</strong> and hashes the
+   result — this hash becomes the escrow's HTLC lock and the anchored epoch leaf;</li>
+<li>verifies the <strong><code>ton_proof</code> two-way wallet↔node binding</strong> (pure-Rust Ed25519 +
+   sha256, both directions) and computes an on-chain binding hash;</li>
+<li><strong>deploys</strong> the four contracts: <code>StakeVault</code> (+ its receipt-jetton master),
+   <code>RecordAnchor</code>, <code>JobEscrow</code> (opened with the locked bid <code>B</code>, HTLC-locked on the
+   query result hash), and <code>GlobalParams</code> (platform-wide economic config, admin =
+   your wallet);</li>
+<li>runs <strong><code>acton verify</code></strong> on each (source ↔ published bytecode);</li>
+<li><strong>records</strong> the deployed addresses into a generated config file;</li>
+<li>runs the <strong>live scenario</strong> in one broadcast session:
+   GlobalParams admin <code>update_params</code> (persisted, address stable) → governance
+   blocklist set/clear round-trip → stake deposit → 1:1 transfer-locked
+   stake-receipt jetton + Duckton TEP-64 metadata assertion → escrow settle
+   (winner + platform fee + participation commissions, remainder refunded) →
+   anchor epoch root → on-chain single- <strong>and</strong> multi-leaf (8-leaf) Merkle
+   inclusion proofs → <em>optional</em> bonded dispute → GlobalParams non-admin
+   <code>update_params</code> rejection (against a throwaway admin); finally a live-RPC
+   wallet-bind confirmation read from <code>StakeVault.get_binding_hash</code>;</li>
+<li>prints a <strong>PASS/FAIL summary with <code>testnet.tonviewer.com</code> links</strong>;</li>
+<li><em>(optional)</em> runs the <strong><code>ton-live</code>-gated Rust test</strong> against the live RPC.</li>
+</ol>
+<p>Each new scenario emits a parseable <code>::CHECK::&lt;name&gt;::PASS|FAIL</code> marker the
+harness folds into the summary.</p>
+<p>It is <strong>re-runnable</strong>: the wallet import is idempotent, <code>StakeVault</code>/<code>RecordAnchor</code>/
+<code>GlobalParams</code> have deterministic addresses (re-deploy is a harmless top-up),
+<code>GlobalParams</code> is mutated <strong>in place</strong> at that stable address (the admin update
+toggles the platform-fee bps so the write is provable on every re-run), the anchor
+epoch is read from chain and advanced each run (it now advances by <strong>two</strong> — one
+single-leaf, one multi-leaf root), and each run opens a <strong>fresh</strong> escrow (its
+address varies with the per-run deadline) so settle always targets an unsettled
+escrow.</p>
+<hr />
+<h2 id="1-prerequisites">1. Prerequisites<a class="headerlink" href="#1-prerequisites" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Why</th>
+<th>Install</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Acton 1.1.0</strong></td>
+<td>build/deploy/verify the Tolk contracts</td>
+<td><code>curl -LsSf https://github.com/ton-blockchain/acton/releases/latest/download/acton-installer.sh \| sh</code></td>
+</tr>
+<tr>
+<td><strong>DuckDB CLI</strong></td>
+<td>run the real query through the extension</td>
+<td><a href="https://duckdb.org/docs/installation">https://duckdb.org/docs/installation</a></td>
+</tr>
+<tr>
+<td><strong>Rust toolchain</strong></td>
+<td>build the extension + run the <code>ton_proof</code>/<code>ton-live</code> tests</td>
+<td><a href="https://rustup.rs">https://rustup.rs</a></td>
+</tr>
+<tr>
+<td><strong>curl, jq</strong></td>
+<td>RPC reads + parse Acton JSON</td>
+<td>usually preinstalled</td>
+</tr>
+<tr>
+<td><strong>sha256sum / shasum</strong></td>
+<td>hash the query result</td>
+<td>usually preinstalled</td>
+</tr>
+</tbody>
+</table>
+<h3 id="macos-the-engine-needs-the-sdk-path">macOS: the engine needs the SDK path<a class="headerlink" href="#macos-the-engine-needs-the-sdk-path" title="Permanent link">&para;</a></h3>
+<p>Acton's execution engine and the extension build both need the macOS SDK path:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SDKROOT</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>xcrun<span class="w"> </span>--show-sdk-path<span class="k">)</span><span class="s2">&quot;</span>
+</code></pre></div>
+<p>The harness sets this for you if it's unset, but export it in your shell if you
+run the underlying commands by hand.</p>
+<hr />
+<h2 id="2-create-fund-a-testnet-wallet">2. Create + fund a testnet wallet<a class="headerlink" href="#2-create-fund-a-testnet-wallet" title="Permanent link">&para;</a></h2>
+<p>You can let Acton create one, or import an existing mnemonic.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># create a fresh testnet wallet and request faucet GRAM</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>acton<span class="w"> </span>wallet<span class="w"> </span>new<span class="w"> </span>--name<span class="w"> </span>deployer<span class="w"> </span>--local<span class="w"> </span>--version<span class="w"> </span>v5r1<span class="w"> </span>--airdrop
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># or import an existing 24-word mnemonic</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>acton<span class="w"> </span>wallet<span class="w"> </span>import<span class="w"> </span>--name<span class="w"> </span>deployer<span class="w"> </span>--local<span class="w"> </span>--version<span class="w"> </span>v5r1<span class="w"> </span><span class="s2">&quot;word1 word2 ... word24&quot;</span>
+</code></pre></div>
+<blockquote>
+<p>The harness imports the mnemonic for you (under the name <code>deployer</code> by
+default), so for the turnkey path you only need the <strong>mnemonic string</strong> — see
+§4. The wallet <strong>must hold testnet GRAM</strong>.</p>
+</blockquote>
+<p><strong>Fund it</strong> (a few test-GRAM is plenty for the whole loop — defaults are tiny):</p>
+<ul>
+<li>Telegram faucet: <strong><a href="https://t.me/testgiver_ton_bot">@testgiver_ton_bot</a></strong> — send your wallet address.</li>
+<li>or <code>acton wallet airdrop deployer --net testnet</code> (PoW faucet; may be rate-limited).</li>
+</ul>
+<p>Check the balance:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>acton<span class="w"> </span>wallet<span class="w"> </span>list<span class="w"> </span>--balance
+</code></pre></div>
+<p>Treat the mnemonic like a real secret — <strong>never commit it to git</strong> (testnet GRAM
+has no value, but the habit matters).</p>
+<h2 id="3-get-a-toncenter-testnet-api-key">3. Get a Toncenter testnet API key<a class="headerlink" href="#3-get-a-toncenter-testnet-api-key" title="Permanent link">&para;</a></h2>
+<p>Acton and the <code>ton-live</code> Rust test talk to Toncenter testnet. Without a key you
+are throttled to ~1 RPS (slow, but works — pass <code>ALLOW_NO_API_KEY=1</code>).</p>
+<ul>
+<li>Get a <strong>testnet</strong> key from <strong><a href="https://t.me/tonapibot">@tonapibot</a></strong> (or <a href="https://t.me/toncenter">@toncenter</a>).</li>
+<li>The default RPC endpoint is <code>https://testnet.toncenter.com/api/v2</code>.</li>
+</ul>
+<hr />
+<h2 id="4-inputs-the-harness-reads-env-vars-config-file">4. Inputs the harness reads (env vars / config file)<a class="headerlink" href="#4-inputs-the-harness-reads-env-vars-config-file" title="Permanent link">&para;</a></h2>
+<p>Set these as environment variables, or put them in a file and pass
+<code>--config &lt;file&gt;</code> (a <code>scripts/testnet_e2e.env</code> next to the script is auto-loaded).
+<strong>Keep that file out of git</strong> (add it to <code>.gitignore</code>).</p>
+<h3 id="required">Required<a class="headerlink" href="#required" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TON_TESTNET_MNEMONIC</code></td>
+<td>24-word (or 12) wallet mnemonic, space-separated</td>
+</tr>
+<tr>
+<td><code>TON_TESTNET_MNEMONIC_FILE</code></td>
+<td>…or a path to a file containing the mnemonic (use instead of the above)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="recommended">Recommended<a class="headerlink" href="#recommended" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TON_TESTNET_API_KEY</code></td>
+<td>Toncenter <strong>testnet</strong> API key (exported to Acton as <code>TONCENTER_TESTNET_API_KEY</code>)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="optional-defaults-shown">Optional (defaults shown)<a class="headerlink" href="#optional-defaults-shown" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TON_TESTNET_RPC</code></td>
+<td><code>https://testnet.toncenter.com/api/v2</code></td>
+<td>RPC endpoint used by the live RPC reads + the <code>ton-live</code> Rust test</td>
+</tr>
+<tr>
+<td><code>WALLET_NAME</code></td>
+<td><code>deployer</code></td>
+<td>Acton wallet name the Tolk scripts resolve (<code>scripts.wallet("deployer")</code>)</td>
+</tr>
+<tr>
+<td><code>WALLET_VERSION</code></td>
+<td><code>v5r1</code></td>
+<td>wallet contract version for import</td>
+</tr>
+<tr>
+<td><code>OUT_DIR</code></td>
+<td><code>ton/deployments</code></td>
+<td>where generated config/addresses/logs are written</td>
+</tr>
+<tr>
+<td><code>NODE_ID</code></td>
+<td><code>b3:demo-node</code></td>
+<td>node id folded into the on-chain binding hash</td>
+</tr>
+<tr>
+<td><code>STAKE_DEPOSIT_AMOUNT</code></td>
+<td><code>100000000</code> (0.1 TON)</td>
+<td>nanoton to bond into <code>StakeVault</code></td>
+</tr>
+<tr>
+<td><code>ESCROW_AMOUNT</code></td>
+<td><code>300000000</code> (0.3 TON)</td>
+<td>nanoton locked in the per-job escrow (<code>B</code>)</td>
+</tr>
+<tr>
+<td><code>ESCROW_WINDOW_SECS</code></td>
+<td><code>3600</code></td>
+<td>refund-on-timeout window</td>
+</tr>
+<tr>
+<td><code>SETTLE_WINNER_AMOUNT</code></td>
+<td><code>100000000</code> (0.1 TON)</td>
+<td>winner base + bonus payout</td>
+</tr>
+<tr>
+<td><code>SETTLE_FEE</code></td>
+<td><code>20000000</code> (0.02 TON)</td>
+<td>platform fee to the treasury</td>
+</tr>
+<tr>
+<td><code>SETTLE_PARTICIPANT_AMOUNT</code></td>
+<td><code>20000000</code> (0.02 TON)</td>
+<td>participation commission to an agreeing non-winner</td>
+</tr>
+<tr>
+<td><code>E2E_RUN_DISPUTE</code></td>
+<td><code>0</code></td>
+<td>set <code>1</code> to also run the bonded dispute round</td>
+</tr>
+<tr>
+<td><code>DISPUTE_BOND</code></td>
+<td><code>200000000</code> (0.2 TON)</td>
+<td>challenger bond when the dispute round runs</td>
+</tr>
+<tr>
+<td><code>SKIP_EXTENSION_BUILD</code></td>
+<td><code>0</code></td>
+<td>set <code>1</code> to reuse an existing <code>dist/</code> extension</td>
+</tr>
+<tr>
+<td><code>SKIP_VERIFY</code></td>
+<td><code>0</code></td>
+<td>set <code>1</code> to skip <code>acton verify</code></td>
+</tr>
+<tr>
+<td><code>RUN_RUST_LIVE_TEST</code></td>
+<td><code>0</code></td>
+<td>set <code>1</code> to run the <code>ton-live</code> Rust test at the end</td>
+</tr>
+<tr>
+<td><code>DUCKDB_QUERY_FILE</code></td>
+<td><em>(built-in)</em></td>
+<td>path to your own <code>.sql</code> to run through the extension</td>
+</tr>
+<tr>
+<td><code>ALLOW_NO_API_KEY</code></td>
+<td><code>0</code></td>
+<td>set <code>1</code> to run keyless (throttled)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>All amounts are <strong>nanoton</strong> (1 TON = 1e9). Defaults are intentionally tiny, and
+the winner/treasury/participant all default to <strong>your own wallet</strong>, so funds
+cycle back to you.</p>
+</blockquote>
+<hr />
+<h2 id="5-run-it">5. Run it<a class="headerlink" href="#5-run-it" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># minimal (export inline)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nv">TON_TESTNET_MNEMONIC</span><span class="o">=</span><span class="s2">&quot;word1 word2 ... word24&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="nv">TON_TESTNET_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-testnet-key&quot;</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>scripts/testnet_e2e.sh
+</code></pre></div>
+<p>Or with a config file (recommended — keeps secrets out of shell history):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>cat<span class="w"> </span>&gt;<span class="w"> </span>scripts/testnet_e2e.env<span class="w"> </span><span class="s">&lt;&lt;&#39;EOF&#39;</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="s">TON_TESTNET_MNEMONIC=&quot;word1 word2 ... word24&quot;</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="s">TON_TESTNET_API_KEY=&quot;your-testnet-key&quot;</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="s"># TON_TESTNET_RPC=&quot;https://testnet.toncenter.com/api/v2&quot;</span>
+<a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="s"># E2E_RUN_DISPUTE=1</span>
+<a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="s"># RUN_RUST_LIVE_TEST=1</span>
+<a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="s">EOF</span>
+<a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;scripts/testnet_e2e.env&quot;</span><span class="w"> </span>&gt;&gt;<span class="w"> </span>.gitignore
+<a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>
+<a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>scripts/testnet_e2e.sh<span class="w">                 </span><span class="c1"># auto-loads scripts/testnet_e2e.env</span>
+<a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="c1"># or: scripts/testnet_e2e.sh --config /path/to/other.env</span>
+</code></pre></div>
+<p>The harness deploys and runs everything, then prints a summary like:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>== SUMMARY ==
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>Network:      testnet
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>Wallet:       kQ...deployer
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>StakeVault:   kQ...vault
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>                https://testnet.tonviewer.com/kQ...vault
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>RecordAnchor: kQ...anchor
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>                https://testnet.tonviewer.com/kQ...anchor
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>JobEscrow:    kQ...escrow
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>                https://testnet.tonviewer.com/kQ...escrow
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>GlobalParams: kQ...gparams
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>                https://testnet.tonviewer.com/kQ...gparams
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>Result hash:  0x&lt;64-hex&gt;
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>Config:       ton/deployments/testnet.env
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>              ton/deployments/economics.testnet.toml
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>Checks:
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>  PASS  ton_proof binding crypto
+<a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>  PASS  stake deposit (staked=100000000)
+<a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>  PASS  stake-receipt jetton minted 1:1 + transfer-locked (minted=100000000)
+<a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>  PASS  stake-receipt jetton transfer rejected (anti-exit)
+<a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>  PASS  Duckton TEP-64 metadata (name/symbol/decimals)
+<a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>  PASS  escrow settle (HTLC release)
+<a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>  PASS  anchor epoch root (epoch=1)
+<a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>  PASS  inclusion proof verified on-chain
+<a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>  PASS  multi-leaf Merkle inclusion verified on-chain
+<a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>  PASS  GlobalParams admin update_params (persisted, address stable)
+<a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a>  PASS  GlobalParams governance blocklist round-trip
+<a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a>  PASS  GlobalParams non-admin update_params rejected
+<a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a>  PASS  wallet-bind anchored on-chain
+<a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a>  PASS  verify StakeVault
+<a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a>  PASS  verify GlobalParams
+<a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a>  ...
+<a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a> ALL CHECKS PASSED
+</code></pre></div>
+<p>Per-step Acton transaction traces and <code>acton verify</code> output are saved under
+<code>ton/deployments/logs/</code>.</p>
+<hr />
+<h2 id="6-pointing-the-node-config-at-the-deployed-contracts">6. Pointing the node config at the deployed contracts<a class="headerlink" href="#6-pointing-the-node-config-at-the-deployed-contracts" title="Permanent link">&para;</a></h2>
+<p>The harness writes two files into <code>OUT_DIR</code> (default <code>ton/deployments/</code>):</p>
+<ul>
+<li><strong><code>testnet.env</code></strong> — machine-readable addresses, sourced by re-runs and the
+  <code>ton-live</code> Rust test:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nb">set</span><span class="w"> </span>-a<span class="p">;</span><span class="w"> </span>.<span class="w"> </span>ton/deployments/testnet.env<span class="p">;</span><span class="w"> </span><span class="nb">set</span><span class="w"> </span>+a
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="c1"># exports TON_TESTNET_{VAULT,ANCHOR,ESCROW,GLOBAL_PARAMS}_ADDR, TON_TESTNET_RPC,</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># TON_TESTNET_RESULT_HASH, ...</span>
+</code></pre></div>
+<ul>
+<li><strong><code>economics.testnet.toml</code></strong> — a node <code>[economics]</code> snippet pointed at testnet
+  with your wallet as the fee recipient. Merge it into your node config or point
+  the node at it via <code>P2P_CONFIG</code>:</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="k">[economics]</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="n">enabled</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">settlement</span><span class="w">      </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;onchain&quot;</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="n">network</span><span class="w">         </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;testnet&quot;</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="n">default_payment</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;paid&quot;</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="n">fee_recipient</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;kQ...your-wallet&quot;</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="k">[economics.testnet.contracts]</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a><span class="n">stake_vault</span><span class="w">   </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;kQ...vault&quot;</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a><span class="n">job_escrow</span><span class="w">    </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;kQ...escrow&quot;</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a><span class="n">record_anchor</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;kQ...anchor&quot;</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a><span class="n">global_params</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;kQ...gparams&quot;</span>
+</code></pre></div>
+<blockquote>
+<p>The generated TOML records <strong>all four</strong> deployed addresses under
+<code>[economics.&lt;net&gt;.contracts]</code> (including the platform-wide <code>GlobalParams</code>). The
+machine-readable <code>testnet.env</code> also exports them as <code>TON_TESTNET_*_ADDR</code> for
+re-runs and the <code>ton-live</code> Rust test.</p>
+</blockquote>
+<hr />
+<h2 id="7-the-ton-live-rust-integration-test">7. The <code>ton-live</code> Rust integration test<a class="headerlink" href="#7-the-ton-live-rust-integration-test" title="Permanent link">&para;</a></h2>
+<p>A Rust test exercises the <code>ton</code> settlement impl (message ABI + the <code>TonRpc</code>
+read seam) against the live RPC. It is <strong>gated behind the <code>ton-live</code> feature</strong>, so
+it is a <strong>no-op in normal CI</strong> (<code>cargo test --workspace</code> never compiles it), and
+even with the feature on it <strong>skips</strong> unless the testnet env is set.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="c1"># normal CI — testnet_live.rs is not compiled, nothing changes:</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>cargo<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--workspace
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="c1"># run the live test (after a harness run wrote testnet.env):</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="nb">set</span><span class="w"> </span>-a<span class="p">;</span><span class="w"> </span>.<span class="w"> </span>ton/deployments/testnet.env<span class="p">;</span><span class="w"> </span><span class="nb">set</span><span class="w"> </span>+a
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>cargo<span class="w"> </span><span class="nb">test</span><span class="w"> </span>-p<span class="w"> </span>p2p-settlement<span class="w"> </span>--features<span class="w"> </span>ton-live<span class="w"> </span>--test<span class="w"> </span>testnet_live<span class="w"> </span>--<span class="w"> </span>--nocapture
+</code></pre></div>
+<p>It reads <code>TON_TESTNET_RPC</code>, <code>TON_TESTNET_API_KEY</code>, and
+<code>TON_TESTNET_{VAULT,ANCHOR,ESCROW}_ADDR</code>, then:</p>
+<ul>
+<li>pins the on-chain message ABI (opcodes + byte layout) — runs always;</li>
+<li>reads <code>get_vault_state</code> / <code>get_anchor_state</code> from the <strong>real deployed
+  contracts</strong> over Toncenter via the <code>TonRpc</code> seam (skipped if env absent);</li>
+<li>documents the boundary that <strong>broadcasting</strong> signed wallet transactions is the
+  Acton harness's job, not the Rust seam's.</li>
+</ul>
+<p>The harness can run it for you at the end with <code>RUN_RUST_LIVE_TEST=1</code>.</p>
+<hr />
+<h2 id="8-confirm-on-the-explorer">8. Confirm on the explorer<a class="headerlink" href="#8-confirm-on-the-explorer" title="Permanent link">&para;</a></h2>
+<p>Open the printed <code>https://testnet.tonviewer.com/&lt;address&gt;</code> links and confirm:</p>
+<ul>
+<li><strong>StakeVault</strong> — balance reflects the bonded deposit; <code>get_vault_state</code> shows
+  <code>staked &gt; 0</code>, <code>eligible = true</code>; the receipt-jetton wallet was minted.</li>
+<li><strong>JobEscrow</strong> — <code>settled = true</code>; outgoing messages show the winner payout, the
+  platform fee to the treasury, the participation commission, and the refund of
+  the unspent escrow slack to the requester.</li>
+<li><strong>RecordAnchor</strong> — <code>get_anchor_state</code> shows the advanced epoch and the anchored
+  root; <code>verify_inclusion</code> returns <code>true</code> for both the single-leaf and the
+  multi-leaf (8-leaf) interior-leaf proofs.</li>
+<li><strong>GlobalParams</strong> — <code>get_params</code> shows the admin-updated platform-fee bps and
+  <code>get_admin</code> is your wallet (address unchanged across the update); <code>get_blocklisted</code>
+  round-trips <code>true</code>→<code>false</code>; the non-admin update against the throwaway instance
+  bounced (<code>exit code 260 NOT_ADMIN</code>).</li>
+</ul>
+<p>You can also retrace any transaction locally with Acton:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>acton<span class="w"> </span>rpc<span class="w"> </span>info<span class="w">   </span>&lt;ADDRESS&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>acton<span class="w"> </span>rpc<span class="w"> </span>trace<span class="w">  </span>&lt;TX_HASH&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a>acton<span class="w"> </span>retrace<span class="w">    </span>&lt;TX_HASH&gt;<span class="w"> </span>--net<span class="w"> </span>testnet<span class="w"> </span>--contract<span class="w"> </span>StakeVault
+</code></pre></div>
+<hr />
+<h2 id="9-running-pieces-by-hand-optional">9. Running pieces by hand (optional)<a class="headerlink" href="#9-running-pieces-by-hand-optional" title="Permanent link">&para;</a></h2>
+<p>The harness wraps these; run them individually for debugging. From <code>ton/</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">SDKROOT</span><span class="o">=</span><span class="s2">&quot;</span><span class="k">$(</span>xcrun<span class="w"> </span>--show-sdk-path<span class="k">)</span><span class="s2">&quot;</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>acton<span class="w"> </span>build
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="c1"># deploy (each prints &quot;Deployed &lt;Contract&gt; to &lt;addr&gt;&quot;)</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="nv">STAKE_BINDING_HASH</span><span class="o">=</span>0x&lt;hash&gt;<span class="w"> </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/deploy_stake.tolk<span class="w">         </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="nv">ANCHOR_BOND_MIN</span><span class="o">=</span><span class="m">100000000</span><span class="w">   </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/deploy_anchor.tolk<span class="w">        </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="nv">ESCROW_AMOUNT</span><span class="o">=</span><span class="m">300000000</span><span class="w"> </span><span class="nv">ESCROW_DEADLINE</span><span class="o">=</span><span class="k">$((</span><span class="w"> </span><span class="k">$(</span>date<span class="w"> </span>+%s<span class="k">)</span><span class="o">+</span><span class="m">3600</span><span class="w"> </span><span class="k">))</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a><span class="w">  </span><span class="nv">ESCROW_EXPECTED_HASH</span><span class="o">=</span>0x&lt;hash&gt;<span class="w"> </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/deploy_escrow.tolk<span class="w">    </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-9" name="__codelineno-13-9" href="#__codelineno-13-9"></a><span class="nv">GP_FEE_RECIPIENT</span><span class="o">=</span>&lt;addr&gt;<span class="w">     </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/deploy_global_params.tolk<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-10" name="__codelineno-13-10" href="#__codelineno-13-10"></a>
+<a id="__codelineno-13-11" name="__codelineno-13-11" href="#__codelineno-13-11"></a><span class="c1"># verify</span>
+<a id="__codelineno-13-12" name="__codelineno-13-12" href="#__codelineno-13-12"></a>acton<span class="w"> </span>verify<span class="w"> </span>StakeVault<span class="w">   </span>--address<span class="w"> </span>&lt;addr&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-13" name="__codelineno-13-13" href="#__codelineno-13-13"></a>acton<span class="w"> </span>verify<span class="w"> </span>RecordAnchor<span class="w"> </span>--address<span class="w"> </span>&lt;addr&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-14" name="__codelineno-13-14" href="#__codelineno-13-14"></a>acton<span class="w"> </span>verify<span class="w"> </span>JobEscrow<span class="w">    </span>--address<span class="w"> </span>&lt;addr&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-15" name="__codelineno-13-15" href="#__codelineno-13-15"></a>acton<span class="w"> </span>verify<span class="w"> </span>GlobalParams<span class="w"> </span>--address<span class="w"> </span>&lt;addr&gt;<span class="w"> </span>--net<span class="w"> </span>testnet
+<a id="__codelineno-13-16" name="__codelineno-13-16" href="#__codelineno-13-16"></a>
+<a id="__codelineno-13-17" name="__codelineno-13-17" href="#__codelineno-13-17"></a><span class="c1"># the live scenario over already-deployed addresses (needs all four)</span>
+<a id="__codelineno-13-18" name="__codelineno-13-18" href="#__codelineno-13-18"></a><span class="nv">VAULT_ADDR</span><span class="o">=</span>&lt;addr&gt;<span class="w"> </span><span class="nv">ESCROW_ADDR</span><span class="o">=</span>&lt;addr&gt;<span class="w"> </span><span class="nv">ANCHOR_ADDR</span><span class="o">=</span>&lt;addr&gt;<span class="w"> </span><span class="nv">GLOBAL_PARAMS_ADDR</span><span class="o">=</span>&lt;addr&gt;<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-19" name="__codelineno-13-19" href="#__codelineno-13-19"></a><span class="w">  </span><span class="nv">SETTLE_RESULT_HASH</span><span class="o">=</span>0x&lt;hash&gt;<span class="w"> </span><span class="nv">ANCHOR_ROOT</span><span class="o">=</span>0x&lt;hash&gt;<span class="w"> </span><span class="nv">ANCHOR_LEAF</span><span class="o">=</span>0x&lt;hash&gt;<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-13-20" name="__codelineno-13-20" href="#__codelineno-13-20"></a><span class="w">  </span>acton<span class="w"> </span>script<span class="w"> </span>scripts/e2e_testnet.tolk<span class="w"> </span>--net<span class="w"> </span>testnet
+</code></pre></div>
+<p>There are matching <code>[scripts]</code> aliases in <code>ton/Acton.toml</code>
+(<code>deploy-stake-testnet</code>, <code>deploy-anchor-testnet</code>, <code>deploy-escrow-testnet</code>,
+<code>deploy-global-params-testnet</code>, <code>e2e-testnet</code>).</p>
+<hr />
+<h2 id="10-troubleshooting">10. Troubleshooting<a class="headerlink" href="#10-troubleshooting" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>missing required tool: acton</code></td>
+<td>install Acton (see §1) and ensure <code>~/.acton/bin</code> is on <code>PATH</code>.</td>
+</tr>
+<tr>
+<td><code>acton build</code> fails on macOS with SDK errors</td>
+<td><code>export SDKROOT="$(xcrun --show-sdk-path)"</code>.</td>
+</tr>
+<tr>
+<td>extension build fails</td>
+<td>run <code>SDKROOT=$(xcrun --show-sdk-path) scripts/build_extension.sh</code> directly and read the error; needs the Rust toolchain + DuckDB headers.</td>
+</tr>
+<tr>
+<td><code>set TON_TESTNET_MNEMONIC ...</code></td>
+<td>export the mnemonic (or <code>TON_TESTNET_MNEMONIC_FILE</code>).</td>
+</tr>
+<tr>
+<td><code>set TON_TESTNET_API_KEY ...</code></td>
+<td>get a testnet key from <a href="https://t.me/tonapibot">@tonapibot</a>, or pass <code>ALLOW_NO_API_KEY=1</code> to run keyless (slow).</td>
+</tr>
+<tr>
+<td>Toncenter <code>429 Too Many Requests</code> / very slow</td>
+<td>you are keyless or over quota — set <code>TON_TESTNET_API_KEY</code>; Acton waits to respect ~1 RPS without a key.</td>
+</tr>
+<tr>
+<td><code>Range check error</code> while deploying escrow</td>
+<td>the deadline must fit <code>uint32</code> (a real unix timestamp does; the harness computes <code>date +%s + window</code>).</td>
+</tr>
+<tr>
+<td>deploy succeeds but "failed to parse … address"</td>
+<td>the deploy log line format changed; inspect <code>ton/deployments/logs/deploy_*.log</code>.</td>
+</tr>
+<tr>
+<td><code>exit code 137 (NOT_ENOUGH_GAS)</code> on deposit</td>
+<td>the wallet/contract is underfunded — top up via the faucet; deposit value must cover <code>amount + 0.05 TON</code> storage + gas.</td>
+</tr>
+<tr>
+<td><code>exit code 222 (NOT_ARBITER)</code> on settle</td>
+<td>the settling wallet isn't the escrow arbiter — the harness uses your wallet for both; if running by hand, set <code>ESCROW_ARBITER</code> to the same wallet that settles.</td>
+</tr>
+<tr>
+<td><code>exit code 223 (HASH_MISMATCH)</code> on settle</td>
+<td><code>SETTLE_RESULT_HASH</code> must equal the escrow's <code>ESCROW_EXPECTED_HASH</code> (the harness reuses the query result hash for both).</td>
+</tr>
+<tr>
+<td><code>exit code 224 (ALREADY_SETTLED)</code></td>
+<td>you re-settled the same escrow — re-run the harness (it opens a fresh escrow per run via a new deadline).</td>
+</tr>
+<tr>
+<td><code>exit code 241 (EPOCH_REGRESSION)</code> / <code>240 (BAD_PREV_ROOT)</code> on anchor</td>
+<td>the submitted epoch must be <code>currentEpoch + 1</code> chained to <code>lastRoot</code> — the harness reads chain state and advances automatically; by hand, read <code>get_anchor_state</code> first.</td>
+</tr>
+<tr>
+<td><code>exit code 244 (DISPUTE_BOND_TOO_LOW)</code></td>
+<td>raise <code>DISPUTE_BOND</code> above the anchor's <code>disputeBondMin</code> (the harness deploys the anchor with a low <code>ANCHOR_BOND_MIN</code> so the optional dispute is cheap).</td>
+</tr>
+<tr>
+<td><code>exit code 260 (NOT_ADMIN)</code> on GlobalParams</td>
+<td>expected for the <strong>non-admin rejection</strong> check (the throwaway instance's admin is the vault, not your wallet); for a real <code>update_params</code>/<code>set_blocklisted</code>, send from the admin wallet that deployed <code>GlobalParams</code>.</td>
+</tr>
+<tr>
+<td><code>exit code 261 (PARAMS_OUT_OF_BOUNDS)</code> on GlobalParams</td>
+<td>a proposed <code>update_params</code> violates a §12 invariant (bps ranges, slash split = 100%, min-stake monotonicity, unbonding ≥ challenge window, selection ordering).</td>
+</tr>
+<tr>
+<td><code>acton verify</code> fails or stalls</td>
+<td>the verifier backend can be transient; the harness records it as a non-fatal check. Re-run <code>acton verify &lt;C&gt; --address &lt;addr&gt; --net testnet</code>.</td>
+</tr>
+<tr>
+<td><code>wallet import failed</code></td>
+<td>check the word count (12/24) and <code>WALLET_VERSION</code>; remove a stale entry with <code>acton wallet remove -y deployer</code> and re-run.</td>
+</tr>
+<tr>
+<td>Rust live test "SKIP" lines</td>
+<td>expected unless <code>TON_TESTNET_RPC</code> + <code>TON_TESTNET_*_ADDR</code> are set — source <code>ton/deployments/testnet.env</code> first.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-cost-safety-notes">11. Cost &amp; safety notes<a class="headerlink" href="#11-cost-safety-notes" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Testnet GRAM has no value, but the mnemonic deserves real-secret hygiene.</li>
+<li>The whole loop costs a fraction of a TON in gas + the (recoverable) escrow <code>B</code>
+  and dispute bond; defaults keep totals well under ~1 test-GRAM.</li>
+<li>All payouts default to <strong>your own wallet</strong>, so deposits/escrow/bond largely
+  return to you (minus gas).</li>
+<li>The contracts are strictly <strong>non-custodial</strong>: no platform key can seize funds;
+  the harness only ever sends from your wallet.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../BLOCKCHAIN_ECONOMICS/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Blockchain economics (TON)">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Blockchain economics (TON)
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../IMPROVEMENT_ROADMAP/" class="md-footer__link md-footer__link--next" aria-label="Next: Improvement roadmap">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Improvement roadmap
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 licensed.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tabs", "navigation.indexes", "navigation.footer", "toc.follow", "content.code.copy", "content.code.annotate", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

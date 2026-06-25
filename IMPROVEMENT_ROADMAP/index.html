@@ -1,0 +1,2782 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A peer-to-peer distributed DuckDB compute grid over QUIC, with a verifiable trust model and optional pay-per-query compute settled on TON.">
+      
+      
+      
+        <link rel="canonical" href="https://docs.duckton.com/IMPROVEMENT_ROADMAP/">
+      
+      
+        <link rel="prev" href="../TESTNET/">
+      
+      
+        <link rel="next" href="../project/security/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Improvement roadmap - Duckton</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#duckton-capstone-analysis-improvement-roadmap" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Duckton" class="md-header__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Duckton
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Improvement roadmap
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="teal" data-md-color-accent="teal"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/quickstart/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../guides/running-queries/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/sql-functions/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../ARCHITECTURE/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Deep dives
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../project/security/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Duckton" class="md-nav__button md-logo" aria-label="Duckton" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Duckton
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/Angelerator/duckton" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    Angelerator/duckton
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/running-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Running queries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/node-targeting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Node targeting & single-node routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/hosting-and-networks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hosting & joining a network
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../guides/paid-queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Paid queries (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PRIVATE_MODE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Private / enterprise mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/sql-functions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SQL functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../operations/observability/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Observability & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep dives
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deep dives
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture & trust design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../HOW_IT_WORKS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How it works (free vs paid)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BLOCKCHAIN_ECONOMICS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Blockchain economics (TON)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTNET/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TON testnet runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Improvement roadmap
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Improvement roadmap
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-executive-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Executive summary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Executive summary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-screen-scorecard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-screen scorecard
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-how-to-read-this-document" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. How to read this document
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-per-quality-deep-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Per-quality deep analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Per-quality deep analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-simple-to-use-least-config-zero-config-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Simple to use / least-config (zero-config defaults) — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-powerful" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Powerful — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-highly-customizable-when-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Highly customizable when needed — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-modular" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Modular — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-scalable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Scalable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-solid" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 Solid — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-trustable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Trustable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#38-fast" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.8 Fast — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#39-unbreakable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.9 Unbreakable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#310-anti-cheat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.10 Anti-cheat — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#311-self-improver-self-learner-the-biggest-opportunity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.11 Self-improver / self-learner — ⭐⭐ (the biggest opportunity)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-cross-cutting-themes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Cross-cutting themes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-prioritized-roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Prioritized roadmap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Prioritized roadmap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#quick-wins-shippable-now-low-effort-no-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick wins shippable now (low effort, no dependencies)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-observability-testing-gaps-and-how-to-close-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Observability / testing gaps and how to close them
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-bottom-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Bottom line
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/faq/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    FAQ
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../project/contributing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-executive-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Executive summary
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Executive summary">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#one-screen-scorecard" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-screen scorecard
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-how-to-read-this-document" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. How to read this document
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-per-quality-deep-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Per-quality deep analysis
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Per-quality deep analysis">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-simple-to-use-least-config-zero-config-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Simple to use / least-config (zero-config defaults) — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-powerful" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Powerful — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-highly-customizable-when-needed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Highly customizable when needed — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#34-modular" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.4 Modular — ⭐⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#35-scalable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.5 Scalable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#36-solid" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.6 Solid — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#37-trustable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.7 Trustable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#38-fast" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.8 Fast — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#39-unbreakable" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.9 Unbreakable — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#310-anti-cheat" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.10 Anti-cheat — ⭐⭐⭐⭐
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#311-self-improver-self-learner-the-biggest-opportunity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.11 Self-improver / self-learner — ⭐⭐ (the biggest opportunity)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-cross-cutting-themes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Cross-cutting themes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-prioritized-roadmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Prioritized roadmap
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Prioritized roadmap">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#quick-wins-shippable-now-low-effort-no-dependencies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Quick wins shippable now (low effort, no dependencies)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-observability-testing-gaps-and-how-to-close-them" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Observability / testing gaps and how to close them
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-bottom-line" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. Bottom line
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="duckton-capstone-analysis-improvement-roadmap">Duckton — Capstone Analysis &amp; Improvement Roadmap<a class="headerlink" href="#duckton-capstone-analysis-improvement-roadmap" title="Permanent link">&para;</a></h1>
+<blockquote>
+<p>Status: analysis/roadmap deliverable. <strong>No features are implemented here.</strong> Every
+claim is grounded in the real code (file:line) and the just-produced test
+evidence: the off-chain 100-node swarm bundle at <code>/tmp/p2pgrid_capstone/</code>
+(<strong>100/100 nodes, 152/152 PASS</strong>), the on-chain TON testnet runs
+(<code>testnet_e2e</code> 14/14 live, comprehensive runner 21/21 positive live, Acton
+emulator 90/90), and the catalog specs in <code>docker/SCENARIOS.md</code> + <code>ton/SCENARIOS.md</code>.</p>
+<p><strong>Scale caveat:</strong> the 100-node run is an <strong>ephemeral breadth check</strong> — each
+catalog scenario run <strong>once</strong> against <strong>mostly-idle</strong> workers — not a
+sustained-throughput/load benchmark. The <strong>reproducible in-repo harness is 16
+nodes</strong> (<code>docker/REPORT.md</code>). Read "100-node / 152-PASS" as breadth-at-scale,
+not a capacity result (see §3.5).</p>
+</blockquote>
+<hr />
+<h2 id="1-executive-summary">1. Executive summary<a class="headerlink" href="#1-executive-summary" title="Permanent link">&para;</a></h2>
+<p>duckdb-p2p is a genuinely impressive, mostly-finished distributed query grid that
+loads as a single DuckDB extension and "just works" local-first and free with
+zero config. The 100-node heterogeneous swarm passed the <strong>entire</strong> off-chain
+catalog (<code>scenario_results.txt</code>: 152 PASS / 0 FAIL) at ~11.2 MiB/node idle
+(<code>INDEX.md</code> headline), and the TON settlement contracts are real, upgradeable
+(in-place SETCODE → V2), and proven live on testnet. The engineering quality is
+high: clean trait-per-collaborator seams, careful fail-closed security gates, and
+honest, self-documenting code comments that flag their own deferred work.</p>
+<p>The project's central tension is <strong>maturity asymmetry</strong>. Three subsystems are
+production-grade and battle-tested (the local-first/zero-config requester path,
+the resilient hedged scheduler, and the on-chain contracts). Three are
+<strong>scaffolded but not load-bearing in production</strong>: (a) the economics money rail
+is wired end-to-end only for <code>mock</code>/<code>noop</code>; the live <code>ton</code> paid path is
+admittedly blocked on the un-threaded <code>JobEscrow</code> candidate-commitment seam
+(<code>coordinator.rs:1554-1563</code>); (b) the pre-flight working-set <strong>estimator</strong> is a
+rich, well-tested module that <strong>nothing in the live query path ever calls</strong>
+(<code>run_query</code> always passes <code>None</code>, <code>coordinator.rs:475</code>); and (c) the
+<strong>self-learner</strong> loop has its foundation laid (signed <code>CapabilityProfile</code> store,
+measured-capability receipts) but the host never feeds its own executions into it
+(<code>CapabilityStore::observe</code> has no production caller — grep: tests only).</p>
+<p>A fourth, cross-cutting limitation is <strong>observability</strong>: the extension surfaces
+only result <em>rows</em> to SQL and discards the rich <code>QueryOutcome</code> metadata
+(<code>extension/src/lib.rs:1471</code> drops everything but <code>.result</code>), and the live host
+engine has <strong>no fault-injection knob</strong> (<code>HostEngine</code>/<code>Worker</code> always run real
+SQL). This is precisely why the harness is two-tier — adversarial and metadata
+invariants are only provable at the cargo/library tier, never live.</p>
+<p>The headline judgment: <strong>this is a strong system whose remaining work is mostly
+"close the last mile on already-designed seams," not "invent new mechanisms."</strong>
+The highest-leverage moves are unglamorous wiring tasks with outsized payoff.</p>
+<h3 id="one-screen-scorecard">One-screen scorecard<a class="headerlink" href="#one-screen-scorecard" title="Permanent link">&para;</a></h3>
+<p>Ratings: ⭐⭐⭐⭐⭐ exceptional · ⭐⭐⭐⭐ strong · ⭐⭐⭐ solid w/ gaps · ⭐⭐ partial/scaffolded · ⭐ absent.</p>
+<table>
+<thead>
+<tr>
+<th>Quality</th>
+<th>Rating</th>
+<th>Headline evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Simple / least-config</td>
+<td>⭐⭐⭐⭐⭐</td>
+<td>Zero-config local-first works with no <code>p2p_join</code>/<code>p2p_share</code>/file/env (<code>node.rs:87-164</code>, <code>QRY-LOCAL-01</code>); seed-1 log shows <code>economics_enabled=false</code>, <code>public_jobs=free</code> by default.</td>
+</tr>
+<tr>
+<td>Powerful</td>
+<td>⭐⭐⭐⭐</td>
+<td>Full SQL admin surface (46 ADM-* PASS), grid quorum returns <code>500500</code> over QUIC (<code>QRY-REMOTE-OK-01</code>), real estimator + 13 wire/transport features — but estimator is dead in prod (§3.11).</td>
+</tr>
+<tr>
+<td>Highly customizable</td>
+<td>⭐⭐⭐⭐⭐</td>
+<td>Layered config (default→file→env→SQL) + per-call <code>QueryOverrides</code> (10 named params, <code>lib.rs:1528-1542</code>); 46 admin scenarios + <code>ADM-SET-03</code> invariant-not-persisted-on-fail.</td>
+</tr>
+<tr>
+<td>Modular</td>
+<td>⭐⭐⭐⭐⭐</td>
+<td>8 crates, trait-per-collaborator (<code>Discovery</code>/<code>TrustStore</code>/<code>QueryEngine</code>/<code>LocalOrRemotePlanner</code>/<code>Settlement</code>/<code>StakeRegistry</code>/<code>RecordAnchor</code>), each with mock+real impls.</td>
+</tr>
+<tr>
+<td>Scalable</td>
+<td>⭐⭐⭐⭐</td>
+<td>100 containers, 152/152 PASS, ~1.12 GiB total idle; paid tier 18/20→<strong>20/20</strong> at 100 nodes (<code>INDEX.md</code> delta). Single-requester coordinator + <code>block_on</code> extension bridge are untested ceilings (§3.5).</td>
+</tr>
+<tr>
+<td>Solid</td>
+<td>⭐⭐⭐⭐</td>
+<td>152 live+lib + 90 emulator + 14/14 testnet, exact value/error/log assertions; <code>ADM-PEERS-02</code> survives corrupt config. Estimator/self-learner code carried but unexercised in prod.</td>
+</tr>
+<tr>
+<td>Trustable</td>
+<td>⭐⭐⭐⭐</td>
+<td>Confidence-aware (Wilson) reputation, signed receipts, fail-closed <code>require_staked_hosts</code> (<code>QRY-REQUIRE-STAKED-NOREG-01</code>), upgradeable audited contracts; but no live stake registry wiring.</td>
+</tr>
+<tr>
+<td>Fast</td>
+<td>⭐⭐⭐⭐</td>
+<td>Hedged race + commit-first + immediate loser RESET (<code>coordinator.rs:1018-1032</code>), parallel result streams, lz4/zstd. No latency benchmarks captured; estimator-driven local routing inactive.</td>
+</tr>
+<tr>
+<td>Unbreakable</td>
+<td>⭐⭐⭐⭐</td>
+<td>Re-dispatch around 4 <code>docker kill</code>ed nodes still reached quorum (<code>02_chaos</code>, <code>RES-*</code> 12/12); retry budget + backoff + wall-clock cap; OS sandbox + DuckDB lockdown (<code>SBX-*</code>). Liveness/phi off by default.</td>
+</tr>
+<tr>
+<td>Anti-cheat</td>
+<td>⭐⭐⭐⭐</td>
+<td>Quorum + minority-cheat penalty (<code>QRY-MINORITY-CHEAT-01</code>), canary, nondeterminism detection, deny-list (8 ABU-<em> live) — but all adversarial proofs are </em><em>library-tier only</em>* (no live fault injection).</td>
+</tr>
+<tr>
+<td>Self-improver / learner</td>
+<td>⭐⭐</td>
+<td>Foundation present: grid-wide measured <code>observe_capability</code> IS wired (<code>coordinator.rs:1203</code>) + signed <code>CapabilityProfile</code> store, but <code>capability_weight</code> defaults 0 (no-op) and self-measurement → profile → gossip loop is <strong>unclosed</strong>.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-how-to-read-this-document">2. How to read this document<a class="headerlink" href="#2-how-to-read-this-document" title="Permanent link">&para;</a></h2>
+<p>For each quality below: <strong>Current state</strong> (code + test evidence), <strong>Gaps/risks</strong>
+(what the 100-node and on-chain runs exposed or could not prove), and
+<strong>Recommendations</strong> tiered Quick win / Medium / Larger with the exact
+files/modules to change and the expected payoff. Confirmed gaps are stated as
+fact with citations; hypotheses are labeled <em>(hypothesis)</em>.</p>
+<hr />
+<h2 id="3-per-quality-deep-analysis">3. Per-quality deep analysis<a class="headerlink" href="#3-per-quality-deep-analysis" title="Permanent link">&para;</a></h2>
+<h3 id="31-simple-to-use-least-config-zero-config-defaults">3.1 Simple to use / least-config (zero-config defaults) — ⭐⭐⭐⭐⭐<a class="headerlink" href="#31-simple-to-use-least-config-zero-config-defaults" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> This is the project's strongest quality and it is real.
+<code>Node::auto</code> / <code>Node::with_config</code> (<code>crates/node/src/node.rs:87-164</code>) assemble a
+working requester from nothing but <code>GridConfig::default</code>: ephemeral Ed25519
+identity, loopback QUIC on an OS-assigned port, empty bootstrap ⇒ local-first,
+free/no-chain payment. <code>Node::query</code> (<code>node.rs:283-333</code>) does the friendly thing
+automatically: in <code>auto</code> with no reachable grid it rewrites <code>prefer→Local</code> and
+runs in-process for free, and it gracefully falls back local on
+<code>NoCandidates</code>/<code>InsufficientWorkers</code> unless the user pinned remote.
+Evidence: <code>QRY-LOCAL-01</code> (<code>executed_locally=true, quorum=0, verified=true</code>),
+<code>QRY-REMOTE-FALLBACK-01</code>, the zero_config suite (10 passed,
+<code>units_zeroconfig.log</code>), and the seed-1 status log showing safe defaults
+(<code>network=testnet</code>, <code>economics_enabled=false</code>, <code>public_jobs=free</code>,
+<code>settlement=noop</code>). The friendly error strings are first-class
+(<code>CoordinatorError::NoCandidates</code> literally tells the user to call <code>p2p_join</code>,
+<code>coordinator.rs:51-57</code>).</p>
+<p><strong>Gaps/risks.</strong> (1) The single biggest <em>latent</em> footgun is that the polished
+zero-config story stops the moment a user types <code>payment =&gt; 'paid'</code>: that path is
+non-functional on the live chain (§3.7). The error is friendly
+(<code>NodeError::WalletRequired</code>, <code>node.rs:59-65</code>) but a user who <em>does</em> configure a
+wallet still hits the un-threaded escrow seam silently. (2) <code>ADM-PEERS-02</code>
+proves a corrupt <code>P2P_CONFIG</code> degrades to a single diagnostic row instead of
+failing <code>LOAD</code> — excellent — but there is no <code>p2p_doctor</code>-style "is my node
+healthy / why did my last query route local?" surface, so a misconfigured grid
+<em>looks</em> identical to a healthy local-only node.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Add a <code>p2p_explain_routing('SELECT …')</code> table function
+  (<code>extension/src/lib.rs</code>, mirroring <code>QueryVTab</code>) that calls the planner and
+  returns the <code>PlanDecision { route, reason }</code> (already a clean enum,
+  <code>planner.rs:30-70</code>) without executing. Payoff: turns the invisible local-vs-grid
+  decision into a one-line diagnostic; directly closes the "looks healthy but
+  isn't" gap.
+- <strong>Medium</strong> — Surface a <code>p2p_status</code> row for "grid reachable? N candidates
+  responding" by reusing <code>Discovery::find_candidates</code> at status time. Payoff:
+  the #1 support question ("why is my query not using the grid?") becomes
+  self-serve.
+- <strong>Larger</strong> — Make the paid path <em>fail loudly at config time</em> rather than at
+  query time when the live escrow seam is unthreaded (§3.7), so "simple" never
+  silently means "broken."</p>
+<h3 id="32-powerful">3.2 Powerful — ⭐⭐⭐⭐<a class="headerlink" href="#32-powerful" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The capability surface is broad and genuinely distributed: a
+full SQL admin/economics/wallet/contracts surface (46 <code>ADM-*</code> PASS), real grid
+dispatch returning computed values over QUIC (<code>QRY-REMOTE-OK-01</code> → <code>500500</code>),
+quorum verification with winner selection and signed receipts
+(<code>coordinator.rs:946-1257</code>), parallel/compressed result streaming
+(<code>result_stream</code>, <code>TRN-*</code>, <code>QRY-INFLIGHT-RESULTSTREAM-01</code>), and a sophisticated
+pure-Rust pre-flight estimator with projection/predicate pushdown across
+Parquet/Delta/Iceberg/CSV/JSON + EXPLAIN parsing (<code>estimator.rs</code>, all unit-tested).</p>
+<p><strong>Gaps/risks (confirmed).</strong> The estimator's power is <strong>stranded</strong>. The live query
+path <code>Node::query → Coordinator::run_query</code> always calls
+<code>try_local_execution(sql, &amp;cfg, None)</code> (<code>coordinator.rs:475</code>) — i.e. it <em>never</em>
+computes a <code>WorkingSetEstimate</code>. The estimate-aware entry <code>run_query_planned</code>
+(<code>coordinator.rs:1284</code>) exists but has <strong>no production caller</strong> (grep confirms
+only the definition + a doc reference). Consequently <code>auto</code> routing in production
+can only ever hit <code>PlanReason::NoEstimate → Remote</code> (<code>planner.rs:164-168</code>) or the
+forced-local zero-grid shortcut in <code>node.rs:315</code>. So a key advertised feature
+("small queries run locally, big ones fan out") is <strong>dead in production</strong>; it is
+proven only by <code>planner.rs</code>/<code>estimator.rs</code> unit tests, never end-to-end.
+Separately, <code>QRY-EMPTYCOLS-01</code> is documented as not live-triggerable
+(<code>REPORT.md</code> honest-limitations), and the extension exposes no way to read query
+<em>metadata</em> (§3.6).</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Wire a <em>cheap</em> estimate for the obvious case: when the SQL is a
+  single-table scan over a local Parquet/CSV path, call the existing
+  <code>estimator::csv_metadata</code>/<code>parquet_metadata_from_resultset</code> and route via
+  <code>run_query_planned</code> instead of <code>run_query</code>. Files: <code>node.rs:283</code> (query path),
+  call into <code>estimator</code>. Payoff: turns dead code into the headline auto-routing
+  feature for the most common workload with zero new mechanism.
+- <strong>Medium</strong> — Build the SQL-source analyzer the deferred work calls for: extract
+  referenced tables/columns/predicates + <code>QueryShape</code> (group_by/join/sort flags)
+  from the parsed SQL or an <code>EXPLAIN</code> probe on <code>HostEngine</code>, feeding
+  <code>estimate_working_set</code>. Files: new <code>crates/node/src/sql_analyze.rs</code>, consumed in
+  the query path. Payoff: full estimate-driven <code>auto</code> routing live.
+- <strong>Larger</strong> — Add the engine-backed Parquet/EXPLAIN probes behind
+  <code>duckdb-engine</code> so the estimator reads <em>real</em> footers, not synthetic metadata
+  (<code>estimator.rs:33-41</code> flags this scope). Payoff: accurate routing on real data
+  lakes.</p>
+<h3 id="33-highly-customizable-when-needed">3.3 Highly customizable when needed — ⭐⭐⭐⭐⭐<a class="headerlink" href="#33-highly-customizable-when-needed" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> Excellent and well-tested. Config layers cleanly
+(default → file via <code>P2P_CONFIG</code> → <code>P2P_*</code> env → SQL/runtime <code>ConfigStore</code>), and
+every knob is reachable three ways: grouped friendly setters
+(<code>p2p_economics</code>/<code>p2p_selection</code>/<code>p2p_trust</code>/…, generated by the <code>group_setter!</code>
+macro <code>lib.rs:275-396</code>), a generic <code>p2p_set('dotted.key', value)</code> escape hatch,
+and per-call <code>QueryOverrides</code> (10 named params: replicas, quorum, min_trust,
+min_attest, verify, prefer, payment, data_class, require_staked_hosts —
+<code>lib.rs:1528-1542</code>). Validation is real and atomic: <code>ADM-SET-03</code> proves an
+invariant-violating quorum is <strong>not persisted</strong> on failure; <code>VRC-CONFIG-UNKNOWN-FIELD-01</code>
+proves <code>deny_unknown_fields</code>; <code>ADM-RESET-01</code> restores defaults; settings survive
+restart at <code>0600</code> (<code>ADM-PERSIST-01</code>). Secret redaction is first-class
+(<code>ADM-WALLET-01</code>, <code>SET-SECRET-REDACT-01</code>).</p>
+<p><strong>Gaps/risks.</strong> Customizability is <em>config-surface</em> complete but <strong>runtime
+introspection</strong> of the effect is thin — there is no way to see, per query,
+<em>which</em> overrides actually took effect or why (same root as §3.1/§3.6). Also,
+several powerful knobs are inert by default and undiscoverable: <code>capability_weight</code>,
+<code>exploration_rate</code>, <code>require_staked_hosts</code>, liveness — a user has no signal that
+turning them on does anything.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Document the inert-by-default knobs in <code>p2p_config</code> output with
+  an "(active: no — defaults to no-op)" hint sourced from the resolved value.
+  File: <code>crates/config/src/store.rs</code> <code>settings()</code>. Payoff: discoverability of the
+  system's advanced levers.
+- <strong>Medium</strong> — Echo the <em>effective</em> <code>QueryOverrides</code> back as a metadata row when
+  metadata surfacing lands (§3.6). Payoff: closes the "did my override apply?" gap.</p>
+<h3 id="34-modular">3.4 Modular — ⭐⭐⭐⭐⭐<a class="headerlink" href="#34-modular" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> Textbook. Eight crates with crisp seams
+(<code>config</code>, <code>proto</code>, <code>transport</code>, <code>trust</code>, <code>node</code>, <code>settlement</code>, <code>extension</code>,
+<code>console-server</code>), and the dependency-inverting trait-per-collaborator pattern is
+used consistently: <code>Discovery</code>, <code>TrustStore</code>, <code>QueryEngine</code>,
+<code>LocalOrRemotePlanner</code> (<code>planner.rs:105</code>), <code>Settlement</code>/<code>StakeRegistry</code>/
+<code>RecordAnchor</code>/<code>ParamsSource</code> (<code>settlement/src/traits.rs</code>). Each has a
+deterministic <code>mock</code>, a genuine <code>noop</code>, and a real impl — which is exactly what
+made the two-tier harness possible. The <code>SettlementStack</code> single-construction-site
+(<code>wiring.rs:39-81</code>) is a clean example of resolving a whole subsystem from config
+with safe defaults.</p>
+<p><strong>Gaps/risks.</strong> Two modularity smells, both minor: (1) the extension cannot reuse
+<code>p2p-node</code>'s <code>DuckDbEngine</code> (feature/linking conflict), so it re-implements a
+parallel <code>HostEngine</code> (<code>lib.rs:1232-1326</code>) that must be kept lockdown-identical by
+hand (the comment at <code>lib.rs:1262-1270</code> is the only thing keeping them in sync — a
+drift risk). (2) The <code>Coordinator</code> is a single ~1700-line struct carrying 15+
+optional collaborators; it is well-organized but is the natural place a future
+refactor would split requester-scheduling from settlement.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Extract the DuckDB lockdown PRAGMA set into one shared
+  <code>const</code>/helper in <code>p2p-config</code> (or <code>p2p-proto</code>) consumed by both
+  <code>duckdb_engine.rs</code> and the extension's <code>HostEngine</code>. Payoff: eliminates the
+  silent-drift risk between the two sandbox lockdowns (a security-relevant
+  divergence).
+- <strong>Larger</strong> <em>(optional)</em> — If the coordinator grows further, split the
+  settle/anchor/fine block (<code>coordinator.rs:1219-1278, 1512-1613</code>) into a
+  <code>SettlementCoordinator</code> collaborator. Payoff: testability; not urgent.</p>
+<h3 id="35-scalable">3.5 Scalable — ⭐⭐⭐⭐<a class="headerlink" href="#35-scalable" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The headline scale result is strong and real: <strong>100 containers</strong>
+(3 seed, 92 honest-worker, 2 internal-host, 2 oom-worker, 1 remote-only), all
+<code>NODE_READY</code> (<code>node_roles.txt</code>), full catalog <strong>152/152 PASS</strong>, ~1122 MiB total /
+~11.2 MiB/node idle (<code>docker_stats_idle.txt</code>, <code>INDEX.md</code>). Crucially the
+scale-up <em>fixed</em> a small-swarm flake: legacy <code>05_economics_modes</code> paid tier went
+18/20 → <strong>20/20</strong> because 92 honest workers gave ample capacity vs. 8
+(<code>INDEX.md</code> delta) — strong evidence the dispatch/offer path scales horizontally
+on the worker side. The discovery layer samples a bounded candidate set
+(<code>candidate_sample_size=16</code>, <code>coordinator.rs:655-658</code>), so per-query fan-out is
+O(sample), not O(grid).</p>
+<p><strong>Gaps/risks.</strong> (1) Scale was proven <em>breadth-first</em> (152 distinct scenarios once
+each), <strong>not</strong> load/throughput: there is no evidence for sustained QPS, many
+concurrent requesters, or large result sets at 100 nodes. (2) The
+single-requester <code>Coordinator</code> holds all in-flight state in process <code>HashMap</code>s and
+the extension bridges sync DuckDB ↔ async via a <strong>2-worker-thread</strong> runtime that
+<code>block_on</code>s each query (<code>lib.rs:1155-1164, 1468-1470</code>) — a single DuckDB session
+issues queries serially through one node; concurrency across sessions shares those
+2 threads <em>(hypothesis: this is the practical throughput ceiling, untested)</em>.
+(3) <code>ProgressTracker</code> and trust state are unbounded-per-job in memory; fine at
+100 nodes, unknown at 10k <em>(hypothesis)</em>.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Medium</strong> — Add a load/throughput scenario to the harness: N concurrent
+  requesters × M queries against the 100-node swarm, asserting p50/p95 latency and
+  zero correctness loss. Files: new <code>docker/scenarios/22_load.sh</code>. Payoff: turns
+  the scalability rating from "breadth-proven" to "throughput-proven."
+- <strong>Medium</strong> — Make the extension runtime worker-thread count config-driven
+  (<code>lib.rs:1158</code>) instead of hard-coded 2. Payoff: lets a busy host actually use
+  its cores.
+- <strong>Larger</strong> — Benchmark coordinator memory/CPU under churn at 1k+ simulated
+  candidates (library tier) to find the in-memory-state ceiling before it bites.</p>
+<h3 id="36-solid">3.6 Solid — ⭐⭐⭐⭐<a class="headerlink" href="#36-solid" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The test surface is exceptionally broad and <em>exact</em>: 152
+live+lib assertions (<code>scenario_results.txt</code>), 90 emulator tests, 14/14 live
+testnet, and the per-suite <code>cargo</code> results are all green (e.g.
+<code>units_resilience.log</code> 12 passed, <code>units_settlement.log</code> 11 passed,
+<code>units_scenarios.log</code> 18 passed). Assertions check exact values (<code>500500</code>), exact
+error substrings (<code>not enough trustworthy workers: have 0, need quorum 2</code>), and
+host-role log lines — not just exit codes. Robustness-to-bad-input is proven
+(<code>ADM-PEERS-02</code> corrupt config survives <code>LOAD</code>; <code>ADM-SET-03</code> no partial writes).</p>
+<p><strong>Gaps/risks (confirmed).</strong> "Solid" is bifurcated by the two-tier design. The
+production <em>binary</em> (extension) is solid for everything it actually does, but
+three sizeable modules ship in the binary yet are <strong>never exercised in
+production</strong>: the estimator (§3.2), the self-learner profile store (§3.11), and
+the live <code>ton</code> paid rail (§3.7). They are unit-tested, so they are "correct code,"
+but "untested-in-integration" is a real solidity risk the moment they're wired.
+The deliberate honesty about this (<code>REPORT.md</code> "Honest limitations") is a
+credit, but the gap is real.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Add a CI gate that fails if <code>run_query_planned</code> /
+  <code>CapabilityStore::observe</code> remain without a non-test caller, so "scaffolded"
+  code can't silently rot. Payoff: prevents the gap from widening.
+- <strong>Medium</strong> — As each scaffolded seam is wired (§3.2/§3.7/§3.11), promote its
+  library-tier proof to a live scenario. Payoff: monotonic increase in
+  integration coverage.</p>
+<h3 id="37-trustable">3.7 Trustable — ⭐⭐⭐⭐<a class="headerlink" href="#37-trustable" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The trust model is sophisticated and the on-chain root of trust
+is real. Selection uses a confidence-aware reputation (Beta/Wilson lower bound,
+<code>coordinator.rs:1394-1408</code>, <code>TRU-REP-CONFIDENCE-01</code>) so thin-history nodes aren't
+over-trusted; receipts are Ed25519-signed (<code>make_receipt</code>, <code>coordinator.rs:1445</code>);
+replay is deduped (<code>TRU-REP-REPLAY-01</code>); the fail-closed <code>require_staked_hosts</code>
+gate drops unverifiable TOFU peers and yields <code>NoCandidates</code> with no registry
+(<code>coordinator.rs:683-697</code>, <code>QRY-REQUIRE-STAKED-NOREG-01</code>). On-chain, the
+contracts are audited-grade and <strong>upgradeable in place</strong> (RecordAnchor→V2 and
+GlobalParams→V2 via SETCODE at a stable address, proven live; StakeVault→V2
+time-gated by design = the staker exit window), with disputes (uphold/reject),
+pull-ledger bounce safety, and a candidate-commitment HTLC escrow
+(<code>JobEscrow</code>, <code>ton/SCENARIOS.md</code> §3). Dead ABI codes (134/135/220/221) are
+deliberately reserved, never renumbered, to keep the frozen ABI stable.</p>
+<p><strong>Gaps/risks (confirmed).</strong> The live node <strong>wires no stake registry and emits L0
+attestation only</strong> (<code>Attestation::stub_l0()</code>, <code>node.rs:269</code>); <code>staked-host</code> /
+<code>l2-host</code> behaviors are unprovable live and only the <em>gate</em> (not bonded
+selection) is shown (<code>REPORT.md</code> "roles intentionally NOT baked"). So today's
+"trust" in production is reputation + signatures, <strong>not</strong> economic stake — the
+stake side is contract-complete but not connected to the running grid. The
+candidate-commitment escrow seam is explicitly <strong>not threaded</strong> from the
+coordinator (<code>coordinator.rs:1554-1563</code>), so a live paid settle would be rejected
+on-chain. Attestation is a stub, so <code>min_attestation</code> above L0 excludes everyone
+live (proven indirectly by the gate tests).</p>
+<p><strong>Recommendations.</strong>
+- <strong>Medium</strong> — Wire a real <code>StakeRegistry</code> impl backed by the on-chain
+  <code>StakeVault.is_eligible</code>/<code>stake_of</code> getters (the <code>ton</code> crate already reads
+  getters) and inject it via <code>Node::with_wallet</code>. Files:
+  <code>crates/settlement/src/ton.rs</code> (new registry), <code>node.rs:168</code>. Payoff: makes
+  <code>require_staked_hosts</code> and the <code>stake_factor</code> selection term <em>real</em> in
+  production, not just unit-tested.
+- <strong>Larger</strong> — Thread the dispatched-workers' payout-wallet candidate set through
+  <code>open_escrow_with_terms</code> → on-chain <code>candidatesHash</code> and present it byte-
+  identically at <code>settle</code> (<code>coordinator.rs:1554-1571</code>, <code>traits.rs:36-45</code>). Payoff:
+  unblocks the entire live paid path — the single biggest correctness unlock.
+- <strong>Larger</strong> — Implement a real attestation provider (≥ L1) to replace
+  <code>stub_l0()</code> so data-class floors (Internal L1/0.85, Sensitive L2/0.80) are
+  enforceable live, not just in <code>HST-ADMIT-DATACLASS-01</code> (lib).</p>
+<h3 id="38-fast">3.8 Fast — ⭐⭐⭐⭐<a class="headerlink" href="#38-fast" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The latency-critical paths are designed well. The scheduler
+hedges and commits-first, then RESETs losers <strong>immediately, before</strong> the winner's
+(possibly large) download so losers stop computing at once
+(<code>coordinator.rs:1009-1032</code>) — a genuinely good tail-latency design. <code>verify=fast</code>
+takes the fastest committer (<code>coordinator.rs:934-943</code>); results stream in parallel
+across uni-streams with lz4/zstd above a min size (<code>worker.rs:689-697</code>,
+<code>TRN-PARALLEL-CLAMP-01</code>, <code>QRY-COMPRESSION-ONOFF-01</code>). Local-first execution avoids
+the network entirely for small/zero-grid queries. The free local path gives DuckDB
+a real <code>memory_limit</code> with spill tolerance (<code>coordinator.rs:1341-1347</code>).</p>
+<p><strong>Gaps/risks.</strong> (1) <strong>No latency numbers were captured</strong> — the bundle has resource
+(MiB) snapshots but no p50/p95 query latency, offer/dispatch timing, or
+throughput. "Fast" is therefore an architectural judgment, not a measured one.
+(2) The dead estimator (§3.2) means the system can't yet <em>avoid</em> shipping a small
+query to the grid when local would be faster — it conservatively goes remote on
+<code>NoEstimate</code>, the slower choice for small data. (3) The extension's 2-thread
+<code>block_on</code> runtime (§3.5) serializes the async work behind each synchronous SQL
+call.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Capture timing in the existing harness: have <code>_common.sh</code> record
+  wall-clock per <code>QRY-REMOTE-OK-01</code>/<code>QRY-LOCAL-01</code> and emit a <code>latency_summary.txt</code>
+  alongside <code>resource_summary.txt</code>. Payoff: converts the Fast rating from
+  asserted to measured with near-zero effort.
+- <strong>Medium</strong> — Wiring the cheap estimate (§3.2 quick win) directly improves
+  small-query latency by keeping them local. Payoff: latency + cost win on the
+  common case.</p>
+<h3 id="39-unbreakable">3.9 Unbreakable — ⭐⭐⭐⭐<a class="headerlink" href="#39-unbreakable" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> Resilience is a clear strength, and it's the one adversarial-ish
+property proven <strong>live at scale</strong>: <code>02_chaos.sh</code> <code>docker kill</code>ed 4 bootstrap
+workers (honest-worker-{21,32,33,65}, <code>Exited (137)</code> in <code>container_inventory.txt</code>)
+and re-dispatch still reached quorum with 20/20 correct post-chaos
+(<code>INDEX.md</code>, <code>all_results.txt</code> SCENARIO 2 PASS). The resilient loop is
+comprehensive: re-dispatch to a fresh set on silence/stall, bounded exponential
+backoff + jitter, a global retry token bucket, <code>max_retries</code>, and a wall-clock
+<code>max_total_duration</code> cap (<code>coordinator.rs:516-632</code>), all 12 <code>RES-*</code> library tests
+green (<code>units_resilience.log</code>). Defense-in-depth at the host: OS sandbox +
+DuckDB lockdown (<code>enable_external_access=false</code>, <code>disabled_filesystems</code>,
+<code>lock_configuration=true</code>, <code>lib.rs:1271-1282</code>), proven live (<code>SBX-LOCAL-FILE-01</code>
+never leaks <code>/etc/passwd</code>; <code>SBX-RELOCK-01</code>). Bounce-safety on-chain via pull-ledger
+(<code>StakeClaim</code>/<code>EscrowClaim</code>).</p>
+<p><strong>Gaps/risks.</strong> (1) The phi-accrual + SWIM <strong>liveness detector is off by default</strong>
+(<code>with_liveness</code> not wired in <code>node.rs</code>/extension; <code>coordinator.rs:208,370-373</code>),
+so the production grid relies on per-attempt timeouts rather than proactive
+exclusion of flapping peers — the <code>RES-LIVENESS-EXCLUDE-01</code>/<code>RES-SWIM-*</code> proofs are
+library-only. (2) The loud "NO OS-LEVEL SANDBOX" warning (<code>worker.rs:216-225</code>)
+fires when the backend is <code>noop</code> + remote access on — meaning in many real
+deployments the <em>only</em> isolation is the DuckDB lockdown, which "cannot scope
+network egress." (3) Chaos was node-kill only; no network partition, slow-loris,
+or malformed-frame fuzzing at the live tier.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Quick win</strong> — Wire <code>LivenessView</code> into the node by default-on for grids with
+  ≥ N seeds (it's already built and tested). Files: <code>node.rs:138-155</code>,
+  <code>coordinator.with_liveness</code>. Payoff: proactive flapping-peer exclusion in
+  production, not just in unit tests.
+- <strong>Medium</strong> — Add a live chaos scenario beyond kill: pause/SIGSTOP a worker
+  mid-dispatch (proves stall→re-dispatch live, not just lib) and a malformed-frame
+  injection at the transport. Files: <code>docker/scenarios/02_chaos.sh</code>. Payoff:
+  promotes resilience proofs from lib to live.
+- <strong>Larger</strong> — Make a real OS sandbox backend the default where available so the
+  warning path is the exception, not the rule.</p>
+<h3 id="310-anti-cheat">3.10 Anti-cheat — ⭐⭐⭐⭐<a class="headerlink" href="#310-anti-cheat" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The anti-cheat <em>design</em> is comprehensive and correct: quorum
+verification with minority-cheat detection + reputation penalty
+(<code>QRY-MINORITY-CHEAT-01</code>, <code>coordinator.rs:1108-1140</code>), equivocation/SPLIT handled
+loudly with no silent winner (<code>coordinator.rs:889-908</code>), canary jobs with known
+answers (<code>TRU-CANARY-01</code>), nondeterminism detection that marks <code>random()</code> queries
+unverifiable (<code>QRY-NONDET-01</code>, <code>is_nondeterministic</code>), consensus-infeasible fault
+attribution that refunds and stops without blaming providers
+(<code>coordinator.rs:911-920</code>, <code>QRY-INFEASIBLE-01</code>), worker-side cost gates + free-job
+rate limiting (<code>worker.rs:320-360</code>, <code>ABU-COSTGATE-ROWS-01</code>/<code>ABU-RATELIMIT-01</code>),
+and a per-node deny-list with auto-block below a trust floor
+(<code>coordinator.rs:751-768</code>, 8 <code>ABU-*</code> live). Broken-commitment fining slashes
+staked providers on paid feasible jobs (<code>fine_failed_commitment</code>,
+<code>SET-FINE-COMMIT-01</code>).</p>
+<p><strong>Gaps/risks (confirmed, structural).</strong> <strong>Every adversarial invariant is
+library-tier only</strong> — and not by choice but by a real product limitation: the live
+<code>HostEngine</code>/<code>Worker</code> always run <em>real</em> SQL with <strong>no fault-injection knob</strong>
+(<code>REPORT.md</code> two-tier rationale; <code>worker.rs:442-449</code> always calls the real
+engine). So cheating/wrong-result/slow/equivocating workers cannot be staged in
+the live swarm; <code>ABU-CAND-EXCLUDE-01</code> is lib-only because <code>StaticDiscovery</code>
+bootstrap candidates carry no <code>node_id</code> (TOFU), so a node-id block can't match at
+the requester. Net: the anti-cheat machinery is <strong>proven correct in simulation but
+has never run against a live adversary</strong>, and the broken-commitment slash depends
+on the un-wired stake registry (§3.7) to have teeth in production.</p>
+<p><strong>Recommendations.</strong>
+- <strong>Medium (also unlocks observability, §5)</strong> — Add a <strong>fault-injection config
+  surface</strong> to the worker/engine: an opt-in <code>[fault_injection]</code> block (off by
+  default, refused unless an explicit <code>allow_fault_injection</code> flag) that can make a
+  host return a wrong hash, stall, or equivocate. Files: <code>crates/config</code> (new
+  section), <code>worker.rs</code>/<code>HostEngine</code>. Payoff: lets the live swarm prove
+  <code>QRY-MINORITY-CHEAT-01</code>, equivocation, and slash-with-real-stake end-to-end —
+  the single biggest closure of the lib-only gap.
+- <strong>Quick win</strong> — Have <code>StaticDiscovery</code> learn and carry <code>node_id</code> after the first
+  handshake (TOFU pin) so requester-side <code>node_id</code> blocks can match live, making
+  <code>ABU-CAND-EXCLUDE-01</code> provable in the swarm. Files:
+  <code>crates/node/src/discovery.rs</code>.
+- <strong>Larger</strong> — Connect the slash path to a live <code>StakeRegistry</code> (§3.7) so cheating
+  actually costs money in production.</p>
+<h3 id="311-self-improver-self-learner-the-biggest-opportunity">3.11 Self-improver / self-learner — ⭐⭐ (the biggest opportunity)<a class="headerlink" href="#311-self-improver-self-learner-the-biggest-opportunity" title="Permanent link">&para;</a></h3>
+<p><strong>Current state.</strong> The <em>foundation</em> is laid and partly live. (a) The grid-wide
+<strong>counterparty-measured</strong> capability signal IS wired: on every Correct receipt the
+requester records the measured result rows/bytes and the trust store folds it into
+a proven-capability aggregate (<code>coordinator.rs:1085-1093, 1199-1204</code>;
+<code>trust/src/reputation.rs:294</code> <code>observe_capability</code>, deduped, ignores failures,
+ratchets maxima — <code>observe_capability_ratchets_maxima_dedups_and_ignores_failures</code>
+test). (b) A selection term consumes it: <code>capability_weight * capability_confidence</code>
+(<code>coordinator.rs:1430-1442</code>). (c) A durable, <strong>signed, rollback-guarded
+<code>CapabilityProfile</code> store</strong> exists for a node's <em>own</em> self-measured maxima
+(<code>capability_store.rs</code>, monotonic <code>seq</code>, node-id-bound, tamper-resistant,
+fully unit-tested). (d) Cold-start exploration bonus exists
+(<code>exploration_bonus</code>, <code>coordinator.rs:1420-1424</code>).</p>
+<p><strong>Gaps/risks (confirmed).</strong> The learning loop is <strong>open at three joints</strong>:
+1. <code>capability_weight</code> <strong>defaults to 0.0</strong> (<code>coordinator.rs:1430-1441</code>), so the
+   measured-capability term is a strict no-op until an operator opts in — and
+   nothing surfaces that it exists (<code>VRC-CAPWEIGHT-DEFAULT-NOOP-01</code>,
+   <code>TRU-CAP-NOINFLATE-01</code>). The grid does not actually <em>use</em> what it measures.
+2. The node never feeds its <strong>own</strong> executions into <code>CapabilityStore</code>:
+   <code>CapabilityStore::observe</code> / <code>MeasuredExecution</code> have <strong>no production caller</strong>
+   (grep: only <code>capability_store.rs</code> tests + the <code>lib.rs:43</code> re-export). The
+   worker computes <code>row_count</code> and latency (<code>worker.rs:666-668</code>) but discards peak
+   memory / temp-dir spill and never calls <code>observe</code>. So the self-measured profile
+   is never written in production.
+3. There is no <strong>gossip</strong> of the signed <code>CapabilityProfile</code> (the signing
+   primitive <code>sign_capability_profile</code> and ad PoW exist — <code>TRU-CAPAD-POW-01</code>,
+   <code>TRU-CAPPROF-ROLLBACK-01</code> — but nothing advertises/consumes profiles between
+   nodes), and <code>exploration_rate</code> also defaults to 0 (pure exploitation).
+Combined with the dead estimator (§3.2), the system has <strong>no closed
+sense→model→act loop</strong> in production: it neither learns its own capacity nor
+routes by it.</p>
+<p><strong>Recommendations (build on the landed foundation).</strong>
+- <strong>Quick win</strong> — Close joint #2 inside the worker: after <code>ExecOutcome::Ok</code>, call
+  <code>CapabilityStore::observe(&amp;signer, MeasuredExecution{...})</code> with the measured
+  rows/bytes (and peak memory/temp-dir once the engine reports them). Files:
+  <code>worker.rs:637-668</code>, using the node identity as <code>Signer</code>. Payoff: the node
+  starts accumulating a real, signed, monotonic record of the largest workloads it
+  has actually completed — the substrate for everything else.
+- <strong>Quick win</strong> — Ship a non-zero <strong>default</strong> <code>exploration_rate</code> (small, e.g. the
+  documented ε) so new honest nodes are actually sampled and can build reputation;
+  today cold-start is pure exploitation. Files: <code>crates/config/src/economics.rs</code>
+  (<code>ranking.exploration_rate</code> default). Payoff: the grid self-heals its own
+  cold-start bias.
+- <strong>Medium</strong> — Close joint #3: advertise the signed <code>CapabilityProfile</code> over the
+  existing gossip/ad path and consume peers' profiles as an input to
+  <code>capability_confidence</code>, gated by PoW + signature + epoch nonce (primitives
+  already exist). Then raise <code>capability_weight</code>'s default off 0 once the signal is
+  trustworthy. Files: <code>crates/trust/src/capability.rs</code>, <code>coordinator.rs:1430</code>.
+  Payoff: selection biases toward peers <em>proven</em> (not self-claimed) to handle real
+  work — the grid gets measurably smarter over time.
+- <strong>Larger (depends on §3.2)</strong> — Feed the node's own <code>CapabilityProfile</code> maxima
+  back into the planner's local-vs-remote estimate as a learned ceiling (e.g.
+  "I've handled 8 GiB spill before, so this fits"), closing the sense→model→act
+  loop: measure real runs → update profile → route future queries by learned
+  capacity. Files: <code>planner.rs</code> + the estimator wiring. Payoff: a genuinely
+  self-tuning router — the project's marquee differentiator if delivered.</p>
+<hr />
+<h2 id="4-cross-cutting-themes">4. Cross-cutting themes<a class="headerlink" href="#4-cross-cutting-themes" title="Permanent link">&para;</a></h2>
+<p>Each theme is a root cause that blocks several qualities at once.</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Theme</th>
+<th>Root cause (code)</th>
+<th>Qualities it blocks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>C1</td>
+<td><strong>Economics scaffolded but partly unwired</strong></td>
+<td>Live <code>ton</code> paid rail resolves to noop without <code>ton-live</code>; even with it, the <code>JobEscrow</code> candidate-commitment seam isn't threaded (<code>coordinator.rs:1554-1571</code>); no live <code>StakeRegistry</code> (<code>node.rs:269</code> stub L0).</td>
+<td>Trustable, Anti-cheat (slash has no teeth), Powerful, Solid</td>
+</tr>
+<tr>
+<td>C2</td>
+<td><strong>Estimation path dead in production</strong></td>
+<td><code>run_query</code> always passes <code>None</code>; <code>run_query_planned</code> has no caller (<code>coordinator.rs:475,1284</code>). Rich estimator unexercised end-to-end.</td>
+<td>Powerful, Fast, Self-learner</td>
+</tr>
+<tr>
+<td>C3</td>
+<td><strong>Extension hides <code>QueryOutcome</code> from SQL</strong></td>
+<td><code>QueryVTab::bind</code> keeps only <code>outcome.result</code>, discarding verified/agreement/winner/receipts/executed_locally (<code>extension/src/lib.rs:1471</code>).</td>
+<td>Trustable (no proof to user), Solid (weak introspection), Simple (can't see routing), Customizable (can't confirm overrides)</td>
+</tr>
+<tr>
+<td>C4</td>
+<td><strong>No live fault-injection knob → observability gap</strong></td>
+<td><code>HostEngine</code>/<code>Worker</code> always run real SQL (<code>worker.rs:442</code>); all adversarial/metadata invariants are library-tier only (<code>REPORT.md</code> two-tier rationale).</td>
+<td>Anti-cheat, Solid, Unbreakable (adversarial cases lib-only)</td>
+</tr>
+<tr>
+<td>C5</td>
+<td><strong>Self-learning loop open at three joints</strong></td>
+<td><code>capability_weight</code>=0 default, <code>CapabilityStore::observe</code> uncalled in prod, no profile gossip, <code>exploration_rate</code>=0.</td>
+<td>Self-learner, Fast, Powerful</td>
+</tr>
+<tr>
+<td>C6</td>
+<td><strong>Latency never measured</strong></td>
+<td>Harness captures MiB, not ms; no QPS/p95.</td>
+<td>Fast (asserted not measured), Scalable (breadth not throughput)</td>
+</tr>
+</tbody>
+</table>
+<p>The striking pattern: <strong>C2, C3, C4, C5 are all the same shape</strong> — a capable
+mechanism exists in the binary but the <em>last wire</em> connecting it to live behavior
+is missing. The project is one "wiring sprint" away from a large step-change in
+its weakest qualities.</p>
+<hr />
+<h2 id="5-prioritized-roadmap">5. Prioritized roadmap<a class="headerlink" href="#5-prioritized-roadmap" title="Permanent link">&para;</a></h2>
+<p>Ranked across all qualities by leverage (impact × how many qualities it unblocks)
+vs. effort. Dependencies noted.</p>
+<table>
+<thead>
+<tr>
+<th>Rank</th>
+<th>Change</th>
+<th>Effort</th>
+<th>Impact</th>
+<th>Unblocks</th>
+<th>Depends on</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>P0-1</strong></td>
+<td>Surface <code>QueryOutcome</code> metadata to SQL (new <code>p2p_query_meta()</code> or extra columns: verified/agreement/winner/executed_locally/receipt count)</td>
+<td>S–M</td>
+<td>High</td>
+<td>C3 → Trustable, Solid, Simple, Customizable</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P0-2</strong></td>
+<td>Thread the candidate-commitment set through <code>open_escrow_with_terms</code>→<code>settle</code> to unblock the live paid path</td>
+<td>M–L</td>
+<td>High</td>
+<td>C1 → Trustable, Powerful; enables real slashing</td>
+<td>embedded escrow code (present)</td>
+</tr>
+<tr>
+<td><strong>P0-3</strong></td>
+<td>Add an opt-in, default-off <code>[fault_injection]</code> worker/engine surface</td>
+<td>M</td>
+<td>High</td>
+<td>C4 → Anti-cheat, Unbreakable, Solid (promote lib proofs live)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P1-1</strong></td>
+<td>Wire a real on-chain-backed <code>StakeRegistry</code> (read <code>StakeVault</code> getters) + inject via <code>with_wallet</code></td>
+<td>M</td>
+<td>High</td>
+<td>C1 → Trustable, Anti-cheat (slash teeth), staked-host selection</td>
+<td>P0-2 for full paid loop</td>
+</tr>
+<tr>
+<td><strong>P1-2</strong></td>
+<td>Wire a cheap pre-flight estimate for single-table local-file scans via <code>run_query_planned</code></td>
+<td>M</td>
+<td>High</td>
+<td>C2 → Powerful, Fast, Self-learner</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P1-3</strong></td>
+<td>Feed host self-measurements into <code>CapabilityStore::observe</code> after each successful execution</td>
+<td>S</td>
+<td>Med-High</td>
+<td>C5 joint #2 → Self-learner</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P1-4</strong></td>
+<td>Capture query latency (p50/p95) in the harness</td>
+<td>S</td>
+<td>Med</td>
+<td>C6 → Fast/Scalable measured</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P2-1</strong></td>
+<td>SQL-source analyzer (tables/cols/predicates/QueryShape) for full estimate-driven <code>auto</code> routing</td>
+<td>L</td>
+<td>High</td>
+<td>C2 → Powerful, Fast</td>
+<td>P1-2</td>
+</tr>
+<tr>
+<td><strong>P2-2</strong></td>
+<td>Gossip + consume signed <code>CapabilityProfile</code>; default <code>capability_weight</code>/<code>exploration_rate</code> off 0</td>
+<td>M–L</td>
+<td>Med-High</td>
+<td>C5 joints #1,#3 → Self-learner</td>
+<td>P1-3</td>
+</tr>
+<tr>
+<td><strong>P2-3</strong></td>
+<td>Default-on <code>LivenessView</code> (phi+SWIM) for multi-seed grids</td>
+<td>S–M</td>
+<td>Med</td>
+<td>Unbreakable (live, not lib)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P2-4</strong></td>
+<td>TOFU-pin <code>node_id</code> in <code>StaticDiscovery</code> so requester-side blocks match live</td>
+<td>S</td>
+<td>Med</td>
+<td>Anti-cheat (ABU-CAND-EXCLUDE live)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P2-5</strong></td>
+<td>Concurrent-requester load/throughput scenario at 100 nodes</td>
+<td>M</td>
+<td>Med</td>
+<td>Scalable (throughput-proven)</td>
+<td>P1-4</td>
+</tr>
+<tr>
+<td><strong>P3-1</strong></td>
+<td>Engine-backed real Parquet/EXPLAIN probes behind <code>duckdb-engine</code></td>
+<td>L</td>
+<td>Med</td>
+<td>Powerful (accurate routing on real lakes)</td>
+<td>P2-1</td>
+</tr>
+<tr>
+<td><strong>P3-2</strong></td>
+<td>Self-tuning planner using learned <code>CapabilityProfile</code> ceilings</td>
+<td>L</td>
+<td>High (differentiator)</td>
+<td>Self-learner closed loop</td>
+<td>P1-2, P1-3, P2-1</td>
+</tr>
+<tr>
+<td><strong>P3-3</strong></td>
+<td>Real ≥L1 attestation provider replacing <code>stub_l0()</code></td>
+<td>L</td>
+<td>Med</td>
+<td>Trustable (data-class floors live)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P3-4</strong></td>
+<td>Shared DuckDB-lockdown const across <code>duckdb_engine</code> + <code>HostEngine</code></td>
+<td>S</td>
+<td>Low-Med</td>
+<td>Modular (drift safety)</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>P3-5</strong></td>
+<td><code>config-driven</code> extension runtime thread count</td>
+<td>S</td>
+<td>Low-Med</td>
+<td>Scalable/Fast</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="quick-wins-shippable-now-low-effort-no-dependencies">Quick wins shippable now (low effort, no dependencies)<a class="headerlink" href="#quick-wins-shippable-now-low-effort-no-dependencies" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>P1-3</strong> — call <code>CapabilityStore::observe</code> from the worker on success
+   (<code>worker.rs:637</code>). One call site; turns a fully-tested dormant module on.</li>
+<li><strong>P1-4</strong> — record per-query wall-clock in <code>docker/scenarios/_common.sh</code>. Makes
+   "Fast" measured.</li>
+<li><strong>P0-1 (minimal form)</strong> — add <code>executed_locally</code>, <code>verified</code>, <code>agreement</code>,
+   <code>winner</code> as columns from the already-returned <code>QueryOutcome</code>
+   (<code>extension/src/lib.rs:1471</code>). Pure read of data already in hand.</li>
+<li><strong>§3.1 quick win</strong> — <code>p2p_explain_routing()</code> returning the <code>PlanDecision</code>.</li>
+<li><strong>P2-4</strong> — TOFU-pin <code>node_id</code> in <code>StaticDiscovery</code>.</li>
+<li><strong>P3-4</strong> — extract the lockdown PRAGMA set into one shared const.</li>
+<li><strong>§3.6 quick win</strong> — CI gate that fails if scaffolded entry points
+   (<code>run_query_planned</code>, <code>CapabilityStore::observe</code>) lack a non-test caller.</li>
+</ol>
+<hr />
+<h2 id="6-observability-testing-gaps-and-how-to-close-them">6. Observability / testing gaps and how to close them<a class="headerlink" href="#6-observability-testing-gaps-and-how-to-close-them" title="Permanent link">&para;</a></h2>
+<p>What the 100-node and on-chain runs <strong>could not assert live</strong>, and the concrete
+surface that would close each:</p>
+<table>
+<thead>
+<tr>
+<th>Gap (what's unprovable live today)</th>
+<th>Why</th>
+<th>How to close it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Query metadata (verified/agreement/winner/receipts/executed_locally)</td>
+<td>Extension returns only result rows (<code>lib.rs:1471</code>)</td>
+<td><strong>P0-1</strong>: expose a <code>p2p_query_meta()</code> / extra columns. Then <code>QRY-REMOTE-OK-01</code> can assert <code>verified=true, agreement&gt;=2</code> <em>live</em>, not just in lib.</td>
+</tr>
+<tr>
+<td>Cheating / wrong-result / slow / equivocating workers</td>
+<td>No fault-injection knob; <code>HostEngine</code> always runs real SQL (<code>worker.rs:442</code>)</td>
+<td><strong>P0-3</strong>: opt-in <code>[fault_injection]</code>. Promotes <code>QRY-MINORITY-CHEAT-01</code>, equivocation, <code>ABU-FAULTATTR-*</code> from lib to live.</td>
+</tr>
+<tr>
+<td>Staked-host / L2-host selection, real slashing</td>
+<td>No live <code>StakeRegistry</code>; <code>stub_l0()</code> attestation (<code>node.rs:269</code>)</td>
+<td><strong>P1-1</strong> + <strong>P3-3</strong>: on-chain stake registry + real attestation. Makes <code>require_staked_hosts</code> select (not just gate) and gives <code>SET-FINE-COMMIT-01</code> teeth live.</td>
+</tr>
+<tr>
+<td>Requester-side node-id blocking</td>
+<td>TOFU candidates carry no <code>node_id</code></td>
+<td><strong>P2-4</strong>: TOFU-pin. Makes <code>ABU-CAND-EXCLUDE-01</code> a live scenario.</td>
+</tr>
+<tr>
+<td>Live paid settlement (escrow open→settle)</td>
+<td>Candidate-commitment seam unthreaded (<code>coordinator.rs:1554-1571</code>); negatives are emulator-by-design</td>
+<td><strong>P0-2</strong> threads the seam; then a <em>positive</em> paid settle can broadcast (the negatives stay correctly emulator-only).</td>
+</tr>
+<tr>
+<td>Query latency / throughput / concurrent load</td>
+<td>Harness captures MiB, not ms; one-shot per scenario</td>
+<td><strong>P1-4</strong> + <strong>P2-5</strong>: latency capture + concurrent-requester scenario.</td>
+</tr>
+<tr>
+<td>Full-speed on-chain CI</td>
+<td>Keyless Toncenter self-throttles to ~1 RPS; faucet 2 airdrops/24h/IP (<code>ton/SCENARIOS.md</code> §7)</td>
+<td>Provision a <code>TON_TESTNET_API_KEY</code> (Toncenter testnet key) in CI secrets, exported as <code>TONCENTER_TESTNET_API_KEY</code>, so the comprehensive runner isn't rate-limited; pre-fund a long-lived test wallet to dodge the faucet cap.</td>
+</tr>
+<tr>
+<td>StakeVault→V2 live upgrade</td>
+<td>Timelock == unbonding window (≥7 days) <strong>by design</strong> (the staker exit window)</td>
+<td>Keep emulator-only (<code>G</code>); do <strong>not</strong> degrade the delay live (that would defeat the property). Document as an intentional non-gap.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Guiding principle for closing these:</strong> the two-tier harness is the <em>right</em>
+design given the current binary; the goal is not to delete the library tier but to
+<strong>migrate proofs up to the live tier as each seam is wired</strong> (P0-2/P0-3/P1-1),
+shrinking the set of "simulation-only" guarantees over time.</p>
+<hr />
+<h2 id="7-bottom-line">7. Bottom line<a class="headerlink" href="#7-bottom-line" title="Permanent link">&para;</a></h2>
+<p>duckdb-p2p is a high-quality, mostly-complete system whose few weak spots share a
+single signature: <strong>a capable mechanism is built and unit-tested but the final
+wire to live behavior is missing.</strong> Nothing on the critical path requires
+inventing new mechanisms — it requires connecting existing ones:</p>
+<ul>
+<li><strong>Make it provable</strong> (P0-1 metadata, P0-3 fault injection) — so the system's
+  real strengths (verification, anti-cheat) are demonstrable live, not just in
+  simulation.</li>
+<li><strong>Make economics real</strong> (P0-2 escrow seam, P1-1 stake registry) — so trust and
+  slashing have teeth in production.</li>
+<li><strong>Make it learn</strong> (P1-2 estimate wiring, P1-3 self-measurement, P2-1/P2-2/P3-2)
+  — closing the sense→model→act loop the foundation already supports.</li>
+</ul>
+<p>Do the seven quick wins first (a few days of work, no dependencies), then the four
+P0/P1 wiring tasks. That sequence converts the three weakest qualities
+(self-learner ⭐⭐, economics-dependent facets of trustable/anti-cheat, and
+observability) into demonstrated strengths without touching the architecture that
+already earned 152/152 at 100 nodes.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../TESTNET/" class="md-footer__link md-footer__link--prev" aria-label="Previous: TON testnet runbook">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                TON testnet runbook
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../project/security/" class="md-footer__link md-footer__link--next" aria-label="Next: Security">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Security
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Apache-2.0 licensed.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tabs", "navigation.indexes", "navigation.footer", "toc.follow", "content.code.copy", "content.code.annotate", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
