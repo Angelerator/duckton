@@ -9,14 +9,19 @@
 # keeps serving the swarm.
 #
 # Stage 1 (builder): installs Rust + clang/libc++ and builds the `p2p` extension
-# cdylib from `crates/extension` (default features — no libp2p; static seeds),
-# then appends the DuckDB metadata footer so the CLI can LOAD it. The DuckDB
-# version is pinned to match the `duckdb` crate (1.5.4).
+# cdylib from `crates/extension` (with the `discovery-libp2p` feature by default,
+# so a node with `discovery.mode = kademlia` runs the live gossip/DHT overlay,
+# self-advertises, and exposes `p2p_network()`; override CARGO_FEATURES="" for a
+# lean static-discovery build), then appends the DuckDB metadata footer so the
+# CLI can LOAD it. The DuckDB version is pinned to match the `duckdb` crate (1.5.4).
 #
 # Stage 2 (runtime): debian-slim + the DuckDB CLI + the built .duckdb_extension
 # + the entrypoint. No Rust toolchain in the final image.
 
 ARG DUCKDB_VERSION=v1.5.4
+# Cargo features for the extension cdylib. Defaults to the live discovery overlay
+# (Kademlia + gossip). Set to "" at build time for a lean static-discovery image.
+ARG CARGO_FEATURES=discovery-libp2p
 
 # ---------------------------------------------------------------------------
 # Stage 1: build the extension cdylib + append metadata footer
@@ -27,6 +32,7 @@ ARG DUCKDB_VERSION=v1.5.4
 FROM rust:1-bookworm@sha256:19817ead3289c8c631c73df281e18b59b172f6a31f4f563290f69cddd06c30e9 AS builder
 
 ARG DUCKDB_VERSION
+ARG CARGO_FEATURES
 ENV DEBIAN_FRONTEND=noninteractive
 
 # clang/libc++ + python3 (metadata appender) + unzip (duckdb cli) + ca-certs.
@@ -76,7 +82,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eux; \
-    cargo build --release -p p2p-extension; \
+    cargo build --release -p p2p-extension \
+        ${CARGO_FEATURES:+--features "${CARGO_FEATURES}"}; \
     mkdir -p /out; \
     cp target/release/libduckton.so /out/libduckton.so
 
@@ -136,7 +143,8 @@ ENV P2P_BIND_ADDR=0.0.0.0:9494 \
     P2P_SHARE_MAXJOBS=2 \
     P2P_SHARE_PERJOB_BYTES=67108864
 
-EXPOSE 9494/udp
+# 9494/udp = QUIC data plane; 9595/tcp = libp2p discovery overlay (kademlia mode).
+EXPOSE 9494/udp 9595/tcp
 
 # Health check: load the extension and run a trivial query.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \

@@ -512,6 +512,13 @@ pub struct DiscoveryConfig {
     /// Circuit Relay v2/AutoRelay + mDNS) so nodes behind home/office NATs in
     /// different networks can connect directly with no central server.
     pub nat: NatConfig,
+    /// Optional path to a persisted libp2p overlay keypair (protobuf-encoded).
+    /// The discovery overlay runs its own identity, separate from the QUIC
+    /// data-plane node key. `None` (default) ⇒ a fresh ephemeral overlay key each
+    /// start (fine for clients/tests). Set this on a **bootstrap/seed** node so
+    /// its overlay PeerId — and therefore the `/p2p/<PeerId>` bootstrap multiaddr
+    /// peers dial — stays **stable across restarts**. Created (0600) on first use.
+    pub key_path: Option<String>,
 }
 
 impl Default for DiscoveryConfig {
@@ -524,6 +531,7 @@ impl Default for DiscoveryConfig {
             kademlia: KademliaConfig::default(),
             gossip: GossipConfig::default(),
             nat: NatConfig::default(),
+            key_path: None,
         }
     }
 }
@@ -1740,6 +1748,13 @@ impl GridConfig {
                         .filter(|s| !s.is_empty())
                         .map(String::from)
                         .collect()
+                }
+                "P2P_DISCOVERY_KEY_PATH" => {
+                    self.discovery.key_path = if v.is_empty() {
+                        None
+                    } else {
+                        Some(v.clone())
+                    }
                 }
                 "P2P_DISCOVERY_GOSSIP_TOPIC" => self.discovery.gossip.topic = v.clone(),
                 "P2P_DISCOVERY_GOSSIP_HEARTBEAT_MS" => {

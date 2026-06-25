@@ -10,11 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use libp2p::Multiaddr;
-use p2p_config::{GridConfig, IdentityConfig, PinningMode};
+use p2p_config::{DiscoveryMode, GridConfig, IdentityConfig, PinningMode};
 use p2p_node::{
     evaluate_ad, AdOutcome, AdmissionController, CandidateFilter, Coordinator, Discovery,
     IdentitySigner, Libp2pDiscovery, Libp2pDiscoveryConfig, MembershipTable, MockEngine, NatParams,
-    Worker, WorkerParams,
+    Node, Worker, WorkerParams,
 };
 use p2p_proto::{Attestation, AttestationLevel, CapabilityAd, DataClass};
 use p2p_transport::{NodeIdentity, QuicTransport, Transport};
@@ -51,6 +51,7 @@ fn disc_config(bootstrap: Vec<Multiaddr>) -> Libp2pDiscoveryConfig {
     Libp2pDiscoveryConfig {
         listen_addrs: vec![],
         bootstrap,
+        key_path: None,
         topic: TEST_TOPIC.to_string(),
         profile_topic: format!("{TEST_TOPIC}-profiles"),
         heartbeat: Duration::from_millis(250),
@@ -381,6 +382,110 @@ async fn coordinator_discovers_worker_over_gossip_and_runs_query() {
         .expect("query over gossip-discovered worker should succeed");
     assert!(outcome.verified);
     assert_eq!(outcome.winner.as_ref(), Some(&worker_node_id));
+}
+
+// ---------------------------------------------------------------------------
+// End-to-end via the `Node` façade: a host node configured with
+// `discovery.mode = kademlia` self-advertises its signed capability ad to the
+// swarm on `spawn_host` (no manual `publish_ad`, no static QUIC seeds), and a
+// second node bootstrapped only to the host's libp2p overlay discovers it live
+// over gossip — proving the production wiring (`enable_libp2p_discovery` +
+// auto-advertise) end to end.
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn node_self_advertises_and_is_discovered_live() {
+    // Unique topic + mDNS off so concurrent tests don't cross-discover; low PoW
+    // for fast minting in CI. Everything else is production defaults.
+    let topic = format!("duckdb-p2p/caps/node-{}", now_ts());
+    let base = |bootstrap: Vec<String>| {
+        let mut c = GridConfig::default();
+        c.discovery.mode = DiscoveryMode::Kademlia;
+        c.discovery.bootstrap = bootstrap;
+        c.discovery.gossip.topic = topic.clone();
+        c.discovery.gossip.heartbeat_ms = 250;
+        c.discovery.gossip.capability_ttl_secs = 60;
+        c.discovery.nat.mdns = false;
+        c.sybil.pow_difficulty_bits = 8;
+        c
+    };
+
+    // Host: kademlia discovery, then become a host — which auto-advertises.
+    let host_cfg = base(vec![]);
+    host_cfg.validate().unwrap();
+    let mut host = Node::with_config(host_cfg, Arc::new(MockEngine::deterministic())).unwrap();
+    host.enable_libp2p_discovery().await.unwrap();
+    let host_addr = host.local_addr().unwrap();
+    let host_id = host.node_id().clone();
+    let _host_task = host.spawn_host();
+
+    let boot = host
+        .libp2p_discovery()
+        .unwrap()
+        .wait_listeners(Duration::from_secs(5))
+        .await;
+    assert!(!boot.is_empty(), "host overlay must bind a listen addr");
+
+    // Requester: bootstraps ONLY to the host's libp2p overlay (no QUIC seeds).
+    let mut req_cfg = base(boot.iter().map(|m| m.to_string()).collect());
+    req_cfg.scheduler.replicas = 1;
+    req_cfg.scheduler.quorum = 1;
+    req_cfg.trust.min_trust = 0.0; // fresh host has no reputation yet
+    req_cfg.validate().unwrap();
+    let mut req = Node::with_config(req_cfg, Arc::new(MockEngine::deterministic())).unwrap();
+    req.enable_libp2p_discovery().await.unwrap();
+    let disc = req.libp2p_discovery().unwrap().clone();
+
+    let learned = wait_until(Duration::from_secs(30), || !disc.membership().is_empty()).await;
+    assert!(
+        learned,
+        "requester should discover the self-advertising host via gossip"
+    );
+
+    // The discovered candidate is the host: its auto-published ad carries the
+    // host's real node id and bound QUIC data-plane address.
+    let cands = disc.find_candidates(8, filter()).await;
+    let hit = cands
+        .iter()
+        .find(|c| c.node_id.as_ref() == Some(&host_id))
+        .expect("discovered candidate should be the self-advertising host");
+    assert_eq!(
+        hit.addr, host_addr,
+        "advertised addr should be the host's bound QUIC endpoint"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A persisted overlay key gives the node a STABLE libp2p PeerId across restarts,
+// so a seed/bootstrap node's `/p2p/<PeerId>` multiaddr stays constant (peers can
+// be configured to bootstrap to it once). With no key path the identity is fresh
+// each start (ephemeral).
+// ---------------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn persisted_overlay_key_yields_stable_peer_id() {
+    let dir = std::env::temp_dir().join(format!("duckton-overlay-key-{}", now_ts()));
+    let key_path = dir.join("overlay.key").to_string_lossy().to_string();
+
+    let mut cfg1 = disc_config(vec![]);
+    cfg1.key_path = Some(key_path.clone());
+    let a = Libp2pDiscovery::spawn(cfg1).await.unwrap();
+    let id1 = a.local_peer_id();
+    drop(a); // overlay stops; the key file remains
+
+    let mut cfg2 = disc_config(vec![]);
+    cfg2.key_path = Some(key_path.clone());
+    let b = Libp2pDiscovery::spawn(cfg2).await.unwrap();
+    let id2 = b.local_peer_id();
+
+    assert_eq!(
+        id1, id2,
+        "a persisted overlay key must yield the same PeerId across restarts"
+    );
+
+    // An ephemeral (no key path) overlay is a different identity.
+    let c = Libp2pDiscovery::spawn(disc_config(vec![])).await.unwrap();
+    assert_ne!(id1, c.local_peer_id(), "ephemeral identity must differ");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------

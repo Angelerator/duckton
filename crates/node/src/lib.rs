@@ -79,7 +79,7 @@ pub use libp2p_discovery::{
 pub use liveness::{
     now_ms, IndirectProber, LivenessFilteredDiscovery, LivenessView, Prober, SwimVerdict,
 };
-pub use membership::MembershipTable;
+pub use membership::{MemberSnapshot, MembershipTable};
 pub use node::{Node, NodeError};
 pub use planner::{
     is_resource_exhaustion, DefaultPlanner, LocalExecutor, LocalOrRemotePlanner, LocalReservation,

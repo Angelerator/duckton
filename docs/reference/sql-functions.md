@@ -10,7 +10,7 @@ friendly, actionable message on bad input — never a panic. Reads redact secret
 | Function | Purpose |
 |---|---|
 | `p2p_query(sql, [overrides...])` | Run SQL on the grid (local-first, or `prefer => 'remote'`). See [Running queries](../guides/running-queries.md) for all overrides. |
-| `p2p_query_meta(sql, ...)` | The execution/verification metadata for a query (executed_locally, verified, agreement vs quorum, winner, agreed hash, counts). |
+| `p2p_query_meta(sql, ...)` | The execution/verification metadata for a query (executed_locally, verified, agreement vs quorum, winner, agreed hash, counts). On failure it returns `verified=false` + an `error` row rather than raising. |
 | `p2p_node_metadata()` | This node's signed system/capability metadata (machine-class hint; never a trust input). |
 
 ## Hosting & networks
@@ -21,6 +21,7 @@ friendly, actionable message on bad input — never a panic. Reads redact secret
 | `p2p_pause()` / `p2p_resume()` | Graceful drain: stop / resume accepting new offers (in-flight jobs finish). |
 | `p2p_join(bootstrap => [...])` | Join a specific swarm by seed address(es). |
 | `p2p_peers()` | List discovered peers with free memory, attestation level, and trust score. |
+| `p2p_network()` | The **live swarm membership** this node has learned over the discovery overlay: one row per verified, fresh, self-advertised host (node_id, addr, enabled, attestation, free mem/threads, max jobs, price, networks/groups/region, age). Empty unless running the libp2p overlay (`discovery.mode = kademlia`, built with the `discovery-libp2p` feature). |
 
 ## Inspect
 

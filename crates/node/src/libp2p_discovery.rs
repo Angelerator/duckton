@@ -67,6 +67,12 @@ pub enum DiscoveryError {
 pub struct Libp2pDiscoveryConfig {
     pub listen_addrs: Vec<Multiaddr>,
     pub bootstrap: Vec<Multiaddr>,
+    /// Optional path to a persisted libp2p overlay keypair. `None` ⇒ a fresh
+    /// ephemeral identity each start; `Some(path)` ⇒ load it (or create+persist a
+    /// new one), giving the node a **stable overlay PeerId** across restarts so
+    /// its `/p2p/<PeerId>` bootstrap multiaddr does not change (seed/bootstrap
+    /// nodes set this).
+    pub key_path: Option<String>,
     pub topic: String,
     /// Companion gossip topic carrying signed [`CapabilityProfile`]s alongside the
     /// ads on `topic`. Derived as `<topic>-profiles`.
@@ -209,6 +215,48 @@ impl RelayLimits {
     }
 }
 
+/// Resolve the overlay's libp2p keypair: load a persisted one (stable PeerId),
+/// create+persist a new one if the path doesn't exist yet, or — with no path —
+/// generate a fresh ephemeral identity (clients/tests).
+fn resolve_overlay_keypair(
+    path: Option<&str>,
+) -> Result<libp2p::identity::Keypair, DiscoveryError> {
+    let Some(path) = path else {
+        return Ok(libp2p::identity::Keypair::generate_ed25519());
+    };
+    if let Ok(bytes) = std::fs::read(path) {
+        return libp2p::identity::Keypair::from_protobuf_encoding(&bytes)
+            .map_err(|e| DiscoveryError::Build(format!("parse overlay key {path}: {e}")));
+    }
+    let keypair = libp2p::identity::Keypair::generate_ed25519();
+    let bytes = keypair
+        .to_protobuf_encoding()
+        .map_err(|e| DiscoveryError::Build(format!("encode overlay key: {e}")))?;
+    write_private_file(path, &bytes)
+        .map_err(|e| DiscoveryError::Build(format!("persist overlay key {path}: {e}")))?;
+    Ok(keypair)
+}
+
+/// Write `bytes` to `path` (creating parent dirs), `0600` on unix — the overlay
+/// private key must not be world-readable.
+fn write_private_file(path: &str, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    f.flush()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 fn parse_multiaddrs(raw: &[String]) -> Result<Vec<Multiaddr>, DiscoveryError> {
     raw.iter()
         .map(|s| {
@@ -230,6 +278,7 @@ impl Libp2pDiscoveryConfig {
         Ok(Self {
             listen_addrs: parse_multiaddrs(&cfg.discovery.listen_addrs)?,
             bootstrap: parse_multiaddrs(&cfg.discovery.bootstrap)?,
+            key_path: cfg.discovery.key_path.clone(),
             topic: cfg.discovery.gossip.topic.clone(),
             profile_topic: format!("{}-profiles", cfg.discovery.gossip.topic),
             heartbeat: Duration::from_millis(cfg.discovery.gossip.heartbeat_ms.max(1)),
@@ -429,11 +478,15 @@ impl Libp2pDiscovery {
         let conn_limits = cfg.conn_limits.clone();
         let score_topic = cfg.topic.clone();
 
+        // Overlay identity: a persisted keypair (stable PeerId across restarts —
+        // for seed/bootstrap nodes) or a fresh ephemeral one.
+        let keypair = resolve_overlay_keypair(cfg.key_path.as_deref())?;
+
         // Transport stack: TCP+Noise+Yamux *and* QUIC (UDP) — DCUtR hole punching
         // and direct dials use QUIC/UDP — plus a Circuit Relay v2 *client*
         // transport so the node can be dialed/listen via volunteer relays. The
         // relay client behaviour is handed to the behaviour constructor.
-        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(keypair)
             .with_tokio()
             .with_tcp(
                 tcp::Config::default().nodelay(true),

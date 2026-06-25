@@ -54,6 +54,10 @@ SELECT key, value FROM p2p_query_meta('SELECT * FROM range(3)');
 `p2p_query_meta` surfaces `executed_locally`, `verified`, `agreement` vs.
 `quorum`, the winning host, the agreed hash, row count, and
 participant/receipt counts — so verification is observable, not a black box.
+If a query cannot complete (e.g. no eligible hosts), `p2p_query_meta` still
+returns rows — `verified=false` plus an `error` row — rather than raising, so it
+stays usable from long-lived monitoring sessions. (`p2p_query`, which returns
+the result rows, still raises on failure.)
 
 ## Remote-only (thin clients)
 

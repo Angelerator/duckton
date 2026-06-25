@@ -188,6 +188,130 @@ fn emit_two_columns(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// `p2p_network()` — the LIVE swarm membership this node has learned over the
+// libp2p gossip/Kademlia discovery overlay: one row per verified, fresh remote
+// host that self-advertised a signed capability ad. This is the real,
+// self-advertised network — no hard-coded peer list, no mock. It returns zero
+// rows unless the node runs the discovery overlay (`discovery.mode = kademlia`,
+// built with the `discovery-libp2p` feature). The set is bounded by the peer
+// cache, so it is emitted in DuckDB vector-sized chunks.
+// ---------------------------------------------------------------------------
+const NET_COLS: usize = 12;
+
+const NET_COLUMNS: [&str; NET_COLS] = [
+    "node_id",
+    "addr",
+    "enabled",
+    "attestation",
+    "free_mem_bytes",
+    "free_threads",
+    "max_jobs",
+    "price",
+    "networks",
+    "groups",
+    "region",
+    "age_secs",
+];
+
+#[repr(C)]
+struct NetRows {
+    rows: Vec<[String; NET_COLS]>,
+}
+
+/// Cursor over `NetRows`, advanced one output chunk at a time (the membership
+/// view can exceed a single DuckDB vector).
+#[repr(C)]
+struct NetInit {
+    offset: AtomicUsize,
+}
+
+struct NetworkVTab;
+
+impl VTab for NetworkVTab {
+    type InitData = NetInit;
+    type BindData = NetRows;
+
+    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn Error>> {
+        for col in NET_COLUMNS {
+            bind.add_result_column(col, LogicalTypeHandle::from(LogicalTypeId::Varchar));
+        }
+        Ok(NetRows {
+            rows: network_rows(),
+        })
+    }
+
+    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
+        Ok(NetInit {
+            offset: AtomicUsize::new(0),
+        })
+    }
+
+    fn func(
+        func: &TableFunctionInfo<Self>,
+        output: &mut DataChunkHandle,
+    ) -> Result<(), Box<dyn Error>> {
+        let init = func.get_init_data();
+        let bind = func.get_bind_data();
+        let start = init.offset.load(Ordering::Relaxed);
+        let end = (start + VECTOR_SIZE).min(bind.rows.len());
+        let slice = &bind.rows[start..end];
+        for col in 0..NET_COLS {
+            let vector = output.flat_vector(col);
+            for (i, row) in slice.iter().enumerate() {
+                vector.insert(i, CString::new(row[col].as_str())?);
+            }
+        }
+        output.set_len(slice.len());
+        init.offset.store(end, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
+        Some(vec![])
+    }
+}
+
+/// Materialize the live swarm membership as rows. Empty unless the libp2p
+/// discovery overlay is running on this node (built + `discovery.mode=kademlia`).
+fn network_rows() -> Vec<[String; NET_COLS]> {
+    #[cfg(feature = "discovery-libp2p")]
+    {
+        let Ok(node) = get_node() else {
+            return Vec::new();
+        };
+        let Some(disc) = node.libp2p_discovery() else {
+            return Vec::new();
+        };
+        let mut members = disc.membership().snapshot();
+        // Stable, deterministic ordering for the live feed.
+        members.sort_by(|a, b| a.node_id.as_str().cmp(b.node_id.as_str()));
+        members
+            .into_iter()
+            .map(|m| {
+                [
+                    m.node_id.as_str().to_string(),
+                    m.addr,
+                    m.enabled.to_string(),
+                    format!("{:?}", m.attestation_level),
+                    m.free_mem_bytes.to_string(),
+                    m.free_threads.to_string(),
+                    m.max_jobs.to_string(),
+                    m.price.to_string(),
+                    m.networks.join(","),
+                    m.groups.join(","),
+                    m.region.unwrap_or_default(),
+                    m.age_secs.to_string(),
+                ]
+            })
+            .collect()
+    }
+    #[cfg(not(feature = "discovery-libp2p"))]
+    {
+        Vec::new()
+    }
+}
+
 // ===========================================================================
 // SQL admin / configuration surface (architecture §12).
 //
@@ -1205,11 +1329,22 @@ fn build_node() -> std::result::Result<Arc<Node>, String> {
         .map(|s| s.params_source.is_some())
         .unwrap_or(false);
 
+    // In `kademlia` discovery mode, spawn the libp2p gossip/DHT overlay so this
+    // node self-advertises (when hosting) and discovers candidates from the live,
+    // verified swarm membership — no static seed list. Computed before `cfg` is
+    // moved into the runtime closure.
+    #[cfg(feature = "discovery-libp2p")]
+    let kademlia = matches!(cfg.discovery.mode, p2p_config::DiscoveryMode::Kademlia);
+
     let node = runtime()
         .block_on(async move {
             let mut node = Node::with_config(cfg, engine)?;
             if let Some(stack) = stack {
                 node = node.with_settlement_stack(stack);
+            }
+            #[cfg(feature = "discovery-libp2p")]
+            if kademlia {
+                node.enable_libp2p_discovery().await?;
             }
             // Start the startup + periodic on-chain GlobalParams sync when a read
             // seam was wired (on-chain rail only). 5-minute refresh; free/mock/noop
@@ -1721,6 +1856,22 @@ fn query_meta_rows(outcome: &p2p_node::QueryOutcome) -> Vec<[String; 3]> {
     ]
 }
 
+/// Failure metadata for `p2p_query_meta` when a query could not complete (e.g.
+/// no eligible candidates, all replicas failed). Mirrors the key subset callers
+/// rely on so a failed job is observable as data (`verified=false`, no `winner`)
+/// instead of a thrown error — letting a long-lived requester keep running.
+fn query_error_rows(err: &p2p_node::NodeError) -> Vec<[String; 3]> {
+    let g = "query";
+    vec![
+        [g.into(), "verified".into(), "false".into()],
+        [g.into(), "winner".into(), "<none>".into()],
+        [g.into(), "participants".into(), "0".into()],
+        [g.into(), "receipts".into(), "0".into()],
+        [g.into(), "latency_ms".into(), "0".into()],
+        [g.into(), "error".into(), err.to_string()],
+    ]
+}
+
 /// `FROM p2p_query_meta('SELECT ...', [same named params as p2p_query])` — run a
 /// query and return its execution/verification METADATA (executed_locally,
 /// verified, agreement/quorum, winner, participant/receipt counts, agreed hash,
@@ -1736,12 +1887,17 @@ impl VTab for QueryMetaVTab {
         let sql = bind.get_parameter(0).to_string();
         let overrides = query_overrides(bind);
         let node = get_node().map_err(boxed)?;
-        let outcome = runtime()
-            .block_on(async { node.query(&sql, overrides).await })
-            .map_err(boxed)?;
-        Ok(Rows3 {
-            rows: query_meta_rows(&outcome),
-        })
+        // `p2p_query_meta` is the INTROSPECTION companion: it ALWAYS returns
+        // metadata rows, including for a query that could not complete (e.g. no
+        // eligible candidates), reporting `verified=false` + an `error` row
+        // rather than throwing. This keeps it usable from long-lived
+        // monitoring/automation sessions that cannot catch a thrown SQL error.
+        // (`p2p_query`, which returns the actual result rows, still throws.)
+        let rows = match runtime().block_on(async { node.query(&sql, overrides).await }) {
+            Ok(outcome) => query_meta_rows(&outcome),
+            Err(e) => query_error_rows(&e),
+        };
+        Ok(Rows3 { rows })
     }
 
     fn init(info: &InitInfo) -> Result<Self::InitData, Box<dyn Error>> {
@@ -2175,6 +2331,7 @@ pub fn duckton_init(con: Connection) -> Result<(), Box<dyn Error>> {
     // Read-only metadata + inspection.
     con.register_table_function::<InfoVTab>("p2p_info")?;
     con.register_table_function::<PeersVTab>("p2p_peers")?;
+    con.register_table_function::<NetworkVTab>("p2p_network")?;
     con.register_table_function::<ConfigInspectVTab>("p2p_config")?;
     con.register_table_function::<ConfigInspectVTab>("p2p_settings")?;
     con.register_table_function::<StatusVTab>("p2p_status")?;

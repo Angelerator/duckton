@@ -68,10 +68,13 @@ pub enum NodeError {
     #[error(
         "paid execution was requested (payment => 'paid') but this node has no wallet/settlement \
          configured. Either run free — pass `payment => 'free'` to p2p_query (the grid is free by \
-         default) — or configure the [economics] settlement rail + wallet and attach it before \
+         default) — or configure          the [economics] settlement rail + wallet and attach it before \
          querying."
     )]
     WalletRequired,
+    /// The libp2p discovery overlay (Kademlia DHT + gossip) failed to start.
+    #[error("discovery error: {0}")]
+    Discovery(String),
 }
 
 /// A ready-to-use requester node assembled from a [`GridConfig`].
@@ -97,6 +100,12 @@ pub struct Node {
     /// stops own + served work from jointly oversubscribing RAM / threads / job
     /// slots when the node plays both roles.
     governor: Arc<CapacityGovernor>,
+    /// The live libp2p discovery overlay (Kademlia DHT + gossip), present only
+    /// after [`Node::enable_libp2p_discovery`]. Held for the node's lifetime so
+    /// the swarm task stays alive, and so a hosting node can publish its signed
+    /// capability ad to the swarm (see [`Node::spawn_host`]).
+    #[cfg(feature = "discovery-libp2p")]
+    libp2p: Option<Arc<crate::libp2p_discovery::Libp2pDiscovery>>,
 }
 
 impl Node {
@@ -227,7 +236,38 @@ impl Node {
             has_grid_targets,
             has_wallet: false,
             governor,
+            #[cfg(feature = "discovery-libp2p")]
+            libp2p: None,
         })
+    }
+
+    /// Spawn the **libp2p discovery overlay** (Kademlia DHT + gossipsub) and route
+    /// candidate discovery through the live, self-advertised swarm membership
+    /// instead of a static seed list. Listen/bootstrap/NAT all come from the
+    /// resolved `[discovery]` config (bootstrap entries are libp2p multiaddrs in
+    /// this mode). This is the production discovery path for an open swarm: a host
+    /// node publishes its signed [`CapabilityAd`](p2p_proto::CapabilityAd) and any
+    /// requester finds candidates from the gossiped, PoW-and-signature-verified
+    /// [`MembershipTable`](crate::membership::MembershipTable).
+    ///
+    /// Call once, after construction. It is async because the overlay's swarm is
+    /// started asynchronously. When this node also hosts ([`Node::spawn_host`]) it
+    /// will periodically (re)publish its capability ad to the swarm so it stays in
+    /// peers' membership views.
+    #[cfg(feature = "discovery-libp2p")]
+    pub async fn enable_libp2p_discovery(&mut self) -> Result<(), NodeError> {
+        let disc = Arc::new(
+            crate::libp2p_discovery::Libp2pDiscovery::from_config(&self.config)
+                .await
+                .map_err(|e| NodeError::Discovery(e.to_string()))?,
+        );
+        self.coordinator
+            .set_discovery(Arc::clone(&disc) as Arc<dyn crate::discovery::Discovery>);
+        // Bootstrapped into the swarm ⇒ this node can reach grid targets even
+        // though no static QUIC seeds are configured.
+        self.has_grid_targets = true;
+        self.libp2p = Some(disc);
+        Ok(())
     }
 
     /// Attach a wallet / stake registry, enabling `payment => 'paid'` execution
@@ -313,6 +353,17 @@ impl Node {
         &self.coordinator
     }
 
+    /// The live libp2p discovery overlay, present after
+    /// [`Node::enable_libp2p_discovery`]. Exposes the overlay's bootstrap listen
+    /// addresses ([`Libp2pDiscovery::listeners`](crate::libp2p_discovery::Libp2pDiscovery::listeners))
+    /// — so a node can publish how peers should bootstrap to it — and the live,
+    /// signature-and-PoW-verified swarm [`membership`](crate::libp2p_discovery::Libp2pDiscovery::membership)
+    /// view, used to surface real network membership.
+    #[cfg(feature = "discovery-libp2p")]
+    pub fn libp2p_discovery(&self) -> Option<&Arc<crate::libp2p_discovery::Libp2pDiscovery>> {
+        self.libp2p.as_ref()
+    }
+
     /// This node's stable identity (its requester/worker node id).
     pub fn node_id(&self) -> &NodeId {
         self.coordinator.local_node_id()
@@ -354,7 +405,88 @@ impl Node {
         // refresh it on the configured interval. A self-reported hint only — it
         // never feeds trust/selection scoring (kept out by construction).
         self.spawn_metadata_collection();
+        // When the libp2p discovery overlay is active, advertise this host's
+        // signed capability ad to the swarm so requesters can discover it live.
+        #[cfg(feature = "discovery-libp2p")]
+        self.spawn_capability_advertise();
         self.host_worker().spawn()
+    }
+
+    /// Periodically (re)publish this host's signed [`CapabilityAd`] to the libp2p
+    /// gossip topic so it stays within peers' freshness window
+    /// (`[discovery.gossip].capability_ttl_secs`). A no-op unless
+    /// [`Node::enable_libp2p_discovery`] has run. The PoW is minted on a blocking
+    /// thread (off the async runtime) and the ad's timestamp/PoW are refreshed
+    /// each cycle so the ad never expires while the host serves. The task self-
+    /// terminates once the discovery overlay is dropped (host stopped).
+    #[cfg(feature = "discovery-libp2p")]
+    fn spawn_capability_advertise(&self) {
+        let Some(disc) = self.libp2p.as_ref() else {
+            return;
+        };
+        let weak = Arc::downgrade(disc);
+        let transport = self.coordinator.transport();
+        let config = Arc::clone(&self.config);
+        // The QUIC address peers dispatch jobs to: the operator-set advertised
+        // address when present, else the bound socket address.
+        let addr = config
+            .network
+            .advertised_addr
+            .clone()
+            .or_else(|| self.local_addr().ok().map(|a| a.to_string()));
+        let Some(addr) = addr else {
+            tracing::warn!(
+                "libp2p discovery active but no advertised/bound QUIC address; \
+                 skipping capability ad"
+            );
+            return;
+        };
+        let ttl = config.discovery.gossip.capability_ttl_secs;
+        // Refresh well within the freshness window so the ad never goes stale.
+        let readvertise = std::time::Duration::from_secs((ttl / 2).max(5));
+        let bits = config.sybil.pow_difficulty_bits;
+        tokio::spawn(async move {
+            loop {
+                // Stop advertising once the overlay (and thus the host) is gone.
+                let Some(disc) = weak.upgrade() else {
+                    break;
+                };
+                let t = Arc::clone(&transport);
+                let c = Arc::clone(&config);
+                let a = addr.clone();
+                let ad = tokio::task::spawn_blocking(move || {
+                    let id = t.identity();
+                    let now = p2p_trust::now_ts();
+                    let pow = p2p_trust::mint_pow(
+                        &id.public_key_bytes(),
+                        p2p_trust::sybil::pow_epoch(now),
+                        bits,
+                        POW_MINT_MAX_ITERS,
+                    )?;
+                    Some(build_host_capability_ad(&c, id, a, pow, now))
+                })
+                .await
+                .ok()
+                .flatten();
+                match ad {
+                    Some(ad) => {
+                        if disc.publish_ad(&ad).await.is_err() {
+                            break; // overlay task stopped
+                        }
+                    }
+                    None => tracing::warn!(
+                        pow_bits = bits,
+                        "could not mint capability-ad PoW within iteration budget; \
+                         will retry"
+                    ),
+                }
+                // Release the strong ref BEFORE sleeping so the overlay's `Drop`
+                // can fire (and this task exit on the next iteration) once the
+                // node stops hosting.
+                drop(disc);
+                tokio::time::sleep(readvertise).await;
+            }
+        });
     }
 
     /// Collect + persist this host's signed [`p2p_proto::SystemProfile`] once on
@@ -832,6 +964,62 @@ fn extract_string_literals(sql: &str) -> Vec<String> {
 /// Parse configured bootstrap seeds (`quic://host:port`, `host:port`, or a bare
 /// resolvable name) into discovery [`Candidate`]s. Unparseable entries are
 /// skipped (they may be libp2p multiaddrs handled by the Kademlia overlay).
+/// PoW minting iteration budget for a host capability ad. The default difficulty
+/// is 16 leading-zero bits (≈2¹⁶ hashes on average), so this is a wide safety
+/// margin while still bounding worst-case CPU; minting runs on a blocking thread.
+#[cfg(feature = "discovery-libp2p")]
+const POW_MINT_MAX_ITERS: u64 = 50_000_000;
+
+/// Build + sign this host's [`CapabilityAd`](p2p_proto::CapabilityAd) from the
+/// resolved config and node identity, with a freshly minted PoW for the ad's
+/// epoch. The advertised attributes mirror what the host actually enforces: the
+/// donated budget (memory/threads/max jobs), the membership labels
+/// (networks/groups/region), the standby flag (`[worker].enabled`), and the
+/// price (0 on the free grid, else the metered per-second rate).
+#[cfg(feature = "discovery-libp2p")]
+fn build_host_capability_ad(
+    config: &GridConfig,
+    identity: &NodeIdentity,
+    addr: String,
+    pow: p2p_trust::sybil::PowStamp,
+    ts: u64,
+) -> p2p_proto::CapabilityAd {
+    use p2p_proto::AttestationLevel;
+    use p2p_trust::{sign_capability_ad, CapabilityDraft};
+
+    let signer = crate::signer::IdentitySigner(identity);
+    let price = if config.economics.enabled {
+        config
+            .economics
+            .pricing
+            .effective_rate_per_second()
+            .min(u64::MAX as u128) as u64
+    } else {
+        0
+    };
+    sign_capability_ad(
+        CapabilityDraft {
+            addr,
+            free_mem_bytes: config.budget.memory_bytes,
+            free_threads: config.budget.threads,
+            max_jobs: config.budget.max_jobs,
+            // The host worker attests L0 by default (see `Attestation::stub_l0`
+            // in `host_worker`); a `> L0` claim is only honored with verified
+            // evidence at the coordinator, so advertise the honest baseline.
+            attestation_level: AttestationLevel::L0,
+            price,
+            recent_receipts_root: None,
+            pow,
+            ts,
+            enabled: config.worker.enabled,
+            networks: config.membership.networks.clone(),
+            groups: config.membership.groups.clone(),
+            region: config.membership.region.clone(),
+        },
+        &signer,
+    )
+}
+
 fn resolve_seeds(seeds: &[String]) -> Vec<Candidate> {
     let mut out = Vec::new();
     for seed in seeds {

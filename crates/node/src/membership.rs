@@ -23,6 +23,31 @@ use rand::seq::SliceRandom;
 
 use crate::discovery::{Candidate, CandidateFilter, Discovery};
 
+/// A point-in-time, read-only view of one live swarm member: a verified, fresh
+/// capability ad. Used to surface real network membership (a live node map /
+/// `p2p_network()` SQL surface) without any hard-coded peer list or mock data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberSnapshot {
+    pub node_id: NodeId,
+    /// The host's advertised QUIC data-plane address (where jobs are dispatched).
+    pub addr: String,
+    pub free_mem_bytes: u64,
+    pub free_threads: u32,
+    pub max_jobs: u32,
+    pub attestation_level: p2p_proto::AttestationLevel,
+    /// Advertised price (0 on the free grid; metered per-second rate otherwise).
+    pub price: u64,
+    /// `false` ⇒ gracefully draining/standby (declines new offers).
+    pub enabled: bool,
+    pub networks: Vec<String>,
+    pub groups: Vec<String>,
+    pub region: Option<String>,
+    /// Unix seconds of the ad's timestamp (last refresh observed via gossip).
+    pub last_seen_ts: u64,
+    /// Seconds since the ad was minted (freshness/age within the TTL window).
+    pub age_secs: u64,
+}
+
 /// A bounded, LRU-evicted table of verified capability ads.
 pub struct MembershipTable {
     inner: Mutex<Inner>,
@@ -123,6 +148,37 @@ impl MembershipTable {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// A read-only snapshot of all currently-**fresh** verified members (within
+    /// the TTL freshness window) for surfacing live network membership — e.g. a
+    /// live node map / `p2p_network()` SQL surface. Standby hosts (`enabled =
+    /// false`, gracefully draining) are included and flagged; stale ads (past the
+    /// freshness window) are excluded. Derived purely from gossiped, signature-
+    /// and-PoW-verified ads — no hard-coding, no mock.
+    pub fn snapshot(&self) -> Vec<MemberSnapshot> {
+        let now = now_ts();
+        let inner = self.inner.lock().unwrap();
+        inner
+            .ads
+            .values()
+            .filter(|ad| self.fresh(ad, now))
+            .map(|ad| MemberSnapshot {
+                node_id: ad.node_id.clone(),
+                addr: ad.addr.clone(),
+                free_mem_bytes: ad.free_mem_bytes,
+                free_threads: ad.free_threads,
+                max_jobs: ad.max_jobs,
+                attestation_level: ad.attestation_level,
+                price: ad.price,
+                enabled: ad.enabled,
+                networks: ad.networks.clone(),
+                groups: ad.groups.clone(),
+                region: ad.region.clone(),
+                last_seen_ts: ad.ts,
+                age_secs: now.saturating_sub(ad.ts),
+            })
+            .collect()
     }
 
     fn fresh(&self, ad: &CapabilityAd, now: u64) -> bool {
@@ -328,6 +384,29 @@ mod tests {
         let cands = table.find_candidates(1000, filter()).await;
         assert!(cands.len() <= 50);
         assert!(!cands.is_empty());
+    }
+
+    #[test]
+    fn snapshot_lists_fresh_members_and_excludes_stale() {
+        let table = MembershipTable::new(50, 8, 30);
+        let now = now_ts();
+        // A fresh serving host and a fresh standby host are both listed.
+        assert!(table.ingest(labeled_ad(50_000, now, true, vec!["eu"], vec![], Some("eu"))));
+        assert!(table.ingest(labeled_ad(50_001, now, false, vec!["eu"], vec![], None)));
+        // A stale host (ts past the TTL window) is excluded.
+        assert!(table.ingest(signed_ad(50_002, now.saturating_sub(10_000))));
+
+        let snap = table.snapshot();
+        assert_eq!(snap.len(), 2, "only the two fresh members are listed");
+        assert_eq!(
+            snap.iter().filter(|m| !m.enabled).count(),
+            1,
+            "standby host is listed and flagged enabled=false"
+        );
+        let serving = snap.iter().find(|m| m.enabled).unwrap();
+        assert_eq!(serving.region.as_deref(), Some("eu"));
+        assert!(serving.addr.ends_with(":50000"));
+        assert!(serving.age_secs < 5);
     }
 
     #[tokio::test]

@@ -2,7 +2,18 @@
 #
 #   console-server — live loopback grid, read-only, SSE metrics (internal :8787)
 #   caddy          — auto-TLS reverse proxy: https://live.duckton.com -> console-server
-#   seed           — public p2p bootstrap node (QUIC/UDP 9494), advertised at the VM IP
+#   seed           — swarm bootstrap node: hosts + runs the libp2p discovery
+#                    overlay (Kademlia + gossip) on tcp/9595, QUIC data plane on
+#                    udp/9494. Stable overlay PeerId via a persisted key.
+#   worker-a..d    — independent host nodes that bootstrap to the seed's overlay,
+#                    self-advertise signed capability ads, and serve real jobs.
+#   collector      — requester that discovers hosts LIVE over the overlay and
+#                    drives real distributed p2p_query jobs (no static host list).
+#
+# Discovery is fully live: every node sets discovery.mode=kademlia and the image
+# is built with the `discovery-libp2p` feature. The only configured peer address
+# anywhere is the seed's DNS multiaddr (/dns4/seed/tcp/9595) — a bootstrap entry
+# point, not the membership. All membership is gossiped + verified at runtime.
 #
 # Bring up:  cd deploy/vm && docker compose up -d --build
 # (The web app is built with NEXT_PUBLIC_LIVE_URL=https://live.duckton.com.)
@@ -30,7 +41,10 @@ services:
       - net_shared:/srv:ro
     depends_on: [console-server]
 
-  # Public bootstrap/seed node (reachable at the VM IP on UDP 9494).
+  # Swarm bootstrap/seed: hosts AND runs the discovery overlay. A persisted
+  # overlay key gives it a stable PeerId across restarts (peers dial it by DNS
+  # and learn the id on connect). QUIC data plane is advertised in-cluster as
+  # `seed:9494` so peers can dispatch jobs to it.
   seed:
     build:
       context: ../..
@@ -39,21 +53,26 @@ services:
     ports: ["9494:9494/udp"]
     environment:
       P2P_BIND_ADDR: "0.0.0.0:9494"
-      # Externally-reachable address advertised to peers (the VM's public IP).
-      P2P_ADVERTISED_ADDR: "20.57.152.157:9494"
+      P2P_ADVERTISED_ADDR: "seed:9494"
       P2P_SHARE_DATA_CLASSES: "public"
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/9595"
+      P2P_DISCOVERY_KEY_PATH: "/node/state/overlay.key"
     volumes:
       - seed_state:/node/state
 
-  # Two more REAL host nodes (separate processes/containers) so the grid has
-  # multiple independent peers and real quorum. They reuse the built seed image.
+  # Independent host nodes. Each bootstraps to the seed's overlay multiaddr,
+  # self-advertises its signed capability ad over gossip, and serves real jobs.
   worker-a:
     image: vm-seed
     restart: unless-stopped
     environment:
-      BOOTSTRAP: "quic://seed:9494"
       P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_ADVERTISED_ADDR: "worker-a:9494"
       P2P_SHARE_DATA_CLASSES: "public"
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/9595"
+      P2P_DISCOVERY_BOOTSTRAP: "/dns4/seed/tcp/9595"
     volumes:
       - worker_a_state:/node/state
     depends_on: [seed]
@@ -62,9 +81,12 @@ services:
     image: vm-seed
     restart: unless-stopped
     environment:
-      BOOTSTRAP: "quic://seed:9494"
       P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_ADVERTISED_ADDR: "worker-b:9494"
       P2P_SHARE_DATA_CLASSES: "public"
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/9595"
+      P2P_DISCOVERY_BOOTSTRAP: "/dns4/seed/tcp/9595"
     volumes:
       - worker_b_state:/node/state
     depends_on: [seed]
@@ -73,9 +95,12 @@ services:
     image: vm-seed
     restart: unless-stopped
     environment:
-      BOOTSTRAP: "quic://seed:9494"
       P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_ADVERTISED_ADDR: "worker-c:9494"
       P2P_SHARE_DATA_CLASSES: "public"
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/9595"
+      P2P_DISCOVERY_BOOTSTRAP: "/dns4/seed/tcp/9595"
     volumes:
       - worker_c_state:/node/state
     depends_on: [seed]
@@ -84,21 +109,29 @@ services:
     image: vm-seed
     restart: unless-stopped
     environment:
-      BOOTSTRAP: "quic://seed:9494"
       P2P_BIND_ADDR: "0.0.0.0:9494"
+      P2P_ADVERTISED_ADDR: "worker-d:9494"
       P2P_SHARE_DATA_CLASSES: "public"
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/9595"
+      P2P_DISCOVERY_BOOTSTRAP: "/dns4/seed/tcp/9595"
     volumes:
       - worker_d_state:/node/state
     depends_on: [seed]
 
-  # Requester that drives REAL distributed queries across the host nodes and
-  # publishes a live JSON summary (served by Caddy at /api/network).
+  # Requester that discovers hosts LIVE over the overlay and drives REAL
+  # distributed queries across them, publishing a live JSON summary (served by
+  # Caddy at /api/network). No static host list — it learns the swarm at runtime.
   collector:
     image: vm-seed
     restart: unless-stopped
     # Run as root so it can write the shared volume that Caddy serves.
     user: "0:0"
     entrypoint: ["/bin/bash", "/collector.sh"]
+    environment:
+      P2P_DISCOVERY_MODE: "kademlia"
+      P2P_DISCOVERY_LISTEN_ADDRS: "/ip4/0.0.0.0/tcp/0"
+      P2P_DISCOVERY_BOOTSTRAP: "/dns4/seed/tcp/9595"
     volumes:
       - ./collector.sh:/collector.sh:ro
       - net_shared:/shared

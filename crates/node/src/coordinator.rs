@@ -627,6 +627,16 @@ impl Coordinator {
         }
     }
 
+    /// Replace the discovery backend after construction. Used to swap the default
+    /// [`StaticDiscovery`] for the libp2p gossip/Kademlia overlay once it has been
+    /// spawned (the overlay's `spawn` is async, whereas the node is assembled
+    /// synchronously). The new backend is consulted for both candidate sampling
+    /// and proven-capacity lookups; the optional liveness filter still applies on
+    /// top, unchanged.
+    pub fn set_discovery(&mut self, discovery: Arc<dyn Discovery>) {
+        self.discovery = discovery;
+    }
+
     /// Wire an input resolver (deterministic-input verification). When set, the
     /// coordinator pins a version-identified snapshot of each job's external
     /// inputs at dispatch time, so a benign "data changed between replicas"

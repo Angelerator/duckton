@@ -43,3 +43,9 @@ tempfile = "3.27.0"
 # stay "prepared" (no network). Turning it on pulls the live toncenter client
 # (curl transport) from `p2p-settlement`.
 ton-live = ["p2p-settlement/ton-live"]
+# Compile the libp2p discovery overlay (Kademlia DHT + gossip) into the cdylib so
+# a node with `discovery.mode = kademlia` self-advertises its signed capability ad
+# and discovers the live swarm; `p2p_network()` then lists real members. Off by
+# default (the lean cdylib keeps only static/in-memory discovery); enabled for the
+# seed/worker images that run the open swarm.
+discovery-libp2p = ["p2p-node/discovery-libp2p"]
