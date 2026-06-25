@@ -1,0 +1,109 @@
+name: release-app
+
+# Builds the Duckton Node desktop app for macOS (universal), Windows (x64) and
+# Linux (x64), signs/notarizes where credentials are present, and publishes the
+# installers to a (draft) GitHub Release.
+#
+# Trigger: push a tag like `app-v0.1.0`, or run manually.
+on:
+  push:
+    tags:
+      - 'app-v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+            rust-targets: 'aarch64-apple-darwin,x86_64-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+            rust-targets: ''
+          - platform: windows-latest
+            args: ''
+            rust-targets: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev \
+            build-essential \
+            file
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: 'app/src-tauri -> target'
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install
+
+      # --- Windows Authenticode: import the PFX and pin its thumbprint --------
+      - name: Configure Windows code signing
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Host "No WINDOWS_CERTIFICATE secret set — building unsigned."
+            exit 0
+          }
+          $pfxPath = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $securePwd = ConvertTo-SecureString -String $env:WINDOWS_CERTIFICATE_PASSWORD -Force -AsPlainText
+          $cert = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $securePwd
+          $conf = Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
+          $conf.bundle.windows.certificateThumbprint = $cert.Thumbprint
+          $conf | ConvertTo-Json -Depth 40 | Set-Content app/src-tauri/tauri.conf.json
+          Remove-Item $pfxPath
+          Write-Host "Pinned signing thumbprint $($cert.Thumbprint)."
+
+      - name: Build, sign & publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # macOS signing + notarization (no-ops if the secrets are absent).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: app
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('app-v{0}', github.run_number) }}
+          releaseName: 'Duckton Node ${{ github.ref_type == ''tag'' && github.ref_name || github.run_number }}'
+          releaseBody: 'Desktop node installers for macOS, Windows and Linux. Download the asset for your OS below.'
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

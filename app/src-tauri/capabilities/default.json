@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core + opener permissions for the main window. App-defined commands are allowed by default in Tauri v2.",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:default"]
+}

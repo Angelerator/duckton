@@ -1,0 +1,51 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/geist';
+@import '@fontsource-variable/geist-mono';
+
+/* Brand palette + typography lifted from the Duckton homepage: a near-black
+   canvas (#0a0a0b), white text, and the signature yellow (#FFD400) accent. */
+@theme {
+	--color-brand: #ffd400;
+	--color-brand-foreground: #0a0a0b;
+	--color-canvas: #0a0a0b;
+	--color-ok: #34d399;
+	--color-warn: #fbbf24;
+	--font-sans: 'Geist Variable', ui-sans-serif, system-ui, -apple-system, sans-serif;
+	--font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', monospace;
+}
+
+@layer base {
+	html {
+		color-scheme: dark;
+	}
+	body {
+		font-family: var(--font-sans);
+		background-color: var(--color-canvas);
+		-webkit-font-smoothing: antialiased;
+		font-feature-settings: 'rlig' 1, 'calt' 1;
+	}
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+	}
+	::selection {
+		background: color-mix(in oklch, var(--color-brand) 30%, transparent);
+	}
+	.font-mono {
+		font-family: var(--font-mono);
+	}
+}
+
+/* Subtle grid backdrop used on the hero/header, matching the homepage. */
+@utility bg-grid {
+	background-image:
+		linear-gradient(to right, rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+		linear-gradient(to bottom, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+	background-size: 36px 36px;
+}
+
+@utility glow-brand {
+	box-shadow:
+		0 0 0 1px rgba(255, 212, 0, 0.25),
+		0 0 24px -6px rgba(255, 212, 0, 0.45);
+}

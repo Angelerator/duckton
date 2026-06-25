@@ -10,6 +10,12 @@ members = [
     "crates/extension",
     "crates/console-server",
 ]
+# The Tauri desktop node app (`app/src-tauri`) is a standalone package, NOT a
+# workspace member: it pulls in heavy GUI deps (tauri/webkit) + a bundled DuckDB
+# and is built only via `cargo tauri` from `app/`. Excluding it keeps the
+# existing `cargo build --workspace` / community-registry builds completely
+# unaffected while still letting it path-depend on the `p2p-*` crates.
+exclude = ["app"]
 # The published deliverable of this workspace is the `duckton` loadable DuckDB
 # extension (`crates/extension`). The DuckDB Community Extensions registry build
 # (`extension-ci-tools`) runs a bare `cargo build` at the repo root, so scope the

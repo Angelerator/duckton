@@ -1,0 +1,59 @@
+[package]
+name = "duckton-node"
+version = "0.1.0"
+edition = "2021"
+description = "Duckton Node — run your machine as a peer-to-peer DuckDB grid node, settled on TON."
+authors = ["Duckton"]
+license = "Apache-2.0"
+repository = "https://github.com/Angelerator/duckton"
+rust-version = "1.80"
+
+# This crate is intentionally NOT a workspace member (see the root Cargo.toml
+# `exclude`). It is built only via `cargo tauri`, so it keeps its own lockfile
+# and never burdens the lean extension/registry builds.
+
+[lib]
+# Tauri's recommended lib shape (keeps the door open for a future mobile target
+# without restructuring); the desktop binary in `main.rs` calls `run()`.
+name = "duckton_node_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+# Implement the node's async `QueryEngine` trait for the served-jobs counter.
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# The Duckton grid core, embedded directly (no external DuckDB CLI):
+#  * duckdb-engine    → the real locked-down, bundled DuckDB execution engine
+#  * discovery-libp2p → Kademlia/gossip + NAT traversal (autonat/dcutr/relay/mdns)
+#    so a home/office node can be reached and join a real swarm.
+p2p-node = { path = "../../crates/node", features = ["duckdb-engine", "discovery-libp2p"] }
+p2p-config = { path = "../../crates/config" }
+# `ton-live` enables real on-chain broadcasting (stake/unstake + paid settlement)
+# on testnet AND mainnet from the GUI.
+p2p-settlement = { path = "../../crates/settlement", features = ["ton-live"] }
+p2p-proto = { path = "../../crates/proto" }
+p2p-transport = { path = "../../crates/transport" }
+
+[features]
+# Tauri's custom-protocol asset serving for release builds.
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = 2
+strip = "symbols"
+# Match the workspace's hardened release posture (settlement/crypto arithmetic).
+overflow-checks = true
