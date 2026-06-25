@@ -88,17 +88,44 @@ jobs:
           Remove-Item $pfxPath
           Write-Host "Pinned signing thumbprint $($cert.Thumbprint)."
 
-      - name: Build, sign & publish
-        uses: tauri-apps/tauri-action@v0
+      # --- macOS signing/notarization: enable ONLY when a certificate secret is
+      # present. Tauri's macOS signer triggers on the mere PRESENCE of
+      # APPLE_CERTIFICATE in the environment, so passing it unconditionally (as an
+      # empty string when the secret is unset) makes `security import` fail on an
+      # empty cert and aborts the bundle. Promote the Apple secrets into the env
+      # for the build step only when a cert actually exists; otherwise the app
+      # builds cleanly UNSIGNED (mirrors the Windows guard above).
+      - name: Configure macOS code signing
+        if: matrix.platform == 'macos-latest'
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # macOS signing + notarization (no-ops if the secrets are absent).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No APPLE_CERTIFICATE secret — building macOS app UNSIGNED."
+            exit 0
+          fi
+          {
+            echo "APPLE_CERTIFICATE=$APPLE_CERTIFICATE"
+            echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+            echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+            echo "APPLE_ID=$APPLE_ID"
+            echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+            echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+          } >> "$GITHUB_ENV"
+          echo "macOS signing enabled (certificate present)."
+
+      - name: Build, sign & publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Apple signing/notarization vars are injected by the step above ONLY
+          # when an APPLE_CERTIFICATE secret is configured (otherwise: unsigned).
         with:
           projectPath: app
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || format('app-v{0}', github.run_number) }}
